@@ -1,0 +1,16 @@
+// ============================================================================
+// 工程结构：:app（示例）+ :renderer（RenderView 容器库）。:renderer 源码直接
+// 指向 platform/android（平台绑定与示例工程分离，便于第三方复用）。
+// 依赖仓库强制集中在此声明（FAIL_ON_PROJECT_REPOS：模块不得再私自声明仓库）。
+// ============================================================================
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { google(); mavenCentral() }
+}
+rootProject.name = 'RdSamples'
+include ':app'
+include ':renderer'
+project(':renderer').projectDir = new File(rootDir, '../../platform/android')

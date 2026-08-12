@@ -1,0 +1,12 @@
+add_executable(render_test
+  main.cpp
+  ${CMAKE_SOURCE_DIR}/tests/common/shader_code.cpp
+  ${CMAKE_SOURCE_DIR}/tests/common/image.cpp
+)
+target_link_libraries(render_test PRIVATE rd_core)
+target_include_directories(render_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/tests
+  ${CMAKE_BINARY_DIR}/generated
+  ${stb_SOURCE_DIR})
+set_target_properties(render_test PROPERTIES
+  BUILD_RPATH "/opt/homebrew/lib;/usr/local/lib;$ENV{VULKAN_SDK}/lib")

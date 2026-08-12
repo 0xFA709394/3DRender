@@ -1,0 +1,49 @@
+// ============================================================================
+// 示例 app 模块：演示 RenderView 的嵌入（渲染后端由 intent extra 选择，
+// 见 MainActivity.kt）。native 侧经 externalNativeBuild 直接驱动仓库根
+// CMakeLists.txt，只构建 rd_jni 目标（rd_core 作为其依赖自动带入）。
+//
+// 前置条件：须先在仓库根跑过一次 host 构建（./scripts/check.sh）——
+// shader 离线产物取自 host 构建目录（-DRD_HOST_SHADER_OUT），
+// 交叉编译期无法运行 glslang/spirv-cross。
+//
+// 16KB 页对齐（Android 15+ 要求）配置在 rd_jni 的链接选项上：
+// platform/android/CMakeLists.txt 的 -Wl,-z,max-page-size=16384。
+// ============================================================================
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.rd.sample'
+    compileSdk 34
+    ndkVersion '26.3.11579264'
+    defaultConfig {
+        applicationId 'com.rd.sample'
+        minSdk 26
+        targetSdk 34
+        externalNativeBuild {
+            cmake {
+                targets 'rd_jni' // 只构建 JNI 桥库
+                // 指向 host 构建的 shader 产物目录（见文件头注释的前置条件）
+                arguments "-DRD_HOST_SHADER_OUT=${rootDir}/../../build/shaders_out".toString()
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake { path file('../../../CMakeLists.txt') } // 复用仓库根构建脚本
+    }
+    compileOptions {
+        // AGP 8.x 需 JDK 17+ 运行；源码/字节码级别与 Kotlin jvmTarget 对齐 17
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation project(':renderer') // RenderView 容器库（源码在 platform/android）
+}

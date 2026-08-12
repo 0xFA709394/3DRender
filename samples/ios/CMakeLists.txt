@@ -1,0 +1,21 @@
+enable_language(Swift)
+
+add_executable(RdDemo MACOSX_BUNDLE
+  RdDemo/AppDelegate.swift
+  RdDemo/dummy.cpp
+  ${CMAKE_SOURCE_DIR}/platform/ios/RenderView.swift
+)
+target_link_libraries(RdDemo PRIVATE rd_core "-framework UIKit" "-framework QuartzCore")
+set_target_properties(RdDemo PROPERTIES
+  MACOSX_BUNDLE_BUNDLE_NAME RdDemo
+  MACOSX_BUNDLE_GUI_IDENTIFIER com.rd.demo
+  MACOSX_BUNDLE_BUNDLE_VERSION 1
+  MACOSX_BUNDLE_SHORT_VERSION_STRING 1.0
+  MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/RdDemo/Info.plist
+  XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER
+    ${CMAKE_CURRENT_SOURCE_DIR}/RdDemo/RdDemo-Bridging-Header.h
+  XCODE_ATTRIBUTE_SWIFT_VERSION 5.0
+  XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO
+  XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+  XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER com.rd.demo
+)

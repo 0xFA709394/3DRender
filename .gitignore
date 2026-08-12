@@ -1,0 +1,31 @@
+# 构建产物
+build/
+build-ios/
+out/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+
+# Android
+.cxx/
+.externalNativeBuild/
+local.properties
+*.apk
+*.aar
+
+# iOS / Xcode
+DerivedData/
+*.xcuserdata
+Pods/
+
+# 系统与 IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Gradle
+.gradle/
+gradlew-local.properties

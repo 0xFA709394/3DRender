@@ -246,9 +246,10 @@ IBL 预滤波: createTexture(Cube) → createOffscreenTarget(colorFromTexture, f
 3. `feat(rhi): beginFrame/endFrame 帧括号 + N 帧资源退休队列`
 4. `feat(rhi): PipelineDesc 扩展(blend/depthWrite 拆分/sampleCount 预留)+ 管线缓存`
 5. `feat(rhi): instancing draw 三后端实现`
-6. `feat(rhi): cubemap face/mip 渲染目标 + updateTexture + generateMipmaps`
-7. `refactor(rhi): GLES CommandBuffer 延迟回放`
-8. `test(rhi): 新能力契约测试 + caps 快照`
+6. `feat(rhi): GLES 纹理/采样器实现`(计划阶段发现的缺口:P0 桩,P1 PBR 需要三后端对齐)
+7. `feat(rhi): cubemap face/mip 渲染目标 + updateTexture + generateMipmaps`
+8. `refactor(rhi): GLES CommandBuffer 延迟回放`
+9. `test(rhi): 新能力契约测试 + caps 快照`
 
 ## 7. 验收标准
 

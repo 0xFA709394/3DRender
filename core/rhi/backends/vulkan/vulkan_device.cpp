@@ -118,13 +118,17 @@ VkBlendFactor toVkBlendFactor(BlendFactor f) {
   return VK_BLEND_FACTOR_ONE;
 }
 /// 渲染目标：离屏目标含颜色图像 + framebuffer + readback 用 staging 图像；
-/// swapchain 图像复用该结构（isSwapchain=true，资源由 swapchain 管理）。
+/// swapchain 图像复用该结构（isSwapchain=true，资源由 swapchain 管理）；
+/// texture-backed 目标挂载已有纹理的 face/mip 子资源(无 staging,不支持 readback)。
 struct TargetRec {
   VkImage color; VkDeviceMemory colorMem; VkImageView view; VkFramebuffer fb;
   VkImage staging; VkDeviceMemory stagingMem;   ///< readback 暂存（LINEAR tiling，host 可读）
   uint32_t width, height;
   VkDeviceSize stagingRowPitch;                 ///< staging 行距（可能大于 width*4）
   bool isSwapchain = false; // swapchain 图像：资源由 swapchain 管理
+  bool textureBacked = false;                   ///< 挂载已有纹理子资源(cube face/mip 渲染)
+  TextureHandle srcTexture;                     ///< 来源纹理(destroy 不释放)
+  uint32_t srcFace = 0, srcMip = 0;             ///< 挂载的面/mip
 };
 
 /// 交换链：surface + swapchain 对象 + 每帧图像注册的 TargetHandle 列表。
@@ -143,11 +147,16 @@ struct SwapChainRec {
 constexpr uint32_t kMaxUniformSlots = 4;
 
 /// 纹理：device-local 图像 + 视图；isCube 决定 viewType 与上传的面数。
+/// subLayouts 逐子资源(face*mip 展平)追踪 layout,供渲染目标/updateTexture 转换链用。
 struct TextureRec {
   VkImage image = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;
   VkImageView view = VK_NULL_HANDLE;
   bool isCube = false;
+  uint32_t width = 0, height = 0, mipLevels = 1;
+  Format format = Format::RGBA8_UNORM;
+  uint32_t faces = 1;
+  std::vector<VkImageLayout> subLayouts;
 };
 struct SamplerRec { VkSampler sampler = VK_NULL_HANDLE; };
 
@@ -200,6 +209,9 @@ public:
   void destroyTarget(TargetHandle target) override;
   TextureHandle createTexture(const TextureDesc& desc) override;
   void destroyTexture(TextureHandle texture) override;
+  void updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face, const void* data,
+                     uint64_t size) override;
+  bool generateMipmaps(TextureHandle tex) override;
   SamplerHandle createSampler(const SamplerDesc& desc) override;
   void destroySampler(SamplerHandle sampler) override;
   bool readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) override;
@@ -248,6 +260,11 @@ public:
   VkDescriptorSet descriptorSet() const { return descSet_; }
   VkPipelineLayout pipelineLayout() const { return pipelineLayout_; }
   VkDevice device() const { return device_; }
+  /// 录制子资源 layout 转换 barrier 到指定命令缓冲(并更新 subLayouts 追踪)。
+  void recordTextureTransition(VkCommandBuffer cmd, TextureHandle tex, uint32_t face,
+                               uint32_t mip, VkImageLayout from, VkImageLayout to,
+                               VkAccessFlags srcAccess, VkAccessFlags dstAccess,
+                               VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage);
   /// 写全局唯一 descriptor set 的 uniform binding（绑定约定：slot N ↔ set0 binding N）。
   void writeUniformDescriptor(uint32_t slot, VkBuffer buffer, uint64_t offset, uint64_t size) {
     VkDescriptorBufferInfo info{buffer, offset, size};
@@ -906,6 +923,40 @@ void VulkanDevice::destroyPipeline(PipelineHandle pipeline) {
  * 并查询 staging 的 rowPitch（可能大于 width*4，读取时须按行距步进）。
  */
 TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) {
+  // texture-backed:挂载已有纹理的 face/mip 子资源为颜色附件(无 staging,不支持 readback)
+  if (desc.colorFromTexture.valid()) {
+    auto tit = textures_.find(desc.colorFromTexture);
+    if (tit == textures_.end()) return {};
+    const TextureRec& tr = tit->second;
+    if (tr.isCube && !caps_.supports(Capability::cube_render_target)) return {};
+    if (desc.face >= tr.faces || desc.mipLevel >= tr.mipLevels) return {};
+    TargetRec rec{};
+    rec.width = desc.width;
+    rec.height = desc.height;
+    rec.textureBacked = true;
+    rec.srcTexture = desc.colorFromTexture;
+    rec.srcFace = desc.face;
+    rec.srcMip = desc.mipLevel;
+    // 视图:2D 类型视图指向指定 face/mip 子资源
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image = tr.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = toVkFormat(tr.format);
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, desc.mipLevel, 1, desc.face, 1};
+    if (vkCreateImageView(device_, &vci, nullptr, &rec.view) != VK_SUCCESS) return {};
+    VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbci.renderPass = renderPass_;
+    fbci.attachmentCount = 1;
+    fbci.pAttachments = &rec.view;
+    fbci.width = desc.width;
+    fbci.height = desc.height;
+    fbci.layers = 1;
+    if (vkCreateFramebuffer(device_, &fbci, nullptr, &rec.fb) != VK_SUCCESS) return {};
+    TargetHandle h(nextId_++);
+    targets_.emplace(h, rec);
+    return h;
+  }
+  // ---- 自建附件路径(颜色图像 + view + framebuffer + readback staging)----
   TargetRec rec{};
   rec.width = desc.width;
   rec.height = desc.height;
@@ -958,6 +1009,13 @@ void VulkanDevice::destroyTarget(TargetHandle target) {
   }
   const TargetRec t = it->second;  // 按值取出,退休闭包持有
   targets_.erase(it);
+  if (t.textureBacked) {  // 只销毁 fb/view;纹理本身归调用方
+    retire_.retire(frameIndex_, [this, t] {
+      vkDestroyFramebuffer(device_, t.fb, nullptr);
+      vkDestroyImageView(device_, t.view, nullptr);
+    });
+    return;
+  }
   retire_.retire(frameIndex_, [this, t] {
     vkDestroyFramebuffer(device_, t.fb, nullptr);
     vkDestroyImageView(device_, t.view, nullptr);
@@ -996,6 +1054,12 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
 
   TextureRec rec;
   rec.isCube = desc.type == TextureType::Cube;
+  rec.width = desc.width;
+  rec.height = desc.height;
+  rec.mipLevels = desc.mipLevels;
+  rec.format = desc.format;
+  rec.faces = faces;
+  rec.subLayouts.assign(faces * desc.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED);
 
   VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ici.imageType = VK_IMAGE_TYPE_2D;
@@ -1005,7 +1069,11 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
   ici.arrayLayers = faces;
   ici.samples = VK_SAMPLE_COUNT_1_BIT;
   ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-  ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  // TRANSFER_DST:上传/updateTexture 目标;TRANSFER_SRC:mip 生成 blit 源
+  ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  if (hasFlag(desc.usage, TextureUsage::RenderTargetAttachment))
+    ici.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   if (rec.isCube) ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   if (vkCreateImage(device_, &ici, nullptr, &rec.image) != VK_SUCCESS) return {};
@@ -1110,6 +1178,8 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
         si.pCommandBuffers = &cmd_;
         vkQueueSubmit(queue_, 1, &si, VK_NULL_HANDLE);
         vkQueueWaitIdle(queue_);
+        // 上传完成:全部子资源已转 SHADER_READ(与上面的转换链一致)
+        for (auto& l : rec.subLayouts) l = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       }
     }
     // staging 是一次性资源：无论成败都释放
@@ -1150,6 +1220,175 @@ void VulkanDevice::destroyTexture(TextureHandle texture) {
     vkDestroyImage(device_, img, nullptr);
     vkFreeMemory(device_, m, nullptr);
   });
+}
+
+/// 录制子资源 layout 转换 barrier 并更新追踪表。
+void VulkanDevice::recordTextureTransition(VkCommandBuffer cmd, TextureHandle tex, uint32_t face,
+                                           uint32_t mip, VkImageLayout from, VkImageLayout to,
+                                           VkAccessFlags srcAccess, VkAccessFlags dstAccess,
+                                           VkPipelineStageFlags srcStage,
+                                           VkPipelineStageFlags dstStage) {
+  auto it = textures_.find(tex);
+  if (it == textures_.end()) return;
+  TextureRec& tr = it->second;
+  VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  barrier.oldLayout = from;
+  barrier.newLayout = to;
+  barrier.srcAccessMask = srcAccess;
+  barrier.dstAccessMask = dstAccess;
+  barrier.image = tr.image;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, face, 1};
+  vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  tr.subLayouts[face * tr.mipLevels + mip] = to;
+}
+
+/**
+ * 更新纹理子资源:staging 缓冲 + 单命令提交(须在 render pass 录制外调用,P0 串行风格)。
+ * 转换链:当前 layout(追踪表)→ TRANSFER_DST → 拷贝 → SHADER_READ。
+ */
+void VulkanDevice::updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face,
+                                 const void* data, uint64_t size) {
+  auto it = textures_.find(tex);
+  if (it == textures_.end() || !data) return;
+  TextureRec& tr = it->second;
+  if (mipLevel >= tr.mipLevels || face >= tr.faces) return;
+  uint32_t w = tr.width >> mipLevel, hgt = tr.height >> mipLevel;
+  if (w == 0) w = 1;
+  if (hgt == 0) hgt = 1;
+  const uint64_t need = uint64_t(w) * hgt * formatSize(tr.format);
+  if (size < need) {
+    RD_LOGE("rhi.vk", "updateTexture: 数据不足(需 %llu)", (unsigned long long)need);
+    return;
+  }
+  VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bci.size = need;
+  bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  VkBuffer staging = VK_NULL_HANDLE;
+  VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+  bool ok = vkCreateBuffer(device_, &bci, nullptr, &staging) == VK_SUCCESS;
+  if (ok) {
+    VkMemoryRequirements sreq;
+    vkGetBufferMemoryRequirements(device_, staging, &sreq);
+    VkMemoryAllocateInfo smai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    smai.allocationSize = sreq.size;
+    smai.memoryTypeIndex = findMemoryType(sreq.memoryTypeBits,
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ok = smai.memoryTypeIndex != UINT32_MAX &&
+         vkAllocateMemory(device_, &smai, nullptr, &stagingMem) == VK_SUCCESS &&
+         vkBindBufferMemory(device_, staging, stagingMem, 0) == VK_SUCCESS;
+  }
+  if (ok) {
+    void* mapped = nullptr;
+    vkMapMemory(device_, stagingMem, 0, need, 0, &mapped);
+    memcpy(mapped, data, need);
+    vkUnmapMemory(device_, stagingMem);
+
+    const VkImageLayout cur = tr.subLayouts[face * tr.mipLevels + mipLevel];
+    vkResetCommandBuffer(cmd_, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd_, &bi);
+    VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toDst.oldLayout = cur;
+    toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toDst.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toDst.image = tr.image;
+    toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, 1, face, 1};
+    vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, face, 1};
+    copy.imageExtent = {w, hgt, 1};
+    vkCmdCopyBufferToImage(cmd_, staging, tr.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                           &copy);
+    VkImageMemoryBarrier toRead{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    toRead.image = tr.image;
+    toRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, 1, face, 1};
+    vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                         &toRead);
+    vkEndCommandBuffer(cmd_);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd_;
+    vkQueueSubmit(queue_, 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(queue_);
+    tr.subLayouts[face * tr.mipLevels + mipLevel] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  }
+  if (staging) vkDestroyBuffer(device_, staging, nullptr);
+  if (stagingMem) vkFreeMemory(device_, stagingMem, nullptr);
+  if (!ok) RD_LOGE("rhi.vk", "updateTexture: staging 分配失败");
+}
+
+/**
+ * 生成全部 mip 链:逐 face 逐级 blit(线性过滤),全程串行提交。
+ * 每级:src(mip-1)→TRANSFER_SRC,dst(mip)→TRANSFER_DST,blit,两级回 SHADER_READ。
+ */
+bool VulkanDevice::generateMipmaps(TextureHandle tex) {
+  auto it = textures_.find(tex);
+  if (it == textures_.end() || it->second.mipLevels < 2) return false;
+  TextureRec& tr = it->second;
+  vkResetCommandBuffer(cmd_, 0);
+  VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmd_, &bi);
+  for (uint32_t face = 0; face < tr.faces; ++face) {
+    for (uint32_t mip = 1; mip < tr.mipLevels; ++mip) {
+      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      b.image = tr.image;
+      b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      b.oldLayout = tr.subLayouts[face * tr.mipLevels + mip - 1];
+      b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+      b.oldLayout = tr.subLayouts[face * tr.mipLevels + mip];
+      b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      b.srcAccessMask = 0;
+      b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+      VkImageBlit blit{};
+      blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, face, 1};
+      uint32_t sw = tr.width >> (mip - 1), sh = tr.height >> (mip - 1);
+      uint32_t dw = tr.width >> mip, dh = tr.height >> mip;
+      blit.srcOffsets[1] = {int32_t(sw ? sw : 1), int32_t(sh ? sh : 1), 1};
+      blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, face, 1};
+      blit.dstOffsets[1] = {int32_t(dw ? dw : 1), int32_t(dh ? dh : 1), 1};
+      vkCmdBlitImage(cmd_, tr.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tr.image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+      b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+      b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &b);
+      tr.subLayouts[face * tr.mipLevels + mip - 1] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &b);
+      tr.subLayouts[face * tr.mipLevels + mip] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+  }
+  vkEndCommandBuffer(cmd_);
+  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &cmd_;
+  vkQueueSubmit(queue_, 1, &si, VK_NULL_HANDLE);
+  vkQueueWaitIdle(queue_);
+  return true;
 }
 
 /// 创建采样器：rhi 过滤/寻址枚举一一映射到 VkSamplerCreateInfo。
@@ -1200,8 +1439,8 @@ bool VulkanDevice::readbackTarget(TargetHandle target, void* outRGBA8, uint64_t 
   auto it = targets_.find(target);
   if (it == targets_.end()) return false;
   const TargetRec& t = it->second;
-  if (t.isSwapchain) {
-    RD_LOGW("rhi.vk", "swapchain target 不支持 readback");
+  if (t.isSwapchain || t.textureBacked) {
+    RD_LOGW("rhi.vk", "swapchain/texture-backed target 不支持 readback");
     return false;
   }
   const uint64_t rowBytes = uint64_t(t.width) * 4;
@@ -1357,6 +1596,15 @@ void VulkanCommandBuffer::endRenderPass() {
 
   TargetRec t;
   if (!device_->target(currentTarget_, t)) return;
+  // texture-backed:无 staging,改为把渲染完的子资源转回 SHADER_READ 供后续采样
+  if (t.textureBacked) {
+    device_->recordTextureTransition(
+        cmd_, t.srcTexture, t.srcFace, t.srcMip, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    return;
+  }
   // staging: UNDEFINED -> TRANSFER_DST，拷贝后 -> GENERAL（供 host 读）
   VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   barrier.srcAccessMask = 0;

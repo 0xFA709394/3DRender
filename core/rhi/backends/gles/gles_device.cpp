@@ -19,7 +19,9 @@
 #include "foundation/log.h"
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
 #include <android/native_window.h>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -119,6 +121,7 @@ public:
   ~GLESDevice() override { shutdownEGL(); }
   bool init(const DeviceDesc&);
   Backend backend() const override { return Backend::GLES; }
+  const DeviceCaps& caps() const override { return caps_; }
 
   BufferHandle createBuffer(const BufferDesc& desc) override;
   void updateBuffer(BufferHandle buffer, const void* data, uint64_t size, uint64_t offset) override;
@@ -187,6 +190,7 @@ private:
   std::unordered_map<TargetHandle, TargetRec> targets_;
   std::unordered_map<SwapChainHandle, SwapChainRec> swapChains_;
   GLESCommandBuffer cmdBuf_{this};      ///< 设备内唯一命令缓冲（单线程模型）
+  DeviceCaps caps_;                     ///< 能力表(init 内上报)
 };
 
 // ---------------- CommandBuffer 实现 ----------------
@@ -318,7 +322,29 @@ bool GLESDevice::init(const DeviceDesc&) {
     RD_LOGE("rhi.gles", "pbuffer 创建失败");
     return false;
   }
-  return makeCurrent(pbuffer_);
+  if (!makeCurrent(pbuffer_)) return false;
+
+  // ---- 能力上报(ES3 核心能力 + 扩展位)----
+  GLint maxTex = 0;
+  glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+  caps_.set(Capability::max_texture_size, static_cast<uint32_t>(maxTex));
+  caps_.set(Capability::max_texture_slots, 8);
+  caps_.set(Capability::max_uniform_buffer_slots, 4);
+  caps_.set(Capability::instancing, 1);  // ES3 核心
+  GLint maxSamples = 0;
+  glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+  caps_.set(Capability::msaa,
+            static_cast<uint32_t>(maxSamples >= 4 ? 4 : maxSamples >= 2 ? 2 : 1));
+  caps_.set(Capability::depth_texture, 1);  // ES3 核心
+  caps_.set(Capability::cube_render_target, 1);
+  caps_.set(Capability::generate_mipmap, 1);
+  const char* exts = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+  if (exts && strstr(exts, "GL_EXT_texture_filter_anisotropic")) {
+    GLfloat maxAniso = 0;
+    glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
+    caps_.set(Capability::anisotropy, static_cast<uint32_t>(maxAniso));
+  }
+  return true;
 }
 
 bool GLESDevice::makeCurrent(EGLSurface surface) {

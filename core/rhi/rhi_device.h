@@ -170,13 +170,23 @@ public:
    */
   virtual Format swapChainColorFormat(SwapChainHandle swapChain) const = 0;
 
+  /// @name 帧括号
+  /// @{
+  /// 渲染循环每帧开始调用一次:帧序号推进。离屏一次性渲染可不调用
+  /// (退休队列由 waitIdle 兜底清空)。
+  virtual void beginFrame() = 0;
+  /// 每帧结束调用一次(present 之后):按帧完成机制推进资源退休。
+  virtual void endFrame() = 0;
+  /// @}
+
   /// @name 命令与同步
   /// @{
   /// 获取本帧命令缓冲；返回值由 Device 持有，勿 delete。
   virtual CommandBuffer* acquireCommandBuffer() = 0;
   /// 提交已录制的命令缓冲执行。
   virtual void submit(CommandBuffer* cmd) = 0;
-  /// 阻塞直到 GPU 空闲（测试 readback/截图前使用；渲染循环中一般不需要）。
+  /// 阻塞直到 GPU 空闲（测试 readback/截图前使用；渲染循环中一般不需要）；
+  /// 附加语义:清空资源退休队列。
   virtual void waitIdle() = 0;
   /// @}
 };

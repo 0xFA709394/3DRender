@@ -19,6 +19,7 @@
 // ============================================================================
 #include "vulkan_device.h"
 #include "foundation/log.h"
+#include "rhi/retire_queue.h"
 #include <vulkan/vulkan.h>
 #if defined(__ANDROID__)
 #include <vulkan/vulkan_android.h>
@@ -149,6 +150,8 @@ public:
   CommandBuffer* acquireCommandBuffer() override;
   void submit(CommandBuffer* cmd) override;
   void waitIdle() override;
+  void beginFrame() override { ++frameIndex_; }
+  void endFrame() override;
   SwapChainHandle createSwapChain(void* nativeWindow, uint32_t width, uint32_t height) override;
   void resizeSwapChain(SwapChainHandle swapChain, uint32_t width, uint32_t height) override;
   TargetHandle acquireSwapChainTarget(SwapChainHandle swapChain) override;
@@ -214,6 +217,11 @@ private:
   std::unordered_map<SwapChainHandle, SwapChainRec> swapChains_;
   VkFence acquireFence_ = VK_NULL_HANDLE;      ///< acquire 图像用的 fence（P0 串行模型）
   VkFormat renderPassFormat_ = VK_FORMAT_R8G8B8A8_UNORM;  ///< render pass 颜色格式（可能随 swapchain 重建）
+  RetireQueue retire_;                         ///< 资源退休队列(帧完成驱动释放)
+  uint64_t frameIndex_ = 0;                    ///< 当前帧序号(beginFrame 推进)
+  uint64_t lastCompleted_ = 0;                 ///< 已确认完成的帧序号
+  VkFence frameFence_ = VK_NULL_HANDLE;        ///< 每帧 submit 的信号 fence
+  bool fencePending_ = false;                  ///< 本帧是否已 submit(每帧至多一次)
 
   VkInstance instance_ = VK_NULL_HANDLE;
   VkPhysicalDevice phys_ = VK_NULL_HANDLE;
@@ -425,6 +433,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
 
   VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   VK_CHECK(vkCreateFence(device_, &fci, nullptr, &acquireFence_));
+  VK_CHECK(vkCreateFence(device_, &fci, nullptr, &frameFence_));
   return true;
 }
 
@@ -479,11 +488,13 @@ bool VulkanDevice::createRenderPass(VkFormat format) {
 VulkanDevice::~VulkanDevice() {
   if (!device_) return;
   vkDeviceWaitIdle(device_);
+  retire_.flushAll();  // 退休资源在销毁设备前全部释放
   vkDestroyDescriptorPool(device_, descPool_, nullptr);
   vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
   vkDestroyRenderPass(device_, renderPass_, nullptr);
   vkDestroyCommandPool(device_, cmdPool_, nullptr);
   if (acquireFence_) vkDestroyFence(device_, acquireFence_, nullptr);
+  if (frameFence_) vkDestroyFence(device_, frameFence_, nullptr);
   vkDestroyDevice(device_, nullptr);
   vkDestroyInstance(instance_, nullptr);
 }
@@ -639,9 +650,13 @@ void VulkanDevice::updateBuffer(BufferHandle buffer, const void* data, uint64_t 
 void VulkanDevice::destroyBuffer(BufferHandle buffer) {
   auto it = buffers_.find(buffer);
   if (it == buffers_.end()) return;
-  vkDestroyBuffer(device_, it->second.buffer, nullptr);
-  vkFreeMemory(device_, it->second.memory, nullptr);
-  buffers_.erase(it);
+  VkBuffer b = it->second.buffer;
+  VkDeviceMemory m = it->second.memory;
+  buffers_.erase(it);  // 句柄立即失效;底层资源退休到帧完成后释放
+  retire_.retire(frameIndex_, [this, b, m] {
+    vkDestroyBuffer(device_, b, nullptr);
+    vkFreeMemory(device_, m, nullptr);
+  });
 }
 
 /// 加载 SPIR-V 模块（入口名约定 "main"）。
@@ -659,8 +674,9 @@ ShaderModuleHandle VulkanDevice::createShaderModule(const ShaderModuleDesc& desc
 void VulkanDevice::destroyShaderModule(ShaderModuleHandle module) {
   auto it = shaders_.find(module);
   if (it == shaders_.end()) return;
-  vkDestroyShaderModule(device_, it->second.module, nullptr);
+  VkShaderModule m = it->second.module;
   shaders_.erase(it);
+  retire_.retire(frameIndex_, [this, m] { vkDestroyShaderModule(device_, m, nullptr); });
 }
 
 PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
@@ -784,9 +800,13 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
 void VulkanDevice::destroyPipeline(PipelineHandle pipeline) {
   auto it = pipelines_.find(pipeline);
   if (it == pipelines_.end()) return;
-  vkDestroyPipeline(device_, it->second.pipeline, nullptr);
-  vkDestroyPipelineLayout(device_, it->second.layout, nullptr);
+  VkPipeline p = it->second.pipeline;
+  VkPipelineLayout l = it->second.layout;
   pipelines_.erase(it);
+  retire_.retire(frameIndex_, [this, p, l] {
+    vkDestroyPipeline(device_, p, nullptr);
+    vkDestroyPipelineLayout(device_, l, nullptr);
+  });
 }
 
 /**
@@ -845,14 +865,16 @@ void VulkanDevice::destroyTarget(TargetHandle target) {
     targets_.erase(it);
     return;
   }
-  const TargetRec& t = it->second;
-  vkDestroyFramebuffer(device_, t.fb, nullptr);
-  vkDestroyImageView(device_, t.view, nullptr);
-  vkDestroyImage(device_, t.color, nullptr);
-  vkFreeMemory(device_, t.colorMem, nullptr);
-  vkDestroyImage(device_, t.staging, nullptr);
-  vkFreeMemory(device_, t.stagingMem, nullptr);
+  const TargetRec t = it->second;  // 按值取出,退休闭包持有
   targets_.erase(it);
+  retire_.retire(frameIndex_, [this, t] {
+    vkDestroyFramebuffer(device_, t.fb, nullptr);
+    vkDestroyImageView(device_, t.view, nullptr);
+    vkDestroyImage(device_, t.color, nullptr);
+    vkFreeMemory(device_, t.colorMem, nullptr);
+    vkDestroyImage(device_, t.staging, nullptr);
+    vkFreeMemory(device_, t.stagingMem, nullptr);
+  });
 }
 
 /**
@@ -1028,10 +1050,15 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
 void VulkanDevice::destroyTexture(TextureHandle texture) {
   auto it = textures_.find(texture);
   if (it == textures_.end()) return;
-  vkDestroyImageView(device_, it->second.view, nullptr);
-  vkDestroyImage(device_, it->second.image, nullptr);
-  vkFreeMemory(device_, it->second.memory, nullptr);
+  VkImageView v = it->second.view;
+  VkImage img = it->second.image;
+  VkDeviceMemory m = it->second.memory;
   textures_.erase(it);
+  retire_.retire(frameIndex_, [this, v, img, m] {
+    vkDestroyImageView(device_, v, nullptr);
+    vkDestroyImage(device_, img, nullptr);
+    vkFreeMemory(device_, m, nullptr);
+  });
 }
 
 /// 创建采样器：rhi 过滤/寻址枚举一一映射到 VkSamplerCreateInfo。
@@ -1069,8 +1096,9 @@ SamplerHandle VulkanDevice::createSampler(const SamplerDesc& desc) {
 void VulkanDevice::destroySampler(SamplerHandle sampler) {
   auto it = samplers_.find(sampler);
   if (it == samplers_.end()) return;
-  vkDestroySampler(device_, it->second.sampler, nullptr);
+  VkSampler s = it->second.sampler;
   samplers_.erase(it);
+  retire_.retire(frameIndex_, [this, s] { vkDestroySampler(device_, s, nullptr); });
 }
 
 /**
@@ -1109,16 +1137,34 @@ CommandBuffer* VulkanDevice::acquireCommandBuffer() {
   return &cmdBuf_;
 }
 
-/// 提交：结束录制并 queueSubmit（无 fence——调用方用 waitIdle 同步）。
+/// 提交：结束录制并 queueSubmit,信号 frameFence_(每帧至多一次 submit 的既有约束);
+/// 帧完成由 endFrame 等 fence 确认,驱动退休队列。
 void VulkanDevice::submit(CommandBuffer*) {
   vkEndCommandBuffer(cmd_);
   VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
   si.pCommandBuffers = &cmd_;
-  vkQueueSubmit(queue_, 1, &si, VK_NULL_HANDLE);
+  vkQueueSubmit(queue_, 1, &si, frameFence_);
+  fencePending_ = true;
 }
 
-void VulkanDevice::waitIdle() { vkQueueWaitIdle(queue_); }
+/// 帧结束:本帧有 submit 则等 fence 确认完成(P0 串行模型下立即返回),
+/// 再把已完成序号推给退休队列。
+void VulkanDevice::endFrame() {
+  if (fencePending_) {
+    vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX);
+    vkResetFences(device_, 1, &frameFence_);
+    fencePending_ = false;
+    lastCompleted_ = frameIndex_;
+  }
+  retire_.onFrameComplete(lastCompleted_);
+}
+
+void VulkanDevice::waitIdle() {
+  vkQueueWaitIdle(queue_);
+  lastCompleted_ = frameIndex_;
+  retire_.flushAll();
+}
 
 // ---------------- CommandBuffer 录制 ----------------
 

@@ -117,14 +117,17 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
     return;
   }
   e->angle += dt * 1.0f;  // 1 rad/s 的演示旋转速度
+  e->device->beginFrame();  // 帧括号:驱动资源退休
   rd::TargetHandle target = e->device->acquireSwapChainTarget(e->swapChain);
   if (!target.valid()) {
     static int acqLog = 0;
     if (acqLog++ % 300 == 0) RD_LOGW("api", "acquireSwapChainTarget 失败");
+    e->device->endFrame();
     return; // 表面重建中，跳过本帧
   }
   e->scene.render(*e->device, target, e->width, e->height, e->angle);
   e->device->present(e->swapChain);
+  e->device->endFrame();
 }
 
 const char* rd_get_last_error(rd_engine* e) { return e ? e->lastError : ""; }

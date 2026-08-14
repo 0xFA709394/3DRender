@@ -35,10 +35,11 @@ const uint16_t kIndices[] = {
 
 bool CubeScene::init(Device& device, const uint8_t* vsCode, size_t vsSize, const uint8_t* fsCode,
                      size_t fsSize, const char* entryPoint, Format colorFormat) {
-  // 几何缓冲：创建时随带上传；uniform 64 字节（一个 mat4）稍后每帧 update
-  vbo_ = device.createBuffer({sizeof(kVertices), BufferUsage::Vertex, kVertices});
-  ibo_ = device.createBuffer({sizeof(kIndices), BufferUsage::Index, kIndices});
-  ubo_ = device.createBuffer({64, BufferUsage::Uniform, nullptr});
+  // 几何缓冲：静态数据走 device-local(创建时随带上传);
+  // uniform 64 字节（一个 mat4）每帧 update → hostWrite=true
+  vbo_ = device.createBuffer({sizeof(kVertices), BufferUsage::Vertex, false, false, kVertices});
+  ibo_ = device.createBuffer({sizeof(kIndices), BufferUsage::Index, false, false, kIndices});
+  ubo_ = device.createBuffer({64, BufferUsage::Uniform, true, false, nullptr});
 
   ShaderModuleDesc vsd;
   vsd.stage = ShaderStage::Vertex;

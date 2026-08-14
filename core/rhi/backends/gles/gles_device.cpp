@@ -32,7 +32,12 @@ namespace {
 // ---- 资源记录（句柄表的 value）----
 
 /// 缓冲：记录 GL 对象 + 创建时推导的绑定 target（updateBuffer/destroy 时要用）+ 大小。
-struct BufferRec { GLuint buffer = 0; GLenum target = GL_ARRAY_BUFFER; uint64_t size = 0; };
+struct BufferRec {
+  GLuint buffer = 0;
+  GLenum target = GL_ARRAY_BUFFER;
+  uint64_t size = 0;
+  bool hostVisible = false;  ///< hostWrite/hostRead(行为一致性守卫用)
+};
 struct ShaderRec { GLuint shader = 0; ShaderStage stage; };
 /// 管线：GL program + 顶点布局缓存（draw 时重建属性指针用）+ 拓扑/剔除状态。
 struct PipelineRec {
@@ -372,6 +377,7 @@ void GLESDevice::shutdownEGL() {
 
 /// 创建缓冲：target 由 usage 推导（Index→ELEMENT_ARRAY，Uniform→UNIFORM，否则 ARRAY），
 /// 之后 updateBuffer/destroyBuffer 都按记录的 target 绑定。
+/// hostWrite → GL_DYNAMIC_DRAW 提示,否则 GL_STATIC_DRAW;hostRead 无直接支持。
 BufferHandle GLESDevice::createBuffer(const BufferDesc& desc) {
   ensureOffscreenCurrent();
   GLuint buf = 0;
@@ -380,9 +386,12 @@ BufferHandle GLESDevice::createBuffer(const BufferDesc& desc) {
   if (hasFlag(desc.usage, BufferUsage::Index)) target = GL_ELEMENT_ARRAY_BUFFER;
   if (hasFlag(desc.usage, BufferUsage::Uniform)) target = GL_UNIFORM_BUFFER;
   glBindBuffer(target, buf);
-  glBufferData(target, GLsizeiptr(desc.size), desc.data, GL_STATIC_DRAW);
+  GLenum hint = desc.hostWrite ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
+  if (desc.hostRead)
+    RD_LOGW("rhi.gles", "hostRead 缓冲在 GLES 无直接支持,按 hostWrite 处理");
+  glBufferData(target, GLsizeiptr(desc.size), desc.data, hint);
   BufferHandle h(nextId_++);
-  buffers_.emplace(h, BufferRec{buf, target, desc.size});
+  buffers_.emplace(h, BufferRec{buf, target, desc.size, desc.hostWrite || desc.hostRead});
   return h;
 }
 
@@ -390,6 +399,11 @@ void GLESDevice::updateBuffer(BufferHandle buffer, const void* data, uint64_t si
                               uint64_t offset) {
   auto it = buffers_.find(buffer);
   if (it == buffers_.end()) return;
+  if (!it->second.hostVisible) {
+    // GL 本身允许,但为与 Vulkan/Metal 行为一致(防写出不 portable 的代码)而拒绝
+    RD_LOGE("rhi.gles", "updateBuffer 作用于非 hostWrite 缓冲(须 hostWrite=true 创建)");
+    return;
+  }
   ensureOffscreenCurrent();
   glBindBuffer(it->second.target, it->second.buffer);
   glBufferSubData(it->second.target, GLintptr(offset), GLsizeiptr(size), data);

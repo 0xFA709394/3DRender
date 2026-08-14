@@ -73,7 +73,7 @@ rd::test::Image renderTexQuad(rd::Backend b) {
 
   // 全屏三角带：pos(3f) + uv(2f)
   const float verts[] = {-1, -1, 0, 0, 1,  -1, 1, 0, 0, 0,  1, -1, 0, 1, 1,  1, 1, 0, 1, 0};
-  auto vbo = device->createBuffer({sizeof(verts), rd::BufferUsage::Vertex, verts});
+  auto vbo = device->createBuffer({sizeof(verts), rd::BufferUsage::Vertex, false, false, verts});
 
   uint8_t checker[64 * 64 * 4];
   makeChecker(checker, 64, 8);
@@ -99,7 +99,7 @@ rd::test::Image renderMipQuad(rd::Backend b) {
   // UV 跨度 32：强制大幅缩小，触发高 LOD mip 选择
   const float verts[] = {-1, -1, 0, 0, 32,  -1, 1, 0, 0, 0,
                          1, -1, 0, 32, 32,  1, 1, 0, 32, 0};
-  auto vbo = device->createBuffer({sizeof(verts), rd::BufferUsage::Vertex, verts});
+  auto vbo = device->createBuffer({sizeof(verts), rd::BufferUsage::Vertex, false, false, verts});
 
   // 三级 mip 各填纯色（红/绿/蓝），数据按 mip 逐级紧凑排列
   uint8_t data[64 * 64 * 4 + 32 * 32 * 4 + 16 * 16 * 4];

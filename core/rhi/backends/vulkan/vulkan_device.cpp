@@ -24,6 +24,7 @@
 #include <vulkan/vulkan_android.h>
 #include <android/native_window.h>
 #endif
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -59,7 +60,7 @@ VkFormat toVkFormat(Format f) {
 // ---- 资源记录（句柄表的 value）----
 
 /// 缓冲：VkBuffer + 独占内存（P0 简化：每缓冲一次 vkAllocateMemory）。
-struct BufferRec { VkBuffer buffer; VkDeviceMemory memory; };
+struct BufferRec { VkBuffer buffer; VkDeviceMemory memory; bool hostVisible = false; };
 struct ShaderRec { VkShaderModule module; ShaderStage stage; std::string entry; };
 /// 管线：VkPipeline + 布局（bind 描述符要用）+ 拓扑/剔除缓存（当前未在录制期使用）。
 struct PipelineRec { VkPipeline pipeline; VkPipelineLayout layout; VkPrimitiveTopology topology; VkCullModeFlags cull; };
@@ -208,6 +209,7 @@ private:
   bool createSwapchainObject(SwapChainRec& rec, VkSwapchainKHR oldSwapchain);
   bool buildSwapChainTargets(SwapChainRec& rec);
   void destroySwapChainImages(SwapChainRec& rec);
+  bool stagingUploadBuffer(BufferHandle dst, const void* data, uint64_t size);
 
   std::unordered_map<SwapChainHandle, SwapChainRec> swapChains_;
   VkFence acquireFence_ = VK_NULL_HANDLE;      ///< acquire 图像用的 fence（P0 串行模型）
@@ -360,6 +362,12 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   dci.pQueueCreateInfos = &qci;
   dci.enabledExtensionCount = uint32_t(deviceExtensions.size());
   dci.ppEnabledExtensionNames = deviceExtensions.data();
+  // 各向异性过滤:支持则启用(createSampler 按 caps 截断等级)
+  VkPhysicalDeviceFeatures supportedFeats;
+  vkGetPhysicalDeviceFeatures(phys_, &supportedFeats);
+  VkPhysicalDeviceFeatures enableFeats{};
+  enableFeats.samplerAnisotropy = supportedFeats.samplerAnisotropy;
+  dci.pEnabledFeatures = &enableFeats;
   VK_CHECK(vkCreateDevice(phys_, &dci, nullptr, &device_));
   vkGetDeviceQueue(device_, queueFamily_, 0, &queue_);
 
@@ -521,13 +529,15 @@ bool VulkanDevice::createImage(uint32_t w, uint32_t h, VkFormat format, VkImageT
 // ---------------- 资源 ----------------
 
 /// 创建缓冲：usage 映射 Vulkan usage 位。
-/// P0 简化：内存统一 HOST_VISIBLE|COHERENT（可直写直读，性能非最优；
-/// P1 再引入 device-local + staging 路径）。
+/// hostWrite/hostRead 任一 → HOST_VISIBLE|COHERENT(可直写直读);
+/// 否则 DEVICE_LOCAL(渲染最快),初始数据经 stagingUploadBuffer 上传。
 BufferHandle VulkanDevice::createBuffer(const BufferDesc& desc) {
   VkBufferUsageFlags usage = 0;
   if (hasFlag(desc.usage, BufferUsage::Vertex)) usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
   if (hasFlag(desc.usage, BufferUsage::Index)) usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
   if (hasFlag(desc.usage, BufferUsage::Uniform)) usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+  const bool hostVisible = desc.hostWrite || desc.hostRead;
+  if (!hostVisible) usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;  // staging 拷贝目标
 
   VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bci.size = desc.size;
@@ -538,29 +548,88 @@ BufferHandle VulkanDevice::createBuffer(const BufferDesc& desc) {
 
   VkMemoryRequirements req;
   vkGetBufferMemoryRequirements(device_, buffer, &req);
-  // P0 简化：全部 HOST_VISIBLE|COHERENT（P1 再引入 device-local + staging）
+  VkMemoryPropertyFlags props =
+      hostVisible ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                  : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
   VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   mai.allocationSize = req.size;
-  mai.memoryTypeIndex =
-      findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, props);
   VkDeviceMemory memory;
   if (mai.memoryTypeIndex == UINT32_MAX ||
       vkAllocateMemory(device_, &mai, nullptr, &memory) != VK_SUCCESS ||
       vkBindBufferMemory(device_, buffer, memory, 0) != VK_SUCCESS) {
+    vkDestroyBuffer(device_, buffer, nullptr);
     return {};
   }
   BufferHandle h(nextId_++);
-  buffers_.emplace(h, BufferRec{buffer, memory});
-  if (desc.data) updateBuffer(h, desc.data, desc.size, 0);
+  buffers_.emplace(h, BufferRec{buffer, memory, hostVisible});
+  if (desc.data) {
+    if (hostVisible) {
+      updateBuffer(h, desc.data, desc.size, 0);
+    } else if (!stagingUploadBuffer(h, desc.data, desc.size)) {
+      destroyBuffer(h);
+      return {};
+    }
+  }
   return h;
 }
 
+/// device-local 缓冲的 staging 上传:临时 host 缓冲 → 单命令拷贝 → 等队列空闲。
+bool VulkanDevice::stagingUploadBuffer(BufferHandle dst, const void* data, uint64_t size) {
+  auto it = buffers_.find(dst);
+  if (it == buffers_.end()) return false;
+  VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bci.size = size;
+  bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  VkBuffer staging = VK_NULL_HANDLE;
+  VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+  bool ok = vkCreateBuffer(device_, &bci, nullptr, &staging) == VK_SUCCESS;
+  if (ok) {
+    VkMemoryRequirements sreq;
+    vkGetBufferMemoryRequirements(device_, staging, &sreq);
+    VkMemoryAllocateInfo smai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    smai.allocationSize = sreq.size;
+    smai.memoryTypeIndex = findMemoryType(sreq.memoryTypeBits,
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ok = smai.memoryTypeIndex != UINT32_MAX &&
+         vkAllocateMemory(device_, &smai, nullptr, &stagingMem) == VK_SUCCESS &&
+         vkBindBufferMemory(device_, staging, stagingMem, 0) == VK_SUCCESS;
+  }
+  if (ok) {
+    void* mapped = nullptr;
+    vkMapMemory(device_, stagingMem, 0, size, 0, &mapped);
+    memcpy(mapped, data, size);
+    vkUnmapMemory(device_, stagingMem);
+    vkResetCommandBuffer(cmd_, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd_, &bi);
+    VkBufferCopy copy{0, 0, size};
+    vkCmdCopyBuffer(cmd_, staging, it->second.buffer, 1, &copy);
+    vkEndCommandBuffer(cmd_);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd_;
+    vkQueueSubmit(queue_, 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(queue_);
+  }
+  if (staging) vkDestroyBuffer(device_, staging, nullptr);
+  if (stagingMem) vkFreeMemory(device_, stagingMem, nullptr);
+  if (!ok) RD_LOGE("rhi.vk", "stagingUploadBuffer 失败");
+  return ok;
+}
+
 /// 更新缓冲子区间：map → memcpy → unmap（COHERENT 无需 flush）。
+/// 仅 hostVisible 缓冲可更新;device-local 缓冲拒绝并记日志。
 void VulkanDevice::updateBuffer(BufferHandle buffer, const void* data, uint64_t size,
                                 uint64_t offset) {
   auto it = buffers_.find(buffer);
   if (it == buffers_.end()) return;
+  if (!it->second.hostVisible) {
+    RD_LOGE("rhi.vk", "updateBuffer 作用于 device-local 缓冲(须 hostWrite=true 创建)");
+    return;
+  }
   void* mapped = nullptr;
   vkMapMemory(device_, it->second.memory, offset, size, 0, &mapped);
   memcpy(mapped, data, size);
@@ -984,6 +1053,12 @@ SamplerHandle VulkanDevice::createSampler(const SamplerDesc& desc) {
   // lodMaxClamp 默认 FLT_MAX、GLES 的 GL_TEXTURE_MAX_LOD 默认 1000，均不钳）。
   // VK_LOD_CLAMP_NONE(=1000.0f) 表示不钳上界，与其余后端行为对齐。
   sci.maxLod = VK_LOD_CLAMP_NONE;
+  // 各向异性:>1 且设备支持时启用,等级取请求与上限的较小值
+  if (desc.maxAnisotropy > 1 && caps_.supports(Capability::anisotropy)) {
+    sci.anisotropyEnable = VK_TRUE;
+    sci.maxAnisotropy = std::min<float>(float(desc.maxAnisotropy),
+                                        float(caps_.get(Capability::anisotropy)));
+  }
   VkSampler sampler;
   if (vkCreateSampler(device_, &sci, nullptr, &sampler) != VK_SUCCESS) return {};
   SamplerHandle h(nextId_++);

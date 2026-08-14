@@ -69,7 +69,20 @@ constexpr bool hasFlag(BufferUsage value, BufferUsage flag) {
 enum class IndexType { UInt16, UInt32 };
 /// 纹理维度/种类。
 enum class TextureType { Texture2D, Cube };
-/// 采样过滤方式。
+
+/// 纹理用途位标志。
+enum class TextureUsage : uint32_t {
+  Sampled = 1u << 0,                 ///< 可被 shader 采样(默认)
+  RenderTargetAttachment = 1u << 1,  ///< 可作为渲染目标附件(cube face/mip 渲染)
+};
+/// TextureUsage 位或运算。
+constexpr TextureUsage operator|(TextureUsage a, TextureUsage b) {
+  return static_cast<TextureUsage>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+}
+/// 查询 value 是否包含 flag 位。
+constexpr bool hasFlag(TextureUsage value, TextureUsage flag) {
+  return (static_cast<uint32_t>(value) & static_cast<uint32_t>(flag)) != 0;
+};/// 采样过滤方式。
 enum class Filter { Nearest, Linear };
 /// 寻址（wrap）模式。
 enum class WrapMode { Clamp, Repeat };
@@ -92,7 +105,11 @@ struct ClearColor {
 struct BufferDesc {
   uint64_t size = 0;                          ///< 字节数
   BufferUsage usage = BufferUsage::Vertex;    ///< 用途位标志
-  const void* data = nullptr;                 ///< 非空则创建时随带上传（大小须等于 size）
+  /// CPU 频繁写(动态 uniform/顶点)。false → device-local(渲染最快),
+  /// 初始数据经内部 staging 上传,且之后 updateBuffer 会被拒绝(记日志)。
+  bool hostWrite = false;
+  bool hostRead = false;                      ///< CPU 回读(staging/截图用途)
+  const void* data = nullptr;                 ///< 非空则创建时随带上传(大小须等于 size)
 };
 
 /// 着色器模块创建参数。
@@ -135,6 +152,8 @@ struct PipelineDesc {
 /// 纹理创建参数。
 struct TextureDesc {
   TextureType type = TextureType::Texture2D;  ///< 2D 或 Cube
+  /// 用途位标志;作为渲染目标附件(cube face/mip 渲染)须带 RenderTargetAttachment。
+  TextureUsage usage = TextureUsage::Sampled;
   uint32_t width = 0;                         ///< 像素宽（Cube 须等于 height）
   uint32_t height = 0;                        ///< 像素高
   Format format = Format::RGBA8_UNORM;        ///< 像素格式
@@ -154,6 +173,8 @@ struct SamplerDesc {
   WrapMode wrapU = WrapMode::Repeat;    ///< U 向寻址
   WrapMode wrapV = WrapMode::Repeat;    ///< V 向寻址
   WrapMode wrapW = WrapMode::Repeat;    ///< W 向寻址（cube 用）
+  /// 各向异性等级;>1 且 caps().anisotropy 支持时启用(取两者较小值)。
+  uint32_t maxAnisotropy = 1;
 };
 
 /// 离屏渲染目标创建参数。

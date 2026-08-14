@@ -19,6 +19,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <dispatch/dispatch.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -51,7 +52,7 @@ MTLVertexFormat toMTLVertexFormat(Format f) {
 
 // ---- 资源记录（句柄表的 value）：持有 ObjC 对象 + 渲染所需的状态缓存 ----
 
-struct BufferRec { id<MTLBuffer> buffer; };
+struct BufferRec { id<MTLBuffer> buffer; bool hostVisible = false; };
 struct ShaderRec { id<MTLLibrary> library; std::string entry; };  ///< entry=入口名（约定 main0）
 struct PipelineRec { id<MTLRenderPipelineState> state; MTLPrimitiveType topology; MTLCullMode cull; };
 struct TargetRec { id<MTLTexture> color; uint32_t width; uint32_t height; };
@@ -125,22 +126,44 @@ public:
   Backend backend() const override { return Backend::Metal; }
   const DeviceCaps& caps() const override { return caps_; }
 
-  /// 创建缓冲。MTLResourceStorageModeShared：CPU/GPU 共享可见（Apple 统一内存），
-  /// 因此 desc.data 可直接 memcpy 上传，updateBuffer 也直接写。
+  /// 创建缓冲。hostWrite/hostRead → Shared(CPU/GPU 共享,可直写直读);
+  /// 否则 Private(GPU 独占,渲染最快),初始数据经临时 Shared 缓冲 blit 上传。
   BufferHandle createBuffer(const BufferDesc& desc) override {
-    id<MTLBuffer> b = [device_ newBufferWithLength:desc.size
-                                           options:MTLResourceStorageModeShared];
+    const bool hostVisible = desc.hostWrite || desc.hostRead;
+    id<MTLBuffer> b =
+        [device_ newBufferWithLength:desc.size
+                             options:hostVisible ? MTLResourceStorageModeShared
+                                                 : MTLResourceStorageModePrivate];
     if (!b) return {};
-    if (desc.data) memcpy(b.contents, desc.data, desc.size);
+    if (desc.data) {
+      if (hostVisible) {
+        memcpy(b.contents, desc.data, desc.size);
+      } else {
+        // Private 存储:经临时 Shared 缓冲 blit 上传(串行等完成,P0 风格)
+        id<MTLBuffer> staging = [device_ newBufferWithBytes:desc.data
+                                                     length:desc.size
+                                                    options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cb = [queue_ commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromBuffer:staging sourceOffset:0 toBuffer:b destinationOffset:0 size:desc.size];
+        [blit endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+      }
+    }
     BufferHandle h(nextId_++);
-    buffers_.emplace(h, BufferRec{b});
+    buffers_.emplace(h, BufferRec{b, hostVisible});
     return h;
   }
 
-  /// 更新缓冲子区间；无效句柄安全忽略（与其他后端行为一致）。
+  /// 更新缓冲子区间；无效句柄安全忽略。仅 hostVisible 缓冲可更新。
   void updateBuffer(BufferHandle buffer, const void* data, uint64_t size, uint64_t offset) override {
     auto it = buffers_.find(buffer);
     if (it == buffers_.end()) return;
+    if (!it->second.hostVisible) {
+      RD_LOGE("rhi.metal", "updateBuffer 作用于 Private 缓冲(须 hostWrite=true 创建)");
+      return;
+    }
     memcpy(static_cast<uint8_t*>(it->second.buffer.contents) + offset, data, size);
   }
 
@@ -332,6 +355,11 @@ public:
     sd.sAddressMode = toWrap(desc.wrapU);
     sd.tAddressMode = toWrap(desc.wrapV);
     sd.rAddressMode = toWrap(desc.wrapW);
+    // 各向异性:>1 且设备支持时启用,等级取请求与上限的较小值
+    if (desc.maxAnisotropy > 1 && caps_.supports(Capability::anisotropy)) {
+      sd.maxAnisotropy = NSUInteger(std::min(desc.maxAnisotropy,
+                                             caps_.get(Capability::anisotropy)));
+    }
     id<MTLSamplerState> sampler = [device_ newSamplerStateWithDescriptor:sd];
     if (!sampler) return {};
     SamplerHandle h(nextId_++);

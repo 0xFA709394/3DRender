@@ -23,9 +23,11 @@
 #include <GLES2/gl2ext.h>
 #include <android/native_window.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -151,9 +153,10 @@ GLint toGLAttribSize(Format f) {
 class GLESDevice;
 
 /**
- * GLES 命令缓冲实现。
- * GL 是立即执行模型，没有真正的"命令缓冲"：这里把绑定调用记录为局部状态，
- * draw 时统一落地（顶点属性指针在 draw 前由 applyVertexState 重建）。
+ * GLES 命令缓冲实现：延迟回放模型。
+ * GL 没有真正的"命令缓冲"：录制期把每个调用存为闭包(状态按值快照),
+ * submit 时统一回放——与 Vulkan/Metal 的"录制/提交"两阶段语义对齐,
+ * 错误检查收敛到 submit 边界,也为后续 pass 排序/去重打底。
  */
 class GLESCommandBuffer final : public CommandBuffer {
 public:
@@ -171,20 +174,32 @@ public:
                      uint32_t firstInstance) override;
   void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
                             uint32_t instanceCount, uint32_t firstInstance) override;
-  /// GL 立即执行模型无需结束 pass 的动作，空实现。
+  /// pass 结束无动作(回放模型下清屏/绑定都已在 beginRenderPass 闭包内)。
   void endRenderPass() override {}
 
+  /// 回放全部已录命令并清空(submit 调用)。
+  void replay() {
+    for (auto& c : cmds_) c();
+    cmds_.clear();
+  }
+  /// 丢弃未提交命令(acquire 时防残留)。
+  void reset() { cmds_.clear(); }
+
 private:
-  void applyVertexState();  ///< draw 前按当前管线布局重建顶点属性指针
+  /// draw 回放前按快照重建顶点属性指针(无 VAO 缓存)。
+  static void applyVertexState(GLESDevice* device, const PipelineRec& pipe,
+                               const std::array<BufferHandle, 8>& vbs,
+                               const std::array<uint64_t, 8>& offs);
 
   GLESDevice* device_;
-  TargetRec current_{};                 ///< 当前 render pass 的目标
+  TargetRec current_{};                 ///< 当前 render pass 的目标(录制期快照)
   PipelineRec pipeline_{};              ///< 当前绑定管线的缓存
-  BufferHandle vertexBuffers_[8];       ///< 顶点缓冲绑定状态（binding 槽位上限 8）
-  uint64_t vertexOffsets_[8] = {};
-  BufferHandle indexBuffer_;            ///< 索引缓冲绑定状态（drawIndexed 时使用）
+  std::array<BufferHandle, 8> vertexBuffers_{};   ///< 顶点缓冲绑定状态
+  std::array<uint64_t, 8> vertexOffsets_{};
+  BufferHandle indexBuffer_;            ///< 索引缓冲绑定状态
   uint64_t indexOffset_ = 0;
   IndexType indexType_ = IndexType::UInt16;
+  std::vector<std::function<void()>> cmds_;       ///< 已录制命令(submit 回放)
 };
 
 class GLESDevice final : public Device {
@@ -211,9 +226,19 @@ public:
   SamplerHandle createSampler(const SamplerDesc& desc) override;
   void destroySampler(SamplerHandle sampler) override;
   bool readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) override;
-  /// GL 立即执行模型无需获取/提交命令：直接返回设备内唯一命令缓冲。
-  CommandBuffer* acquireCommandBuffer() override { return &cmdBuf_; }
-  void submit(CommandBuffer* cmd) override;
+  /// 取命令缓冲:丢弃可能未提交的残留命令,返回设备内唯一实例。
+  CommandBuffer* acquireCommandBuffer() override {
+    cmdBuf_.reset();
+    return &cmdBuf_;
+  }
+  /// 提交:统一回放已录命令;错误检查收敛到此边界(debug 构建)。
+  void submit(CommandBuffer*) override {
+    cmdBuf_.replay();
+#ifndef NDEBUG
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) RD_LOGE("rhi.gles", "GL 错误 0x%x @submit", err);
+#endif
+  }
   void waitIdle() override;
   /// 帧括号。GL 删除语义(glDelete* 标记后不再被引用时释放)使资源销毁天然安全,
   /// 退休队列在 GLES 上仅作形式统一:endFrame 立即确认本帧完成。
@@ -289,46 +314,48 @@ private:
 void GLESCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear) {
   TargetRec t;
   if (!device_->target(target, t)) return;
-  current_ = t;
-  // 每帧开始都确保 current 正确：updateBuffer 等操作可能已把 current 切到 pbuffer
-  if (t.isSwapchain) {
-    device_->makeCurrent(t.surface);
-  } else {
-    device_->ensureOffscreenCurrent();
-  }
-  glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
-  glViewport(0, 0, GLsizei(t.width), GLsizei(t.height));
-  glClearColor(clear.r, clear.g, clear.b, clear.a);
-  glClear(GL_COLOR_BUFFER_BIT);
-  glDisable(GL_DEPTH_TEST);  // 深度测试未实现（P1 引入），固定关闭
+  current_ = t;  // 录制期快照(供状态查询)
+  // GL 调用全部延迟到回放;surface 切换也在回放期(渲染线程)执行
+  cmds_.emplace_back([this, t, clear] {
+    if (t.isSwapchain) {
+      device_->makeCurrent(t.surface);
+    } else {
+      device_->ensureOffscreenCurrent();
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
+    glViewport(0, 0, GLsizei(t.width), GLsizei(t.height));
+    glClearColor(clear.r, clear.g, clear.b, clear.a);
+    glClear(GL_COLOR_BUFFER_BIT);
+  });
 }
 
 void GLESCommandBuffer::bindPipeline(PipelineHandle pipeline) {
   PipelineRec rec;
   if (!device_->pipeline(pipeline, rec)) return;
-  pipeline_ = rec;
-  glUseProgram(rec.program);
-  // GL 剔除是全局状态而非管线对象：绑管线时立即落地。
-  if (rec.cull == CullMode::None) {
-    glDisable(GL_CULL_FACE);
-  } else {
-    glEnable(GL_CULL_FACE);
-    glCullFace(rec.cull == CullMode::Back ? GL_BACK : GL_FRONT);
-    glFrontFace(GL_CCW);
-  }
-  // 混合同理:全局状态,绑管线时落地
-  if (rec.blend.enable) {
-    glEnable(GL_BLEND);
-    glBlendFuncSeparate(toGLBlendFactor(rec.blend.srcColor),
-                        toGLBlendFactor(rec.blend.dstColor),
-                        toGLBlendFactor(rec.blend.srcAlpha),
-                        toGLBlendFactor(rec.blend.dstAlpha));
-  } else {
-    glDisable(GL_BLEND);
-  }
+  pipeline_ = rec;  // 录制期缓存(draw 快照用)
+  cmds_.emplace_back([rec] {
+    glUseProgram(rec.program);
+    // GL 剔除/混合是全局状态而非管线对象:绑管线时(回放期)落地
+    if (rec.cull == CullMode::None) {
+      glDisable(GL_CULL_FACE);
+    } else {
+      glEnable(GL_CULL_FACE);
+      glCullFace(rec.cull == CullMode::Back ? GL_BACK : GL_FRONT);
+      glFrontFace(GL_CCW);
+    }
+    if (rec.blend.enable) {
+      glEnable(GL_BLEND);
+      glBlendFuncSeparate(toGLBlendFactor(rec.blend.srcColor),
+                          toGLBlendFactor(rec.blend.dstColor),
+                          toGLBlendFactor(rec.blend.srcAlpha),
+                          toGLBlendFactor(rec.blend.dstAlpha));
+    } else {
+      glDisable(GL_BLEND);
+    }
+  });
 }
 
-/// 仅记录绑定状态（GL 顶点属性在 draw 前的 applyVertexState 统一设置）。
+/// 仅记录绑定状态（GL 顶点属性在 draw 回放的 applyVertexState 统一设置）。
 void GLESCommandBuffer::bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) {
   vertexBuffers_[binding] = buffer;
   vertexOffsets_[binding] = offset;
@@ -341,12 +368,15 @@ void GLESCommandBuffer::bindIndexBuffer(BufferHandle buffer, uint64_t offset, In
   indexType_ = type;
 }
 
-/// 绑定约定：uniform slot N ↔ GL_UNIFORM_BUFFER binding N。
+/// 绑定约定：uniform slot N ↔ GL_UNIFORM_BUFFER binding N;录制期解析 GL id,回放期落地。
 void GLESCommandBuffer::bindUniformBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset,
                                           uint64_t size) {
   const BufferRec* rec = device_->bufferRec(buffer);
   if (!rec) return;
-  glBindBufferRange(GL_UNIFORM_BUFFER, slot, rec->buffer, GLintptr(offset), GLsizeiptr(size));
+  GLuint glBuf = rec->buffer;
+  cmds_.emplace_back([slot, glBuf, offset, size] {
+    glBindBufferRange(GL_UNIFORM_BUFFER, slot, glBuf, GLintptr(offset), GLsizeiptr(size));
+  });
 }
 
 /// 纹理绑定:slot N ↔ 纹理单元 N + glBindSampler;sampler uniform texN 写入单元号。
@@ -355,38 +385,60 @@ void GLESCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
   const TextureRec* tex = device_->textureRec(texture);
   GLuint sam = device_->samplerGl(sampler);
   if (!tex || sam == 0) return;
-  glActiveTexture(GL_TEXTURE0 + slot);
-  glBindTexture(tex->target, tex->tex);
-  glBindSampler(slot, sam);
-  char name[8];
-  snprintf(name, sizeof(name), "tex%u", slot);
-  GLint loc = glGetUniformLocation(pipeline_.program, name);
-  if (loc >= 0) glUniform1i(loc, GLint(slot));
+  TextureRec t = *tex;              // 快照(target/tex id)
+  GLuint program = pipeline_.program;  // 当前管线(bindTexture 须在 bindPipeline 后)
+  cmds_.emplace_back([slot, t, sam, program] {
+    glActiveTexture(GL_TEXTURE0 + slot);
+    glBindTexture(t.target, t.tex);
+    glBindSampler(slot, sam);
+    char name[8];
+    snprintf(name, sizeof(name), "tex%u", slot);
+    GLint loc = glGetUniformLocation(program, name);
+    if (loc >= 0) glUniform1i(loc, GLint(slot));
+  });
 }
 
 void GLESCommandBuffer::draw(uint32_t vertexCount, uint32_t firstVertex) {
-  applyVertexState();
-  glDrawArrays(pipeline_.topology, GLint(firstVertex), GLsizei(vertexCount));
+  PipelineRec pipe = pipeline_;                 // 快照
+  auto vbs = vertexBuffers_;
+  auto offs = vertexOffsets_;
+  cmds_.emplace_back([this, pipe, vbs, offs, vertexCount, firstVertex] {
+    applyVertexState(device_, pipe, vbs, offs);
+    glDrawArrays(pipe.topology, GLint(firstVertex), GLsizei(vertexCount));
+  });
 }
 
 /// 索引绘制。vertexOffset（baseVertex）当前未支持——参数被忽略
 /// （ES3 无 glDrawElementsBaseVertex，需要时需用 ES3.2 或扩展）。
 void GLESCommandBuffer::drawIndexed(uint32_t indexCount, uint32_t firstIndex, int32_t) {
-  applyVertexState();
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, device_->buffer(indexBuffer_));
-  const bool u16 = indexType_ == IndexType::UInt16;
-  glDrawElements(pipeline_.topology, GLsizei(indexCount),
-                 u16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
-                 reinterpret_cast<const void*>(uintptr_t(indexOffset_ + firstIndex * (u16 ? 2 : 4))));
+  PipelineRec pipe = pipeline_;
+  auto vbs = vertexBuffers_;
+  auto offs = vertexOffsets_;
+  GLuint ib = device_->buffer(indexBuffer_);    // 录制期解析 GL id
+  uint64_t ioff = indexOffset_;
+  IndexType itype = indexType_;
+  cmds_.emplace_back([this, pipe, vbs, offs, ib, ioff, itype, indexCount, firstIndex] {
+    applyVertexState(device_, pipe, vbs, offs);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib);
+    const bool u16 = itype == IndexType::UInt16;
+    glDrawElements(pipe.topology, GLsizei(indexCount),
+                   u16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
+                   reinterpret_cast<const void*>(uintptr_t(ioff + firstIndex * (u16 ? 2 : 4))));
+  });
 }
 
 void GLESCommandBuffer::drawInstanced(uint32_t vertexCount, uint32_t firstVertex,
                                       uint32_t instanceCount, uint32_t firstInstance) {
   if (firstInstance != 0)
     RD_LOGW("rhi.gles", "ES3.0 不支持 firstInstance,按 0 处理");
-  applyVertexState();
-  glDrawArraysInstanced(pipeline_.topology, GLint(firstVertex), GLsizei(vertexCount),
-                        GLsizei(instanceCount));
+  PipelineRec pipe = pipeline_;
+  auto vbs = vertexBuffers_;
+  auto offs = vertexOffsets_;
+  cmds_.emplace_back([this, pipe, vbs, offs, vertexCount, firstVertex, instanceCount] {
+    applyVertexState(device_, pipe, vbs, offs);
+    glDrawArraysInstanced(pipe.topology, GLint(firstVertex), GLsizei(vertexCount),
+                          GLsizei(instanceCount));
+  });
 }
 
 void GLESCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex,
@@ -394,30 +446,41 @@ void GLESCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t first
                                              uint32_t firstInstance) {
   if (vertexOffset != 0 || firstInstance != 0)
     RD_LOGW("rhi.gles", "ES3.0 不支持 baseVertex/baseInstance,按 0 处理");
-  applyVertexState();
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, device_->buffer(indexBuffer_));
-  const bool u16 = indexType_ == IndexType::UInt16;
-  glDrawElementsInstanced(pipeline_.topology, GLsizei(indexCount),
-                          u16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
-                          reinterpret_cast<const void*>(uintptr_t(indexOffset_ + firstIndex * (u16 ? 2 : 4))),
-                          GLsizei(instanceCount));
+  PipelineRec pipe = pipeline_;
+  auto vbs = vertexBuffers_;
+  auto offs = vertexOffsets_;
+  GLuint ib = device_->buffer(indexBuffer_);
+  uint64_t ioff = indexOffset_;
+  IndexType itype = indexType_;
+  cmds_.emplace_back([this, pipe, vbs, offs, ib, ioff, itype, indexCount, firstIndex,
+                      instanceCount] {
+    applyVertexState(device_, pipe, vbs, offs);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib);
+    const bool u16 = itype == IndexType::UInt16;
+    glDrawElementsInstanced(pipe.topology, GLsizei(indexCount),
+                            u16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
+                            reinterpret_cast<const void*>(
+                                uintptr_t(ioff + firstIndex * (u16 ? 2 : 4))),
+                            GLsizei(instanceCount));
+  });
 }
 
-/// 每次 draw 前按当前管线布局重建全部顶点属性指针（P0 无 VAO 缓存的最简实现）。
-/// divisor 按 binding 的 stepRate 显式设置(状态有粘性,必须每次覆盖)。
-void GLESCommandBuffer::applyVertexState() {
-  for (const auto& a : pipeline_.attribs) {
+/// 回放期按快照重建全部顶点属性指针;divisor 按 stepRate 显式覆盖(状态有粘性)。
+void GLESCommandBuffer::applyVertexState(GLESDevice* device, const PipelineRec& pipe,
+                                         const std::array<BufferHandle, 8>& vbs,
+                                         const std::array<uint64_t, 8>& offs) {
+  for (const auto& a : pipe.attribs) {
     glEnableVertexAttribArray(a.location);
-    glBindBuffer(GL_ARRAY_BUFFER, device_->buffer(vertexBuffers_[a.binding]));
+    glBindBuffer(GL_ARRAY_BUFFER, device->buffer(vbs[a.binding]));
     // 在 bindings 中线性查找该属性所在槽位的 stride 与 stepRate
     uint32_t stride = 0;
     VertexStepRate rate = VertexStepRate::Vertex;
-    for (const auto& b : pipeline_.bindings) {
+    for (const auto& b : pipe.bindings) {
       if (b.binding == a.binding) { stride = b.stride; rate = b.stepRate; }
     }
     glVertexAttribPointer(a.location, toGLAttribSize(a.format), toGLAttribType(a.format),
                           a.format == Format::RGBA8_UNORM ? GL_TRUE : GL_FALSE, GLsizei(stride),
-                          reinterpret_cast<const void*>(uintptr_t(vertexOffsets_[a.binding] + a.offset)));
+                          reinterpret_cast<const void*>(uintptr_t(offs[a.binding] + a.offset)));
     glVertexAttribDivisor(a.location, rate == VertexStepRate::Instance ? 1 : 0);
   }
 }
@@ -890,8 +953,6 @@ bool GLESDevice::readbackTarget(TargetHandle target, void* outRGBA8, uint64_t ou
   return true;
 }
 
-/// GL 立即执行模型：命令在录制时已落地，submit 无需动作。
-void GLESDevice::submit(CommandBuffer*) {}
 /// 阻塞直到 GL 管线排空;附加清空退休队列。
 void GLESDevice::waitIdle() {
   glFinish();

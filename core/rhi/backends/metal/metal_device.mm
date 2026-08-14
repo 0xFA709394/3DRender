@@ -148,14 +148,25 @@ PipelineKey makePipelineKey(const PipelineDesc& desc) {
 struct BufferRec { id<MTLBuffer> buffer; bool hostVisible = false; };
 struct ShaderRec { id<MTLLibrary> library; std::string entry; };  ///< entry=入口名（约定 main0）
 struct PipelineRec { id<MTLRenderPipelineState> state; MTLPrimitiveType topology; MTLCullMode cull; };
-struct TargetRec { id<MTLTexture> color; uint32_t width; uint32_t height; };
+struct TargetRec {
+  id<MTLTexture> color;
+  uint32_t width;
+  uint32_t height;
+  bool textureBacked = false;  ///< 挂载已有纹理的 face/mip(资源归纹理所有)
+  uint32_t face = 0, mip = 0;
+};
 struct SwapChainRec {
   CAMetalLayer* layer = nil;
   uint32_t width = 0, height = 0;
   id<CAMetalDrawable> drawable = nil;   ///< 当前帧 drawable（acquire 与 present 之间有效）
   TargetHandle currentTarget;           ///< 当前帧 drawable 纹理注册的 TargetHandle（跨帧复用句柄值）
 };
-struct TextureRec { id<MTLTexture> texture; };
+struct TextureRec {
+  id<MTLTexture> texture;
+  uint32_t width = 0, height = 0, mipLevels = 1;
+  Format format = Format::RGBA8_UNORM;
+  bool isCube = false;
+};
 struct SamplerRec { id<MTLSamplerState> sampler; };
 
 class MetalDevice;
@@ -379,8 +390,26 @@ public:
     pipelines_.erase(pipeline);
   }
 
-  /// 创建离屏目标：单张颜色纹理。Shared 存储（macOS 统一内存）便于 readback 直接读取。
+  /// 创建离屏目标。colorFromTexture 非空时挂载该纹理的 face/mip 子资源为颜色附件;
+  /// 否则自建单张颜色纹理(Shared 存储,便于 readback 直接读取)。
   TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) override {
+    if (desc.colorFromTexture.valid()) {
+      auto it = textures_.find(desc.colorFromTexture);
+      if (it == textures_.end()) return {};
+      if (it->second.isCube && !caps_.supports(Capability::cube_render_target)) return {};
+      if (desc.face >= (it->second.isCube ? 6u : 1u) || desc.mipLevel >= it->second.mipLevels)
+        return {};
+      TargetHandle h(nextId_++);
+      TargetRec rec;
+      rec.color = it->second.texture;  // 共享底层纹理(ARC 强引用)
+      rec.width = desc.width;
+      rec.height = desc.height;
+      rec.textureBacked = true;
+      rec.face = desc.face;
+      rec.mip = desc.mipLevel;
+      targets_.emplace(h, rec);
+      return h;
+    }
     MTLTextureDescriptor* td =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:toMTLPixelFormat(desc.colorFormat)
                                                            width:desc.width
@@ -434,6 +463,8 @@ public:
     }
     td.mipmapLevelCount = desc.mipLevels;
     td.usage = MTLTextureUsageShaderRead;
+    if (hasFlag(desc.usage, TextureUsage::RenderTargetAttachment))
+      td.usage |= MTLTextureUsageRenderTarget;
     td.storageMode = MTLStorageModeShared;
     id<MTLTexture> tex = [device_ newTextureWithDescriptor:td];
     if (!tex) return {};
@@ -467,7 +498,8 @@ public:
       }
     }
     TextureHandle h(nextId_++);
-    textures_.emplace(h, TextureRec{tex});
+    textures_.emplace(h, TextureRec{tex, desc.width, desc.height, desc.mipLevels, desc.format,
+                                    desc.type == TextureType::Cube});
     return h;
   }
 
@@ -477,6 +509,42 @@ public:
     id<MTLTexture> t = it->second.texture;
     textures_.erase(it);
     retire_.retire(frameIndex_, [t] { (void)t; });
+  }
+
+  /// 更新纹理子资源(slice=face,level=mip;数据为整层紧凑像素)。
+  void updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face, const void* data,
+                     uint64_t size) override {
+    auto it = textures_.find(tex);
+    if (it == textures_.end() || !data) return;
+    const TextureRec& tr = it->second;
+    if (mipLevel >= tr.mipLevels || face >= (tr.isCube ? 6u : 1u)) return;
+    uint32_t w = tr.width >> mipLevel, h = tr.height >> mipLevel;
+    if (w == 0) w = 1;
+    if (h == 0) h = 1;
+    const uint64_t need = uint64_t(w) * h * formatSize(tr.format);
+    if (size < need) {
+      RD_LOGE("rhi.metal", "updateTexture: 数据不足(需 %llu)", (unsigned long long)need);
+      return;
+    }
+    [tr.texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                  mipmapLevel:mipLevel
+                        slice:face
+                    withBytes:data
+                  bytesPerRow:w * formatSize(tr.format)
+                bytesPerImage:tr.isCube ? need : 0];
+  }
+
+  /// 生成全部 mip 链(blit encoder;Shared/Private 均可)。
+  bool generateMipmaps(TextureHandle tex) override {
+    auto it = textures_.find(tex);
+    if (it == textures_.end() || it->second.mipLevels < 2) return false;
+    id<MTLCommandBuffer> cb = [queue_ commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit generateMipmapsForTexture:it->second.texture];
+    [blit endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    return true;
   }
 
   /// 创建采样器：rhi 过滤/寻址枚举一一映射到 MTLSamplerDescriptor。
@@ -517,8 +585,8 @@ public:
   }
 
   /**
-   * 读出目标像素。仅支持 Shared 存储的离屏目标；swapchain drawable 纹理是
-   * Private 存储（framebufferOnly=YES），不支持直接读取，记警告返回 false。
+   * 读出目标像素。仅支持 Shared 存储的离屏目标;texture-backed 目标按 face/mip 读取。
+   * swapchain drawable 纹理是 Private 存储（framebufferOnly=YES），不支持直接读取。
    */
   bool readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) override {
     auto it = targets_.find(target);
@@ -532,8 +600,10 @@ public:
     waitIdle();  // 确保渲染完成再读
     [t.color getBytes:outRGBA8
           bytesPerRow:t.width * 4
+       bytesPerImage:uint64_t(t.width) * t.height * 4
            fromRegion:MTLRegionMake2D(0, 0, t.width, t.height)
-          mipmapLevel:0];
+          mipmapLevel:t.textureBacked ? t.mip : 0
+                slice:t.textureBacked ? t.face : 0];
     return true;
   }
 
@@ -683,12 +753,17 @@ private:
 
 // ---- MetalCommandBuffer 各命令的实现 ----
 
-/// 开始 render pass：以 Clear 加载动作绑定颜色附件，并设置全幅 viewport。
+/// 开始 render pass：以 Clear 加载动作绑定颜色附件，并设置全幅 viewport;
+/// texture-backed 目标按 face/mip 指定 slice/level。
 void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear) {
   TargetRec t;
   if (!device_->target(target, t)) return;
   MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
   rp.colorAttachments[0].texture = t.color;
+  if (t.textureBacked) {
+    rp.colorAttachments[0].slice = t.face;  // cube 面(2D 传 0)
+    rp.colorAttachments[0].level = t.mip;   // mip 级
+  }
   rp.colorAttachments[0].loadAction = MTLLoadActionClear;
   rp.colorAttachments[0].clearColor = MTLClearColorMake(clear.r, clear.g, clear.b, clear.a);
   rp.colorAttachments[0].storeAction = MTLStoreActionStore;

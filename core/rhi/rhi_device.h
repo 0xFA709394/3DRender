@@ -140,6 +140,11 @@ public:
    */
   virtual TextureHandle createTexture(const TextureDesc& desc) = 0;
   virtual void destroyTexture(TextureHandle texture) = 0;
+  /// 更新纹理子资源(2D 时 face 传 0);数据为整层紧凑像素(格式须与创建时一致)。
+  virtual void updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face,
+                             const void* data, uint64_t size) = 0;
+  /// 运行时生成全部 mip 链;能力门控,不支持/纹理无效/mip<2 返回 false。
+  virtual bool generateMipmaps(TextureHandle tex) = 0;
   /// 创建采样器（固定功能过滤/寻址状态）。
   virtual SamplerHandle createSampler(const SamplerDesc& desc) = 0;
   virtual void destroySampler(SamplerHandle sampler) = 0;

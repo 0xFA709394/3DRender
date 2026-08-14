@@ -208,8 +208,14 @@ struct SamplerDesc {
 struct OffscreenTargetDesc {
   uint32_t width = 0;                         ///< 像素宽
   uint32_t height = 0;                        ///< 像素高
-  Format colorFormat = Format::RGBA8_UNORM;   ///< 颜色附件格式
-  bool depth = false;                         ///< 是否附带 D32 深度附件
+  Format colorFormat = Format::RGBA8_UNORM;   ///< 自建颜色附件格式
+  bool depth = false;                         ///< 附带深度附件(P1 引入实现)
+  /// 非空:不自建颜色附件,改为挂载该纹理的指定子资源(face/mip)。
+  /// 纹理创建时须带 TextureUsage::RenderTargetAttachment;cube 纹理
+  /// 还需 caps() 支持 Capability::cube_render_target。
+  TextureHandle colorFromTexture;
+  uint32_t face = 0;                          ///< cube 面 0..5(+X,-X,+Y,-Y,+Z,-Z);2D 传 0
+  uint32_t mipLevel = 0;                      ///< 挂载的 mip 级
 };
 
 /// 设备创建参数。

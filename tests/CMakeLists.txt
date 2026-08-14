@@ -13,6 +13,7 @@ add_executable(rd_tests
   rhi/retire_test.cpp
   rhi/blend_test.cpp
   rhi/instancing_test.cpp
+  rhi/cube_target_test.cpp
   common/image.cpp
   common/image_test.cpp
   common/shader_code.cpp

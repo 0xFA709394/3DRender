@@ -103,9 +103,10 @@ GLenum toGLBlendFactor(BlendFactor f) {
 /// 渲染目标：离屏 FBO 或 swapchain 默认帧缓冲（fbo=0）。
 struct TargetRec {
   GLuint fbo = 0;       // 0 = 默认帧缓冲（swapchain）
-  GLuint colorTex = 0;  // 离屏纹理
+  GLuint colorTex = 0;  // 离屏自建颜色纹理(texture-backed 时为 0,附件归纹理所有)
   uint32_t width = 0, height = 0;
   bool isSwapchain = false;
+  bool textureBacked = false;  ///< 挂载已有纹理的 face/mip 子资源
   EGLSurface surface = EGL_NO_SURFACE; // swapchain target 专用：beginRenderPass 时切回窗口 surface
 };
 struct SwapChainRec {
@@ -204,6 +205,9 @@ public:
   void destroyTarget(TargetHandle target) override;
   TextureHandle createTexture(const TextureDesc& desc) override;
   void destroyTexture(TextureHandle texture) override;
+  void updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face, const void* data,
+                     uint64_t size) override;
+  bool generateMipmaps(TextureHandle tex) override;
   SamplerHandle createSampler(const SamplerDesc& desc) override;
   void destroySampler(SamplerHandle sampler) override;
   bool readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) override;
@@ -664,9 +668,37 @@ void GLESDevice::destroyPipeline(PipelineHandle pipeline) {
   pipelines_.erase(pipeline);
 }
 
-/// 创建离屏目标：RGBA8 颜色纹理挂到 FBO 的 COLOR_ATTACHMENT0（无深度附件）。
+/// 创建离屏目标。colorFromTexture 非空时挂载该纹理的 face/mip 为颜色附件;
+/// 否则自建 RGBA8 颜色纹理挂到 FBO 的 COLOR_ATTACHMENT0（无深度附件）。
 TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) {
   ensureOffscreenCurrent();
+  if (desc.colorFromTexture.valid()) {
+    auto it = textures_.find(desc.colorFromTexture);
+    if (it == textures_.end()) return {};
+    if (it->second.target == GL_TEXTURE_CUBE_MAP &&
+        !caps_.supports(Capability::cube_render_target))
+      return {};
+    TargetRec rec;
+    rec.width = desc.width;
+    rec.height = desc.height;
+    rec.textureBacked = true;
+    glGenFramebuffers(1, &rec.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, rec.fbo);
+    GLenum attachmentTarget = it->second.target == GL_TEXTURE_CUBE_MAP
+                                  ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + desc.face
+                                  : GL_TEXTURE_2D;
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, attachmentTarget,
+                           it->second.tex, GLint(desc.mipLevel));
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      RD_LOGE("rhi.gles", "texture-backed FBO 不完整");
+      glDeleteFramebuffers(1, &rec.fbo);
+      return {};
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    TargetHandle h(nextId_++);
+    targets_.emplace(h, rec);
+    return h;
+  }
   TargetRec rec;
   rec.width = desc.width;
   rec.height = desc.height;
@@ -690,13 +722,14 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
   return h;
 }
 
-/// 销毁离屏目标；swapchain 帧目标（fbo=0）无 GL 资源，直接忽略。
+/// 销毁离屏目标；swapchain 帧目标（fbo=0）无 GL 资源，直接忽略;
+/// texture-backed 只删 FBO(纹理归调用方)。
 void GLESDevice::destroyTarget(TargetHandle target) {
   auto it = targets_.find(target);
   if (it == targets_.end() || it->second.isSwapchain) return;
   ensureOffscreenCurrent();
   glDeleteFramebuffers(1, &it->second.fbo);
-  glDeleteTextures(1, &it->second.colorTex);
+  if (it->second.colorTex) glDeleteTextures(1, &it->second.colorTex);
   targets_.erase(it);
 }
 
@@ -796,6 +829,42 @@ void GLESDevice::destroySampler(SamplerHandle sampler) {
   ensureOffscreenCurrent();
   glDeleteSamplers(1, &it->second.sampler);
   samplers_.erase(it);
+}
+
+/// 更新纹理子资源(face/mip 定位;数据为整层紧凑像素,格式与创建时一致)。
+void GLESDevice::updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face,
+                               const void* data, uint64_t size) {
+  auto it = textures_.find(tex);
+  if (it == textures_.end() || !data) return;
+  const TextureRec& tr = it->second;
+  if (mipLevel >= tr.mipLevels || face >= (tr.target == GL_TEXTURE_CUBE_MAP ? 6u : 1u)) return;
+  uint32_t w = tr.width >> mipLevel, hgt = tr.height >> mipLevel;
+  if (w == 0) w = 1;
+  if (hgt == 0) hgt = 1;
+  const uint64_t need = uint64_t(w) * hgt * formatSize(tr.format);
+  if (size < need) {
+    RD_LOGE("rhi.gles", "updateTexture: 数据不足(需 %llu)", (unsigned long long)need);
+    return;
+  }
+  ensureOffscreenCurrent();
+  glBindTexture(tr.target, tr.tex);
+  GLenum faceTarget =
+      tr.target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : GL_TEXTURE_2D;
+  const bool rgba8 = tr.format == Format::RGBA8_UNORM;
+  glTexSubImage2D(faceTarget, GLint(mipLevel), 0, 0, GLsizei(w), GLsizei(hgt), GL_RGBA,
+                  rgba8 ? GL_UNSIGNED_BYTE : GL_FLOAT, data);
+  glBindTexture(tr.target, 0);
+}
+
+/// 生成全部 mip 链(ES3 核心能力)。
+bool GLESDevice::generateMipmaps(TextureHandle tex) {
+  auto it = textures_.find(tex);
+  if (it == textures_.end() || it->second.mipLevels < 2) return false;
+  ensureOffscreenCurrent();
+  glBindTexture(it->second.target, it->second.tex);
+  glGenerateMipmap(it->second.target);
+  glBindTexture(it->second.target, 0);
+  return true;
 }
 
 /**

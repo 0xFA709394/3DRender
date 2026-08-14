@@ -40,14 +40,61 @@ struct BufferRec {
   bool hostVisible = false;  ///< hostWrite/hostRead(行为一致性守卫用)
 };
 struct ShaderRec { GLuint shader = 0; ShaderStage stage; };
-/// 管线：GL program + 顶点布局缓存（draw 时重建属性指针用）+ 拓扑/剔除状态。
+/// 管线：GL program + 顶点布局缓存（draw 时重建属性指针用）+ 拓扑/剔除/混合状态。
 struct PipelineRec {
   GLuint program = 0;
   std::vector<VertexBinding> bindings;
   std::vector<VertexAttribute> attribs;
   GLenum topology = GL_TRIANGLES;
   CullMode cull = CullMode::None;
+  BlendDesc blend;
 };
+
+/// 管线缓存 key:影响 program 链接与状态的全部参数。
+struct PipelineKey {
+  uint32_t vs = 0, fs = 0;
+  uint32_t topology = 0, cull = 0;
+  bool depthTest = false, depthWrite = false;
+  bool blendEnable = false;
+  uint32_t srcColor = 0, dstColor = 0, srcAlpha = 0, dstAlpha = 0;
+  uint32_t colorFormat = 0;
+  uint32_t sampleCount = 1;
+  std::vector<VertexBinding> bindings;
+  std::vector<VertexAttribute> attribs;
+  bool operator==(const PipelineKey& o) const {
+    return vs == o.vs && fs == o.fs && topology == o.topology && cull == o.cull &&
+           depthTest == o.depthTest && depthWrite == o.depthWrite &&
+           blendEnable == o.blendEnable && srcColor == o.srcColor && dstColor == o.dstColor &&
+           srcAlpha == o.srcAlpha && dstAlpha == o.dstAlpha && colorFormat == o.colorFormat &&
+           sampleCount == o.sampleCount && bindings == o.bindings && attribs == o.attribs;
+  }
+};
+struct PipelineKeyHash {
+  size_t operator()(const PipelineKey& k) const {
+    size_t h = std::hash<uint64_t>()((uint64_t(k.vs) << 32) | k.fs);
+    auto mix = [&h](size_t v) { h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2); };
+    mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
+    mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
+    mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
+    for (const auto& b : k.bindings) mix((size_t(b.binding) << 8) | b.stride);
+    for (const auto& a : k.attribs)
+      mix((size_t(a.location) << 24) ^ (size_t(a.offset) << 8) ^ uint32_t(a.format) ^ a.binding);
+    return h;
+  }
+};
+
+/// rhi BlendFactor → GL 枚举映射。
+GLenum toGLBlendFactor(BlendFactor f) {
+  switch (f) {
+    case BlendFactor::Zero: return GL_ZERO;
+    case BlendFactor::One: return GL_ONE;
+    case BlendFactor::SrcAlpha: return GL_SRC_ALPHA;
+    case BlendFactor::OneMinusSrcAlpha: return GL_ONE_MINUS_SRC_ALPHA;
+    case BlendFactor::DstAlpha: return GL_DST_ALPHA;
+    case BlendFactor::OneMinusDstAlpha: return GL_ONE_MINUS_DST_ALPHA;
+  }
+  return GL_ONE;
+}
 /// 渲染目标：离屏 FBO 或 swapchain 默认帧缓冲（fbo=0）。
 struct TargetRec {
   GLuint fbo = 0;       // 0 = 默认帧缓冲（swapchain）
@@ -197,6 +244,8 @@ private:
   std::unordered_map<BufferHandle, BufferRec> buffers_;
   std::unordered_map<ShaderModuleHandle, ShaderRec> shaders_;
   std::unordered_map<PipelineHandle, PipelineRec> pipelines_;
+  /// 管线(program)缓存:缓存持有 GL program,句柄表只持引用
+  std::unordered_map<PipelineKey, GLuint, PipelineKeyHash> programCache_;
   std::unordered_map<TargetHandle, TargetRec> targets_;
   std::unordered_map<SwapChainHandle, SwapChainRec> swapChains_;
   GLESCommandBuffer cmdBuf_{this};      ///< 设备内唯一命令缓冲（单线程模型）
@@ -236,6 +285,16 @@ void GLESCommandBuffer::bindPipeline(PipelineHandle pipeline) {
     glEnable(GL_CULL_FACE);
     glCullFace(rec.cull == CullMode::Back ? GL_BACK : GL_FRONT);
     glFrontFace(GL_CCW);
+  }
+  // 混合同理:全局状态,绑管线时落地
+  if (rec.blend.enable) {
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(toGLBlendFactor(rec.blend.srcColor),
+                        toGLBlendFactor(rec.blend.dstColor),
+                        toGLBlendFactor(rec.blend.srcAlpha),
+                        toGLBlendFactor(rec.blend.dstAlpha));
+  } else {
+    glDisable(GL_BLEND);
   }
 }
 
@@ -369,10 +428,13 @@ void GLESDevice::ensureOffscreenCurrent() {
   if (current != pbuffer_) makeCurrent(pbuffer_);
 }
 
-/// 反初始化：解绑 context，销毁 pbuffer/context，终止 display。
+/// 反初始化：先删除缓存的 program(须有 current context),再解绑销毁 EGL 资源。
 /// 注意：窗口 surface 由 destroySwapChain 各自销毁，这里不处理。
 void GLESDevice::shutdownEGL() {
   if (display_ != EGL_NO_DISPLAY) {
+    makeCurrent(pbuffer_);  // 删除 GL 对象需要 current context
+    for (auto& kv : programCache_) glDeleteProgram(kv.second);
+    programCache_.clear();
     eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     if (pbuffer_ != EGL_NO_SURFACE) eglDestroySurface(display_, pbuffer_);
     if (context_ != EGL_NO_CONTEXT) eglDestroyContext(display_, context_);
@@ -456,14 +518,48 @@ void GLESDevice::destroyShaderModule(ShaderModuleHandle module) {
 }
 
 PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
-  // 深度附件尚未实现，先拒绝而非静默错误（与 Metal 后端一致）。
-  if (desc.depthTest) {
-    RD_LOGE("rhi.gles", "P0-2 不支持 depthTest（P1 引入深度附件）");
+  // 深度附件与 MSAA 尚未实现，先拒绝而非静默错误（与 Metal/Vulkan 一致）。
+  if (desc.depthTest || desc.depthWrite) {
+    RD_LOGE("rhi.gles", "深度附件 P1 引入,当前拒绝 depthTest/depthWrite");
+    return {};
+  }
+  if (desc.sampleCount != 1) {
+    RD_LOGE("rhi.gles", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
     return {};
   }
   auto vsIt = shaders_.find(desc.vertexShader);
   auto fsIt = shaders_.find(desc.fragmentShader);
   if (vsIt == shaders_.end() || fsIt == shaders_.end()) return {};
+
+  PipelineKey key;
+  key.vs = desc.vertexShader.value();
+  key.fs = desc.fragmentShader.value();
+  key.topology = uint32_t(desc.topology);
+  key.cull = uint32_t(desc.cullMode);
+  key.depthTest = desc.depthTest;
+  key.depthWrite = desc.depthWrite;
+  key.blendEnable = desc.blend.enable;
+  key.srcColor = uint32_t(desc.blend.srcColor);
+  key.dstColor = uint32_t(desc.blend.dstColor);
+  key.srcAlpha = uint32_t(desc.blend.srcAlpha);
+  key.dstAlpha = uint32_t(desc.blend.dstAlpha);
+  key.colorFormat = uint32_t(desc.colorFormat);
+  key.sampleCount = desc.sampleCount;
+  key.bindings = desc.vertexBindings;
+  key.attribs = desc.attributes;
+  if (auto it = programCache_.find(key); it != programCache_.end()) {
+    PipelineRec cached;
+    cached.program = it->second;
+    cached.bindings = desc.vertexBindings;
+    cached.attribs = desc.attributes;
+    cached.topology = toGLTopology(desc.topology);
+    cached.cull = desc.cullMode;
+    cached.blend = desc.blend;
+    PipelineHandle h(nextId_++);
+    pipelines_.emplace(h, cached);
+    return h;
+  }
+
   ensureOffscreenCurrent();
   GLuint program = glCreateProgram();
   glAttachShader(program, vsIt->second.shader);
@@ -483,23 +579,22 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
   if (blockIndex != GL_INVALID_INDEX) {
     glUniformBlockBinding(program, blockIndex, 0);
   }
+  programCache_.emplace(key, program);
   PipelineRec rec;
   rec.program = program;
   rec.bindings = desc.vertexBindings;
   rec.attribs = desc.attributes;
   rec.topology = toGLTopology(desc.topology);
   rec.cull = desc.cullMode;
+  rec.blend = desc.blend;
   PipelineHandle h(nextId_++);
   pipelines_.emplace(h, rec);
   return h;
 }
 
 void GLESDevice::destroyPipeline(PipelineHandle pipeline) {
-  auto it = pipelines_.find(pipeline);
-  if (it == pipelines_.end()) return;
-  ensureOffscreenCurrent();
-  glDeleteProgram(it->second.program);
-  pipelines_.erase(it);
+  // 只释放句柄引用;底层 program 由 programCache_ 持有(设备析构时统一删除)
+  pipelines_.erase(pipeline);
 }
 
 /// 创建离屏目标：RGBA8 颜色纹理挂到 FBO 的 COLOR_ATTACHMENT0（无深度附件）。

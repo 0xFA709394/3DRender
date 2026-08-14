@@ -112,7 +112,10 @@ struct PipelineKeyHash {
     mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
     mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
     mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
-    for (const auto& b : k.bindings) mix((size_t(b.binding) << 8) | b.stride);
+    for (const auto& b : k.bindings) {
+      mix((size_t(b.binding) << 8) | b.stride);
+      mix(uint32_t(b.stepRate));
+    }
     for (const auto& a : k.attribs)
       mix((size_t(a.location) << 24) ^ (size_t(a.offset) << 8) ^ uint32_t(a.format) ^ a.binding);
     return h;
@@ -173,6 +176,10 @@ public:
   void bindTexture(uint32_t slot, TextureHandle texture, SamplerHandle sampler) override;
   void draw(uint32_t vertexCount, uint32_t firstVertex) override;
   void drawIndexed(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset) override;
+  void drawInstanced(uint32_t vertexCount, uint32_t firstVertex, uint32_t instanceCount,
+                     uint32_t firstInstance) override;
+  void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
+                            uint32_t instanceCount, uint32_t firstInstance) override;
   void endRenderPass() override;
 
   MetalDevice* device_;                    ///< 回指设备（查句柄表）
@@ -345,7 +352,9 @@ public:
     }
     for (const auto& b : desc.vertexBindings) {
       vd.layouts[b.binding + 1].stride = b.stride;
-      vd.layouts[b.binding + 1].stepFunction = MTLVertexStepFunctionPerVertex;
+      vd.layouts[b.binding + 1].stepFunction =
+          b.stepRate == VertexStepRate::Instance ? MTLVertexStepFunctionPerInstance
+                                                 : MTLVertexStepFunctionPerVertex;
     }
     pd.vertexDescriptor = vd;
 
@@ -735,6 +744,29 @@ void MetalCommandBuffer::drawIndexed(uint32_t indexCount, uint32_t firstIndex, i
                         indexType:u16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32
                       indexBuffer:device_->buffer(indexBuffer_)
                 indexBufferOffset:indexOffset_ + firstIndex * (u16 ? 2 : 4)];
+}
+
+void MetalCommandBuffer::drawInstanced(uint32_t vertexCount, uint32_t firstVertex,
+                                       uint32_t instanceCount, uint32_t firstInstance) {
+  [encoder_ drawPrimitives:pipeline_.topology
+               vertexStart:firstVertex
+               vertexCount:vertexCount
+             instanceCount:instanceCount
+              baseInstance:firstInstance];
+}
+
+void MetalCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex,
+                                              int32_t vertexOffset, uint32_t instanceCount,
+                                              uint32_t firstInstance) {
+  const bool u16 = indexType_ == IndexType::UInt16;
+  [encoder_ drawIndexedPrimitives:pipeline_.topology
+                       indexCount:indexCount
+                        indexType:u16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32
+                      indexBuffer:device_->buffer(indexBuffer_)
+                indexBufferOffset:indexOffset_ + firstIndex * (u16 ? 2 : 4)
+                    instanceCount:instanceCount
+                       baseVertex:vertexOffset
+                     baseInstance:firstInstance];
 }
 
 void MetalCommandBuffer::endRenderPass() { [encoder_ endEncoding]; }

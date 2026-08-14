@@ -68,6 +68,13 @@ public:
   virtual void draw(uint32_t vertexCount, uint32_t firstVertex) = 0;
   /// 索引绘制：indexCount 个索引，起始索引 firstIndex，顶点偏移 vertexOffset。
   virtual void drawIndexed(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset) = 0;
+  /// 实例化非索引绘制。firstInstance 在 GLES(ES3.0) 不受支持,非 0 时记警告按 0 处理。
+  virtual void drawInstanced(uint32_t vertexCount, uint32_t firstVertex,
+                             uint32_t instanceCount, uint32_t firstInstance) = 0;
+  /// 实例化索引绘制;firstInstance 同上 GLES 限制。
+  virtual void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex,
+                                    int32_t vertexOffset, uint32_t instanceCount,
+                                    uint32_t firstInstance) = 0;
   /// 结束当前 render pass（与 beginRenderPass 配对）。
   virtual void endRenderPass() = 0;
 };

@@ -106,10 +106,24 @@ public:
       return false;
     }
     queue_ = [device_ newCommandQueue];
-    return queue_ != nil;
+    if (queue_ == nil) return false;
+
+    // ---- 能力上报(Apple GPU 家族判定)----
+    caps_.set(Capability::max_texture_size,
+              [device_ supportsFamily:MTLGPUFamilyApple3] ? 16384u : 8192u);
+    caps_.set(Capability::max_texture_slots, 8);
+    caps_.set(Capability::max_uniform_buffer_slots, 4);
+    caps_.set(Capability::instancing, 1);
+    caps_.set(Capability::msaa, 4);   // Apple 全家族支持 4x MSAA
+    caps_.set(Capability::depth_texture, 1);
+    caps_.set(Capability::cube_render_target, 1);
+    caps_.set(Capability::generate_mipmap, 1);
+    caps_.set(Capability::anisotropy, 16);  // Apple GPU 实际支持 16
+    return true;
   }
 
   Backend backend() const override { return Backend::Metal; }
+  const DeviceCaps& caps() const override { return caps_; }
 
   /// 创建缓冲。MTLResourceStorageModeShared：CPU/GPU 共享可见（Apple 统一内存），
   /// 因此 desc.data 可直接 memcpy 上传，updateBuffer 也直接写。
@@ -467,6 +481,7 @@ private:
   id<MTLCommandQueue> queue_ = nil;
   id<MTLCommandBuffer> lastCmd_ = nil;   ///< 最近提交的命令（waitIdle 等待对象）
   MetalCommandBuffer cmdBuf_{this};      ///< 设备内唯一命令缓冲（单线程模型）
+  DeviceCaps caps_;                      ///< 能力表(init 内上报)
   uint32_t nextId_ = 1;                  ///< 句柄分配器（1 起，0 留作无效）
   std::unordered_map<BufferHandle, BufferRec> buffers_;
   std::unordered_map<ShaderModuleHandle, ShaderRec> shaders_;

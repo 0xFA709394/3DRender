@@ -8,6 +8,7 @@
  * 错误处理：内核不使用异常；创建失败返回无效句柄并记日志。
  */
 #pragma once
+#include "rhi/rhi_capability.h"
 #include "rhi/rhi_types.h"
 #include <memory>
 
@@ -83,6 +84,8 @@ public:
   virtual ~Device() = default;
   /// 返回本设备的后端种类。
   virtual Backend backend() const = 0;
+  /// 返回本设备能力表(init 时上报,之后只读;缺省 0 = 不支持)。
+  virtual const DeviceCaps& caps() const = 0;
 
   /// @name 缓冲
   /// @{

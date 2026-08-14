@@ -3,6 +3,7 @@ add_library(rd_core STATIC
   foundation/log.cpp
   foundation/task_queue.cpp
   rhi/rhi_factory.cpp
+  rhi/rhi_capability.cpp
   scene/cube_scene.cpp
   api/rd_api.cpp
 )

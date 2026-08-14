@@ -129,6 +129,7 @@ public:
   ~VulkanDevice() override;
   bool init(const DeviceDesc& desc);
   Backend backend() const override { return Backend::Vulkan; }
+  const DeviceCaps& caps() const override { return caps_; }
 
   BufferHandle createBuffer(const BufferDesc& desc) override;
   void updateBuffer(BufferHandle buffer, const void* data, uint64_t size, uint64_t offset) override;
@@ -224,6 +225,7 @@ private:
   VkDescriptorPool descPool_ = VK_NULL_HANDLE;
   VkDescriptorSet descSet_ = VK_NULL_HANDLE;          ///< 全局唯一 descriptor set
   VulkanCommandBuffer cmdBuf_{this};
+  DeviceCaps caps_;                          ///< 能力表(init 内上报)
   uint32_t nextId_ = 1;                        ///< 句柄分配器（1 起，0 留作无效）
   std::unordered_map<BufferHandle, BufferRec> buffers_;
   std::unordered_map<ShaderModuleHandle, ShaderRec> shaders_;
@@ -304,6 +306,29 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   if (!phys_) {
     RD_LOGE("rhi.vk", "无图形队列");
     return false;
+  }
+
+  // ---- 能力上报(能力探测集中在这里,上层只查表)----
+  {
+    VkPhysicalDeviceProperties physProps;
+    vkGetPhysicalDeviceProperties(phys_, &physProps);
+    VkPhysicalDeviceFeatures physFeats;
+    vkGetPhysicalDeviceFeatures(phys_, &physFeats);
+    caps_.set(Capability::max_texture_size, physProps.limits.maxImageDimension2D);
+    caps_.set(Capability::max_texture_slots, 8);
+    caps_.set(Capability::max_uniform_buffer_slots, kMaxUniformSlots);
+    caps_.set(Capability::instancing, 1);  // Vulkan 核心能力
+    // framebufferColorSampleCounts 是位掩码,取不超过 4 的最高档
+    VkSampleCountFlags counts = physProps.limits.framebufferColorSampleCounts;
+    caps_.set(Capability::msaa,
+              counts & VK_SAMPLE_COUNT_4_BIT ? 4 : counts & VK_SAMPLE_COUNT_2_BIT ? 2 : 1);
+    caps_.set(Capability::depth_texture, 1);
+    caps_.set(Capability::cube_render_target, 1);
+    caps_.set(Capability::generate_mipmap, 1);
+    caps_.set(Capability::anisotropy,
+              physFeats.samplerAnisotropy
+                  ? static_cast<uint32_t>(physProps.limits.maxSamplerAnisotropy)
+                  : 0);
   }
 
   float priority = 1.0f;

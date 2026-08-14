@@ -8,6 +8,7 @@ add_executable(rd_tests
   foundation/task_queue_test.cpp
   rhi/rhi_types_test.cpp
   rhi/factory_test.cpp
+  rhi/caps_test.cpp
   common/image.cpp
   common/image_test.cpp
   common/shader_code.cpp

@@ -221,7 +221,7 @@ struct DeviceDesc {
 // 绑定约定（三后端统一）：
 //   uniform slot N(0..3) ↔ Metal buffer(N) ↔ Vulkan set0 binding N ↔ GLES binding N
 //   texture slot N(0..7) ↔ Metal texture/sampler(N+4) ↔ Vulkan set0 binding(N+4) combined-image-sampler
-//                        ↔ GLES 纹理单元 N（sampler uniform 名：硬编码表）
+//                        ↔ GLES 纹理单元 N（sampler uniform 名:texN）
 //   vertex binding N ↔ Metal buffer(N+1)
 
 /// 返回 Format 每像素/每元素的字节数（如 RGBA8_UNORM=4，R32G32B32_FLOAT=12）。

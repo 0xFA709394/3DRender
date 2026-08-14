@@ -10,8 +10,8 @@
 //   uniform block 名 "UBO" 硬编码映射到 slot 0（P0 约定，P1 由反射 JSON 驱动）。
 // - 无 VAO 缓存：每次 draw 前由 applyVertexState 重建顶点属性指针（P0 最简实现）。
 // - 坐标系差异：GL 原点左下，readback 时逐行翻转为顶向下，与其他后端输出一致。
-// - 纹理/采样器：createTexture/createSampler 尚未实现（返回无效句柄）；
-//   CommandBuffer::bindTexture 为空操作。
+// - 纹理/采样器:ES3.0 sampler object;bindTexture 按 slot 绑纹理单元 + glBindSampler,
+//   sampler uniform 命名约定 texN(见 rhi_types.h 绑定约定)。
 // ============================================================================
 #include "gles_device.h"
 
@@ -22,7 +22,9 @@
 #include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>
 #include <android/native_window.h>
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -112,6 +114,14 @@ struct SwapChainRec {
   uint32_t width = 0, height = 0;
   TargetHandle currentTarget;           ///< swapchain 帧目标（fbo=0，跨帧复用句柄值）
 };
+/// 纹理:GL 对象 + 绑定 target(2D/CUBE_MAP)+ 尺寸/mip 元数据。
+struct TextureRec {
+  GLuint tex = 0;
+  GLenum target = GL_TEXTURE_2D;
+  uint32_t width = 0, height = 0, mipLevels = 1;
+  Format format = Format::RGBA8_UNORM;
+};
+struct SamplerRec { GLuint sampler = 0; };
 
 // ---- rhi 枚举 → GL 枚举的映射 ----
 
@@ -152,8 +162,8 @@ public:
   void bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) override;
   void bindIndexBuffer(BufferHandle buffer, uint64_t offset, IndexType type) override;
   void bindUniformBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset, uint64_t size) override;
-  /// 纹理绑定：GLES 后端纹理功能尚未实现，暂为空操作（其他后端正常）。
-  void bindTexture(uint32_t slot, TextureHandle texture, SamplerHandle sampler) override {}
+  /// 纹理绑定:slot N ↔ 纹理单元 N;sampler uniform 命名约定 texN(见 rhi_types.h)。
+  void bindTexture(uint32_t slot, TextureHandle texture, SamplerHandle sampler) override;
   void draw(uint32_t vertexCount, uint32_t firstVertex) override;
   void drawIndexed(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset) override;
   void drawInstanced(uint32_t vertexCount, uint32_t firstVertex, uint32_t instanceCount,
@@ -192,11 +202,10 @@ public:
   void destroyPipeline(PipelineHandle pipeline) override;
   TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) override;
   void destroyTarget(TargetHandle target) override;
-  // 纹理/采样器：P1 后续任务实现（当前 Metal/Vulkan 后端已支持，GLES 暂返回无效句柄）
-  TextureHandle createTexture(const TextureDesc&) override { return {}; }
-  void destroyTexture(TextureHandle) override {}
-  SamplerHandle createSampler(const SamplerDesc&) override { return {}; }
-  void destroySampler(SamplerHandle) override {}
+  TextureHandle createTexture(const TextureDesc& desc) override;
+  void destroyTexture(TextureHandle texture) override;
+  SamplerHandle createSampler(const SamplerDesc& desc) override;
+  void destroySampler(SamplerHandle sampler) override;
   bool readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) override;
   /// GL 立即执行模型无需获取/提交命令：直接返回设备内唯一命令缓冲。
   CommandBuffer* acquireCommandBuffer() override { return &cmdBuf_; }
@@ -239,6 +248,14 @@ public:
     out = it->second;
     return true;
   }
+  const TextureRec* textureRec(TextureHandle h) const {
+    auto it = textures_.find(h);
+    return it == textures_.end() ? nullptr : &it->second;
+  }
+  GLuint samplerGl(SamplerHandle h) const {
+    auto it = samplers_.find(h);
+    return it == samplers_.end() ? 0 : it->second.sampler;
+  }
 
 private:
   void shutdownEGL();
@@ -255,6 +272,8 @@ private:
   std::unordered_map<PipelineKey, GLuint, PipelineKeyHash> programCache_;
   std::unordered_map<TargetHandle, TargetRec> targets_;
   std::unordered_map<SwapChainHandle, SwapChainRec> swapChains_;
+  std::unordered_map<TextureHandle, TextureRec> textures_;
+  std::unordered_map<SamplerHandle, SamplerRec> samplers_;
   GLESCommandBuffer cmdBuf_{this};      ///< 设备内唯一命令缓冲（单线程模型）
   DeviceCaps caps_;                     ///< 能力表(init 内上报)
   RetireQueue retire_;                  ///< 资源退休队列(GL 删除语义下为形式统一)
@@ -324,6 +343,21 @@ void GLESCommandBuffer::bindUniformBuffer(uint32_t slot, BufferHandle buffer, ui
   const BufferRec* rec = device_->bufferRec(buffer);
   if (!rec) return;
   glBindBufferRange(GL_UNIFORM_BUFFER, slot, rec->buffer, GLintptr(offset), GLsizeiptr(size));
+}
+
+/// 纹理绑定:slot N ↔ 纹理单元 N + glBindSampler;sampler uniform texN 写入单元号。
+void GLESCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
+                                    SamplerHandle sampler) {
+  const TextureRec* tex = device_->textureRec(texture);
+  GLuint sam = device_->samplerGl(sampler);
+  if (!tex || sam == 0) return;
+  glActiveTexture(GL_TEXTURE0 + slot);
+  glBindTexture(tex->target, tex->tex);
+  glBindSampler(slot, sam);
+  char name[8];
+  snprintf(name, sizeof(name), "tex%u", slot);
+  GLint loc = glGetUniformLocation(pipeline_.program, name);
+  if (loc >= 0) glUniform1i(loc, GLint(slot));
 }
 
 void GLESCommandBuffer::draw(uint32_t vertexCount, uint32_t firstVertex) {
@@ -664,6 +698,104 @@ void GLESDevice::destroyTarget(TargetHandle target) {
   glDeleteFramebuffers(1, &it->second.fbo);
   glDeleteTextures(1, &it->second.colorTex);
   targets_.erase(it);
+}
+
+/// 创建纹理:2D/Cube,逐 face/mip 上传(数据布局与其他后端一致:面 × mip 紧凑排列,
+/// 面序 +X,-X,+Y,-Y,+Z,-Z)。无数据则分配空存储。前置校验与其他后端同语义。
+TextureHandle GLESDevice::createTexture(const TextureDesc& desc) {
+  if (desc.width == 0 || desc.height == 0 || desc.mipLevels == 0) return {};
+  if (desc.type == TextureType::Cube && desc.width != desc.height) {
+    RD_LOGE("rhi.gles", "createTexture: cube 纹理必须方形(%ux%u)", desc.width, desc.height);
+    return {};
+  }
+  const uint32_t maxDim = desc.width > desc.height ? desc.width : desc.height;
+  const uint32_t maxMip = uint32_t(std::floor(std::log2(double(maxDim)))) + 1;
+  if (desc.mipLevels > maxMip) {
+    RD_LOGE("rhi.gles", "createTexture: mipLevels %u 超出上限 %u", desc.mipLevels, maxMip);
+    return {};
+  }
+  ensureOffscreenCurrent();
+  TextureRec rec;
+  rec.target = desc.type == TextureType::Cube ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;
+  rec.width = desc.width;
+  rec.height = desc.height;
+  rec.mipLevels = desc.mipLevels;
+  rec.format = desc.format;
+  glGenTextures(1, &rec.tex);
+  glBindTexture(rec.target, rec.tex);
+  const uint32_t fmtSize = formatSize(desc.format);
+  const bool rgba8 = desc.format == Format::RGBA8_UNORM;
+  const uint8_t* src = static_cast<const uint8_t*>(desc.data);
+  uint64_t offset = 0;
+  const uint32_t faces = desc.type == TextureType::Cube ? 6 : 1;
+  for (uint32_t face = 0; face < faces; ++face) {
+    uint32_t w = desc.width, hgt = desc.height;
+    for (uint32_t mip = 0; mip < desc.mipLevels; ++mip) {
+      const uint64_t bytes = uint64_t(w) * hgt * fmtSize;
+      if (src && offset + bytes > desc.dataSize) {
+        RD_LOGE("rhi.gles", "createTexture: 数据越界(face %u mip %u)", face, mip);
+        glDeleteTextures(1, &rec.tex);
+        return {};
+      }
+      GLenum faceTarget = rec.target == GL_TEXTURE_CUBE_MAP
+                              ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : GL_TEXTURE_2D;
+      glTexImage2D(faceTarget, GLint(mip), rgba8 ? GL_RGBA8 : GL_RGBA32F, GLsizei(w),
+                   GLsizei(hgt), 0, GL_RGBA, rgba8 ? GL_UNSIGNED_BYTE : GL_FLOAT,
+                   src ? src + offset : nullptr);
+      offset += bytes;
+      w = w > 1 ? w / 2 : 1;
+      hgt = hgt > 1 ? hgt / 2 : 1;
+    }
+  }
+  glBindTexture(rec.target, 0);
+  TextureHandle h(nextId_++);
+  textures_.emplace(h, rec);
+  return h;
+}
+
+void GLESDevice::destroyTexture(TextureHandle texture) {
+  auto it = textures_.find(texture);
+  if (it == textures_.end()) return;
+  ensureOffscreenCurrent();
+  glDeleteTextures(1, &it->second.tex);
+  textures_.erase(it);
+}
+
+/// 创建采样器(ES3.0 sampler object):rhi 过滤/寻址枚举映射到 glSamplerParameteri。
+SamplerHandle GLESDevice::createSampler(const SamplerDesc& desc) {
+  ensureOffscreenCurrent();
+  GLuint s = 0;
+  glGenSamplers(1, &s);
+  // minFilter 综合 min+mip(ES 枚举是联合形式):线性 min + 线性 mip → 三线性
+  GLint minFilter = desc.minFilter == Filter::Linear
+                        ? (desc.mipFilter == Filter::Linear ? GL_LINEAR_MIPMAP_LINEAR
+                                                            : GL_LINEAR_MIPMAP_NEAREST)
+                        : (desc.mipFilter == Filter::Linear ? GL_NEAREST_MIPMAP_LINEAR
+                                                            : GL_NEAREST_MIPMAP_NEAREST);
+  glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, minFilter);
+  glSamplerParameteri(s, GL_TEXTURE_MAG_FILTER,
+                      desc.magFilter == Filter::Linear ? GL_LINEAR : GL_NEAREST);
+  auto toWrap = [](WrapMode m) {
+    return m == WrapMode::Repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+  };
+  glSamplerParameteri(s, GL_TEXTURE_WRAP_S, toWrap(desc.wrapU));
+  glSamplerParameteri(s, GL_TEXTURE_WRAP_T, toWrap(desc.wrapV));
+  glSamplerParameteri(s, GL_TEXTURE_WRAP_R, toWrap(desc.wrapW));
+  if (desc.maxAnisotropy > 1 && caps_.supports(Capability::anisotropy)) {
+    GLfloat a = GLfloat(std::min(desc.maxAnisotropy, caps_.get(Capability::anisotropy)));
+    glSamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY_EXT, a);
+  }
+  SamplerHandle h(nextId_++);
+  samplers_.emplace(h, SamplerRec{s});
+  return h;
+}
+
+void GLESDevice::destroySampler(SamplerHandle sampler) {
+  auto it = samplers_.find(sampler);
+  if (it == samplers_.end()) return;
+  ensureOffscreenCurrent();
+  glDeleteSamplers(1, &it->second.sampler);
+  samplers_.erase(it);
 }
 
 /**

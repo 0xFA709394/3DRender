@@ -16,10 +16,12 @@
 // ============================================================================
 #include "metal_device.h"
 #include "foundation/log.h"
+#include "rhi/retire_queue.h"
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <dispatch/dispatch.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -167,7 +169,14 @@ public:
     memcpy(static_cast<uint8_t*>(it->second.buffer.contents) + offset, data, size);
   }
 
-  void destroyBuffer(BufferHandle buffer) override { buffers_.erase(buffer); }
+  /// 销毁缓冲:句柄立即失效;底层对象由退休闭包持有,帧完成后释放(ARC)。
+  void destroyBuffer(BufferHandle buffer) override {
+    auto it = buffers_.find(buffer);
+    if (it == buffers_.end()) return;
+    id<MTLBuffer> b = it->second.buffer;
+    buffers_.erase(it);
+    retire_.retire(frameIndex_, [b] { (void)b; });
+  }
 
   /**
    * 加载 metallib 为 MTLLibrary。
@@ -191,7 +200,13 @@ public:
     return h;
   }
 
-  void destroyShaderModule(ShaderModuleHandle module) override { shaders_.erase(module); }
+  void destroyShaderModule(ShaderModuleHandle module) override {
+    auto it = shaders_.find(module);
+    if (it == shaders_.end()) return;
+    ShaderRec rec = it->second;
+    shaders_.erase(it);
+    retire_.retire(frameIndex_, [rec] { (void)rec; });
+  }
 
   PipelineHandle createPipeline(const PipelineDesc& desc) override {
     // 深度附件尚未实现（离屏目标无 depth 附件），先拒绝而非静默错误。
@@ -248,7 +263,13 @@ public:
     return h;
   }
 
-  void destroyPipeline(PipelineHandle pipeline) override { pipelines_.erase(pipeline); }
+  void destroyPipeline(PipelineHandle pipeline) override {
+    auto it = pipelines_.find(pipeline);
+    if (it == pipelines_.end()) return;
+    PipelineRec rec = it->second;
+    pipelines_.erase(it);
+    retire_.retire(frameIndex_, [rec] { (void)rec; });
+  }
 
   /// 创建离屏目标：单张颜色纹理。Shared 存储（macOS 统一内存）便于 readback 直接读取。
   TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) override {
@@ -266,7 +287,13 @@ public:
     return h;
   }
 
-  void destroyTarget(TargetHandle target) override { targets_.erase(target); }
+  void destroyTarget(TargetHandle target) override {
+    auto it = targets_.find(target);
+    if (it == targets_.end()) return;
+    TargetRec rec = it->second;
+    targets_.erase(it);
+    retire_.retire(frameIndex_, [rec] { (void)rec; });
+  }
 
   TextureHandle createTexture(const TextureDesc& desc) override {
     // ---- 前置校验（与 GLES/Vulkan 保持一致的失败语义）----
@@ -336,7 +363,13 @@ public:
     return h;
   }
 
-  void destroyTexture(TextureHandle texture) override { textures_.erase(texture); }
+  void destroyTexture(TextureHandle texture) override {
+    auto it = textures_.find(texture);
+    if (it == textures_.end()) return;
+    id<MTLTexture> t = it->second.texture;
+    textures_.erase(it);
+    retire_.retire(frameIndex_, [t] { (void)t; });
+  }
 
   /// 创建采样器：rhi 过滤/寻址枚举一一映射到 MTLSamplerDescriptor。
   SamplerHandle createSampler(const SamplerDesc& desc) override {
@@ -367,7 +400,13 @@ public:
     return h;
   }
 
-  void destroySampler(SamplerHandle sampler) override { samplers_.erase(sampler); }
+  void destroySampler(SamplerHandle sampler) override {
+    auto it = samplers_.find(sampler);
+    if (it == samplers_.end()) return;
+    id<MTLSamplerState> s = it->second.sampler;
+    samplers_.erase(it);
+    retire_.retire(frameIndex_, [s] { (void)s; });
+  }
 
   /**
    * 读出目标像素。仅支持 Shared 存储的离屏目标；swapchain drawable 纹理是
@@ -396,18 +435,27 @@ public:
     return &cmdBuf_;
   }
 
-  /// 提交：commit 并记录为 lastCmd_（waitIdle 等待的对象）。
+  /// 提交：注册完成回调(只写帧序号,释放在 endFrame 渲染线程执行)并 commit。
   void submit(CommandBuffer*) override {
+    uint64_t f = frameIndex_;
+    [cmdBuf_.cmd_ addCompletedHandler:^(id<MTLCommandBuffer>) {
+      completedFrame_.store(f);
+    }];
     [cmdBuf_.cmd_ commit];
     lastCmd_ = cmdBuf_.cmd_;
   }
 
-  /// 等待最近一次提交的命令完成；未提交过任何命令时是 no-op。
+  /// 帧括号:渲染循环每帧调用;endFrame 按已完成序号推进退休队列。
+  void beginFrame() override { ++frameIndex_; }
+  void endFrame() override { retire_.onFrameComplete(completedFrame_.load()); }
+
+  /// 等待最近一次提交的命令完成；未提交过任何命令时是 no-op;附加清空退休队列。
   void waitIdle() override {
     if (lastCmd_) {
       [lastCmd_ waitUntilCompleted];
       lastCmd_ = nil;
     }
+    retire_.flushAll();
   }
 
   /**
@@ -510,6 +558,9 @@ private:
   id<MTLCommandBuffer> lastCmd_ = nil;   ///< 最近提交的命令（waitIdle 等待对象）
   MetalCommandBuffer cmdBuf_{this};      ///< 设备内唯一命令缓冲（单线程模型）
   DeviceCaps caps_;                      ///< 能力表(init 内上报)
+  RetireQueue retire_;                   ///< 资源退休队列(帧完成驱动释放)
+  uint64_t frameIndex_ = 0;              ///< 当前帧序号(beginFrame 推进)
+  std::atomic<uint64_t> completedFrame_{0};  ///< completedHandler 异步写的完成序号
   uint32_t nextId_ = 1;                  ///< 句柄分配器（1 起，0 留作无效）
   std::unordered_map<BufferHandle, BufferRec> buffers_;
   std::unordered_map<ShaderModuleHandle, ShaderRec> shaders_;

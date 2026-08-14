@@ -17,6 +17,7 @@
 
 #if defined(__ANDROID__)
 #include "foundation/log.h"
+#include "rhi/retire_queue.h"
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>
@@ -147,6 +148,10 @@ public:
   CommandBuffer* acquireCommandBuffer() override { return &cmdBuf_; }
   void submit(CommandBuffer* cmd) override;
   void waitIdle() override;
+  /// 帧括号。GL 删除语义(glDelete* 标记后不再被引用时释放)使资源销毁天然安全,
+  /// 退休队列在 GLES 上仅作形式统一:endFrame 立即确认本帧完成。
+  void beginFrame() override { ++frameIndex_; }
+  void endFrame() override { retire_.onFrameComplete(frameIndex_); }
   SwapChainHandle createSwapChain(void* nativeWindow, uint32_t width, uint32_t height) override;
   void resizeSwapChain(SwapChainHandle swapChain, uint32_t width, uint32_t height) override;
   TargetHandle acquireSwapChainTarget(SwapChainHandle swapChain) override;
@@ -196,6 +201,8 @@ private:
   std::unordered_map<SwapChainHandle, SwapChainRec> swapChains_;
   GLESCommandBuffer cmdBuf_{this};      ///< 设备内唯一命令缓冲（单线程模型）
   DeviceCaps caps_;                     ///< 能力表(init 内上报)
+  RetireQueue retire_;                  ///< 资源退休队列(GL 删除语义下为形式统一)
+  uint64_t frameIndex_ = 0;             ///< 当前帧序号
 };
 
 // ---------------- CommandBuffer 实现 ----------------
@@ -556,8 +563,11 @@ bool GLESDevice::readbackTarget(TargetHandle target, void* outRGBA8, uint64_t ou
 
 /// GL 立即执行模型：命令在录制时已落地，submit 无需动作。
 void GLESDevice::submit(CommandBuffer*) {}
-/// 阻塞直到 GL 管线排空。
-void GLESDevice::waitIdle() { glFinish(); }
+/// 阻塞直到 GL 管线排空;附加清空退休队列。
+void GLESDevice::waitIdle() {
+  glFinish();
+  retire_.flushAll();
+}
 
 // ---------------- SwapChain ----------------
 

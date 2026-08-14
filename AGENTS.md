@@ -37,6 +37,13 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 日志：`RD_LOGD/I/W/E(tag, fmt, ...)`，tag 用模块名（如 `rhi.vk`）
 - 错误处理：内核不用异常；工厂/创建函数失败返回空句柄/nullptr + 日志
 - 线程：同一 rd_engine 的所有调用在同一线程（Android=RenderView 渲染线程，iOS=主线程 MTKView 惯例）
+- 帧括号：渲染循环每帧 `beginFrame()`/`endFrame()`（present 之后）；destroy 的底层资源
+  延迟到帧完成后回收（退休队列），句柄 destroy 后立即失效；每帧至多一次 submit
+- 能力查询：只经 `device.caps()`（rhi_capability.h），不直接查后端扩展
+- BufferDesc 五元组 `{size, usage, hostWrite, hostRead, data}`：非 hostWrite 缓冲为
+  device-local，`updateBuffer` 会被拒绝（动态数据须 `hostWrite=true`）
+- 纹理可作为渲染目标：`TextureUsage::RenderTargetAttachment` +
+  `OffscreenTargetDesc.colorFromTexture(face/mip)`；GLES sampler uniform 命名 `texN ↔ slot N`
 - shader 内嵌：embedded_shaders.cpp 自动生成（host=build 期；Android/iOS=configure 期），勿手改；
   iOS 真机/模拟器 metallib 分别编译（RD_EMBED_IOS_METAL / RD_EMBED_IOS_SIMULATOR）
 - Metal swapchain 颜色格式为 BGRA8（layer 限制）；pipeline 格式须经 swapChainColorFormat 对齐

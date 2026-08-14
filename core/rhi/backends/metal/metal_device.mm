@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 namespace rd {
 namespace {
@@ -50,6 +51,93 @@ MTLVertexFormat toMTLVertexFormat(Format f) {
     case Format::RGBA8_UNORM:         return MTLVertexFormatUChar4Normalized;
     default:                          return MTLVertexFormatInvalid;
   }
+}
+
+/// 图元拓扑映射（draw 参数而非管线状态）。
+MTLPrimitiveType toMTLTopology(PrimitiveTopology t) {
+  switch (t) {
+    case PrimitiveTopology::TriangleList:  return MTLPrimitiveTypeTriangle;
+    case PrimitiveTopology::TriangleStrip: return MTLPrimitiveTypeTriangleStrip;
+    case PrimitiveTopology::LineList:      return MTLPrimitiveTypeLine;
+  }
+  return MTLPrimitiveTypeTriangle;
+}
+
+/// 面剔除映射。
+MTLCullMode toMTLCull(CullMode m) {
+  switch (m) {
+    case CullMode::Back:  return MTLCullModeBack;
+    case CullMode::Front: return MTLCullModeFront;
+    case CullMode::None:  return MTLCullModeNone;
+  }
+  return MTLCullModeNone;
+}
+
+/// 混合因子映射。
+MTLBlendFactor toMTLBlendFactor(BlendFactor f) {
+  switch (f) {
+    case BlendFactor::Zero: return MTLBlendFactorZero;
+    case BlendFactor::One: return MTLBlendFactorOne;
+    case BlendFactor::SrcAlpha: return MTLBlendFactorSourceAlpha;
+    case BlendFactor::OneMinusSrcAlpha: return MTLBlendFactorOneMinusSourceAlpha;
+    case BlendFactor::DstAlpha: return MTLBlendFactorDestinationAlpha;
+    case BlendFactor::OneMinusDstAlpha: return MTLBlendFactorOneMinusDestinationAlpha;
+  }
+  return MTLBlendFactorOne;
+}
+
+/// 管线缓存 key:影响 MTLRenderPipelineState 创建的全部参数。
+struct PipelineKey {
+  uint32_t vs = 0, fs = 0;
+  uint32_t topology = 0, cull = 0;
+  bool depthTest = false, depthWrite = false;
+  bool blendEnable = false;
+  uint32_t srcColor = 0, dstColor = 0, srcAlpha = 0, dstAlpha = 0;
+  uint32_t colorFormat = 0;
+  uint32_t sampleCount = 1;
+  std::vector<VertexBinding> bindings;
+  std::vector<VertexAttribute> attribs;
+  bool operator==(const PipelineKey& o) const {
+    return vs == o.vs && fs == o.fs && topology == o.topology && cull == o.cull &&
+           depthTest == o.depthTest && depthWrite == o.depthWrite &&
+           blendEnable == o.blendEnable && srcColor == o.srcColor && dstColor == o.dstColor &&
+           srcAlpha == o.srcAlpha && dstAlpha == o.dstAlpha && colorFormat == o.colorFormat &&
+           sampleCount == o.sampleCount && bindings == o.bindings && attribs == o.attribs;
+  }
+};
+struct PipelineKeyHash {
+  size_t operator()(const PipelineKey& k) const {
+    size_t h = std::hash<uint64_t>()((uint64_t(k.vs) << 32) | k.fs);
+    auto mix = [&h](size_t v) { h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2); };
+    mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
+    mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
+    mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
+    for (const auto& b : k.bindings) mix((size_t(b.binding) << 8) | b.stride);
+    for (const auto& a : k.attribs)
+      mix((size_t(a.location) << 24) ^ (size_t(a.offset) << 8) ^ uint32_t(a.format) ^ a.binding);
+    return h;
+  }
+};
+
+/// 由 PipelineDesc 构造缓存 key。
+PipelineKey makePipelineKey(const PipelineDesc& desc) {
+  PipelineKey key;
+  key.vs = desc.vertexShader.value();
+  key.fs = desc.fragmentShader.value();
+  key.topology = uint32_t(desc.topology);
+  key.cull = uint32_t(desc.cullMode);
+  key.depthTest = desc.depthTest;
+  key.depthWrite = desc.depthWrite;
+  key.blendEnable = desc.blend.enable;
+  key.srcColor = uint32_t(desc.blend.srcColor);
+  key.dstColor = uint32_t(desc.blend.dstColor);
+  key.srcAlpha = uint32_t(desc.blend.srcAlpha);
+  key.dstAlpha = uint32_t(desc.blend.dstAlpha);
+  key.colorFormat = uint32_t(desc.colorFormat);
+  key.sampleCount = desc.sampleCount;
+  key.bindings = desc.vertexBindings;
+  key.attribs = desc.attributes;
+  return key;
 }
 
 // ---- 资源记录（句柄表的 value）：持有 ObjC 对象 + 渲染所需的状态缓存 ----
@@ -209,14 +297,27 @@ public:
   }
 
   PipelineHandle createPipeline(const PipelineDesc& desc) override {
-    // 深度附件尚未实现（离屏目标无 depth 附件），先拒绝而非静默错误。
-    if (desc.depthTest) {
-      RD_LOGE("rhi.metal", "P0-1 离屏目标不支持 depthTest（P1 引入深度附件）");
+    // 深度附件与 MSAA 尚未实现，先拒绝而非静默错误（与 Vulkan/GLES 一致）。
+    if (desc.depthTest || desc.depthWrite) {
+      RD_LOGE("rhi.metal", "深度附件 P1 引入,当前拒绝 depthTest/depthWrite");
+      return {};
+    }
+    if (desc.sampleCount != 1) {
+      RD_LOGE("rhi.metal", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
       return {};
     }
     auto vsIt = shaders_.find(desc.vertexShader);
     auto fsIt = shaders_.find(desc.fragmentShader);
     if (vsIt == shaders_.end() || fsIt == shaders_.end()) return {};
+
+    // 缓存命中:直接包装新句柄返回(底层 MTLRenderPipelineState 由缓存持有)
+    PipelineKey key = makePipelineKey(desc);
+    if (auto it = pipelineCache_.find(key); it != pipelineCache_.end()) {
+      PipelineHandle h(nextId_++);
+      pipelines_.emplace(h, PipelineRec{it->second, toMTLTopology(desc.topology),
+                                        toMTLCull(desc.cullMode)});
+      return h;
+    }
 
     MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
     // 入口名约定：metallib 内为 "main0"（spirv-cross 生成 MSL 的默认名）。
@@ -227,6 +328,13 @@ public:
     // 颜色格式须与渲染目标一致：渲染到 swapchain 时调用方应传 swapChainColorFormat()。
     pd.colorAttachments[0].pixelFormat = toMTLPixelFormat(desc.colorFormat);
     if (!pd.vertexFunction || !pd.fragmentFunction) return {};
+
+    // 混合状态(默认关闭)
+    pd.colorAttachments[0].blendingEnabled = desc.blend.enable;
+    pd.colorAttachments[0].sourceRGBBlendFactor = toMTLBlendFactor(desc.blend.srcColor);
+    pd.colorAttachments[0].destinationRGBBlendFactor = toMTLBlendFactor(desc.blend.dstColor);
+    pd.colorAttachments[0].sourceAlphaBlendFactor = toMTLBlendFactor(desc.blend.srcAlpha);
+    pd.colorAttachments[0].destinationAlphaBlendFactor = toMTLBlendFactor(desc.blend.dstAlpha);
 
     // 顶点布局：RHI binding N ↔ Metal buffer(N+1)，0 号留给 uniform 缓冲。
     MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
@@ -250,25 +358,16 @@ public:
       return {};
     }
     // 缓存拓扑/剔除：Metal 的图元类型是 draw 参数而非管线状态。
-    PipelineRec rec;
-    rec.state = state;
-    rec.topology = desc.topology == PrimitiveTopology::TriangleList  ? MTLPrimitiveTypeTriangle
-                   : desc.topology == PrimitiveTopology::TriangleStrip ? MTLPrimitiveTypeTriangleStrip
-                                                                       : MTLPrimitiveTypeLine;
-    rec.cull = desc.cullMode == CullMode::Back  ? MTLCullModeBack
-               : desc.cullMode == CullMode::Front ? MTLCullModeFront
-                                                  : MTLCullModeNone;
+    pipelineCache_.emplace(key, state);
     PipelineHandle h(nextId_++);
-    pipelines_.emplace(h, rec);
+    pipelines_.emplace(h, PipelineRec{state, toMTLTopology(desc.topology),
+                                      toMTLCull(desc.cullMode)});
     return h;
   }
 
   void destroyPipeline(PipelineHandle pipeline) override {
-    auto it = pipelines_.find(pipeline);
-    if (it == pipelines_.end()) return;
-    PipelineRec rec = it->second;
-    pipelines_.erase(it);
-    retire_.retire(frameIndex_, [rec] { (void)rec; });
+    // 只释放句柄引用;底层对象由 pipelineCache_ 持有(设备析构时统一释放)
+    pipelines_.erase(pipeline);
   }
 
   /// 创建离屏目标：单张颜色纹理。Shared 存储（macOS 统一内存）便于 readback 直接读取。
@@ -565,6 +664,8 @@ private:
   std::unordered_map<BufferHandle, BufferRec> buffers_;
   std::unordered_map<ShaderModuleHandle, ShaderRec> shaders_;
   std::unordered_map<PipelineHandle, PipelineRec> pipelines_;
+  /// 管线缓存:缓存持有底层 MTLRenderPipelineState(ARC),句柄表只持引用
+  std::unordered_map<PipelineKey, id<MTLRenderPipelineState>, PipelineKeyHash> pipelineCache_;
   std::unordered_map<TargetHandle, TargetRec> targets_;
   std::unordered_map<SwapChainHandle, SwapChainRec> swapChains_;
   std::unordered_map<TextureHandle, TextureRec> textures_;

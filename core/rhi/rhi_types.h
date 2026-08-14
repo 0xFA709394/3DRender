@@ -94,6 +94,18 @@ enum class PrimitiveTopology { TriangleList, TriangleStrip, LineList };
 /// 面剔除模式。
 enum class CullMode { None, Front, Back };
 
+/// 混合因子(最小完备集;PBR 透明与常见合成足够)。
+enum class BlendFactor { Zero, One, SrcAlpha, OneMinusSrcAlpha, DstAlpha, OneMinusDstAlpha };
+
+/// 混合状态(默认关闭,经典 src-alpha 混合预设)。
+struct BlendDesc {
+  bool enable = false;
+  BlendFactor srcColor = BlendFactor::SrcAlpha;
+  BlendFactor dstColor = BlendFactor::OneMinusSrcAlpha;
+  BlendFactor srcAlpha = BlendFactor::One;
+  BlendFactor dstAlpha = BlendFactor::OneMinusDstAlpha;
+};
+
 // ---- 描述体（Desc）：创建资源时传入的参数包，均有默认值，按需覆盖 ----
 
 /// 清屏颜色（RGBA，默认不透明黑）。
@@ -125,6 +137,9 @@ struct ShaderModuleDesc {
 struct VertexBinding {
   uint32_t binding = 0;  ///< binding 槽位号（与 VertexAttribute::binding 对应）
   uint32_t stride = 0;   ///< 相邻顶点间字节步长
+  bool operator==(const VertexBinding& o) const {
+    return binding == o.binding && stride == o.stride;
+  }
 };
 
 /// 顶点属性描述：shader location 与缓冲中偏移的映射。
@@ -133,6 +148,10 @@ struct VertexAttribute {
   Format format = Format::R32G32B32_FLOAT;    ///< 属性格式
   uint32_t offset = 0;                        ///< 属性在单个顶点内的字节偏移
   uint32_t binding = 0;                       ///< 来源 VertexBinding 槽位号
+  bool operator==(const VertexAttribute& o) const {
+    return location == o.location && format == o.format && offset == o.offset &&
+           binding == o.binding;
+  }
 };
 
 /// 渲染管线创建参数。
@@ -143,7 +162,11 @@ struct PipelineDesc {
   std::vector<VertexAttribute> attributes;    ///< 顶点属性布局
   PrimitiveTopology topology = PrimitiveTopology::TriangleList;  ///< 图元拓扑
   CullMode cullMode = CullMode::None;   ///< 面剔除
-  bool depthTest = false;               ///< 是否开启深度测试/写入
+  bool depthTest = false;               ///< 深度测试(深度附件 P1 引入;当前三后端拒绝 true)
+  bool depthWrite = false;              ///< 深度写入(与 depthTest 拆分;同样暂拒绝 true)
+  BlendDesc blend;                      ///< 颜色混合(默认关闭)
+  /// MSAA 采样数(预留;>1 需 caps().msaa 支持,当前后端拒绝非 1 值)。
+  uint32_t sampleCount = 1;
   /// 颜色附件格式。渲染到 swapchain 时必须与 Device::swapChainColorFormat
   /// 返回的格式一致（Metal layer 限 BGRA8 系），否则后端可能创建失败。
   Format colorFormat = Format::RGBA8_UNORM;

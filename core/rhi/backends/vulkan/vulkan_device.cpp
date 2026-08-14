@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -63,8 +64,56 @@ VkFormat toVkFormat(Format f) {
 /// 缓冲：VkBuffer + 独占内存（P0 简化：每缓冲一次 vkAllocateMemory）。
 struct BufferRec { VkBuffer buffer; VkDeviceMemory memory; bool hostVisible = false; };
 struct ShaderRec { VkShaderModule module; ShaderStage stage; std::string entry; };
-/// 管线：VkPipeline + 布局（bind 描述符要用）+ 拓扑/剔除缓存（当前未在录制期使用）。
-struct PipelineRec { VkPipeline pipeline; VkPipelineLayout layout; VkPrimitiveTopology topology; VkCullModeFlags cull; };
+/// 缓存的底层管线对象:VkPipeline + 拓扑/剔除缓存。
+struct CachedPipeline { VkPipeline pipeline; VkPrimitiveTopology topology; VkCullModeFlags cull; };
+/// 管线:共享底层对象引用(缓存持有本体,句柄表只持引用)。
+struct PipelineRec { std::shared_ptr<CachedPipeline> cached; };
+
+/// 管线缓存 key:影响 VkPipeline 创建的全部参数(shader 句柄值 + 状态 + 顶点布局)。
+struct PipelineKey {
+  uint32_t vs = 0, fs = 0;
+  uint32_t topology = 0, cull = 0;
+  bool depthTest = false, depthWrite = false;
+  bool blendEnable = false;
+  uint32_t srcColor = 0, dstColor = 0, srcAlpha = 0, dstAlpha = 0;
+  uint32_t colorFormat = 0;
+  uint32_t sampleCount = 1;
+  std::vector<VertexBinding> bindings;
+  std::vector<VertexAttribute> attribs;
+  bool operator==(const PipelineKey& o) const {
+    return vs == o.vs && fs == o.fs && topology == o.topology && cull == o.cull &&
+           depthTest == o.depthTest && depthWrite == o.depthWrite &&
+           blendEnable == o.blendEnable && srcColor == o.srcColor && dstColor == o.dstColor &&
+           srcAlpha == o.srcAlpha && dstAlpha == o.dstAlpha && colorFormat == o.colorFormat &&
+           sampleCount == o.sampleCount && bindings == o.bindings && attribs == o.attribs;
+  }
+};
+struct PipelineKeyHash {
+  size_t operator()(const PipelineKey& k) const {
+    size_t h = std::hash<uint64_t>()((uint64_t(k.vs) << 32) | k.fs);
+    auto mix = [&h](size_t v) { h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2); };
+    mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
+    mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
+    mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
+    for (const auto& b : k.bindings) mix((size_t(b.binding) << 8) | b.stride);
+    for (const auto& a : k.attribs)
+      mix((size_t(a.location) << 24) ^ (size_t(a.offset) << 8) ^ uint32_t(a.format) ^ a.binding);
+    return h;
+  }
+};
+
+/// rhi BlendFactor → VkBlendFactor 映射。
+VkBlendFactor toVkBlendFactor(BlendFactor f) {
+  switch (f) {
+    case BlendFactor::Zero: return VK_BLEND_FACTOR_ZERO;
+    case BlendFactor::One: return VK_BLEND_FACTOR_ONE;
+    case BlendFactor::SrcAlpha: return VK_BLEND_FACTOR_SRC_ALPHA;
+    case BlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    case BlendFactor::DstAlpha: return VK_BLEND_FACTOR_DST_ALPHA;
+    case BlendFactor::OneMinusDstAlpha: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+  }
+  return VK_BLEND_FACTOR_ONE;
+}
 /// 渲染目标：离屏目标含颜色图像 + framebuffer + readback 用 staging 图像；
 /// swapchain 图像复用该结构（isSwapchain=true，资源由 swapchain 管理）。
 struct TargetRec {
@@ -190,6 +239,7 @@ public:
   }
   VkRenderPass renderPass() const { return renderPass_; }
   VkDescriptorSet descriptorSet() const { return descSet_; }
+  VkPipelineLayout pipelineLayout() const { return pipelineLayout_; }
   VkDevice device() const { return device_; }
   /// 写全局唯一 descriptor set 的 uniform binding（绑定约定：slot N ↔ set0 binding N）。
   void writeUniformDescriptor(uint32_t slot, VkBuffer buffer, uint64_t offset, uint64_t size) {
@@ -234,6 +284,10 @@ private:
   VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;  ///< set0：binding 0..3 uniform + 4..11 sampler
   VkDescriptorPool descPool_ = VK_NULL_HANDLE;
   VkDescriptorSet descSet_ = VK_NULL_HANDLE;          ///< 全局唯一 descriptor set
+  VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;  ///< 全局唯一管线布局(所有管线共享 setLayout_)
+  /// 管线缓存:缓存持有底层 VkPipeline 本体,句柄表只持 shared_ptr 引用
+  std::unordered_map<PipelineKey, std::shared_ptr<CachedPipeline>, PipelineKeyHash>
+      pipelineCache_;
   VulkanCommandBuffer cmdBuf_{this};
   DeviceCaps caps_;                          ///< 能力表(init 内上报)
   uint32_t nextId_ = 1;                        ///< 句柄分配器（1 起，0 留作无效）
@@ -431,6 +485,12 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   dsai.pSetLayouts = &setLayout_;
   VK_CHECK(vkAllocateDescriptorSets(device_, &dsai, &descSet_));
 
+  // 全局唯一管线布局:所有管线共享同一 setLayout_,只建一次
+  VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  plci.setLayoutCount = 1;
+  plci.pSetLayouts = &setLayout_;
+  VK_CHECK(vkCreatePipelineLayout(device_, &plci, nullptr, &pipelineLayout_));
+
   VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   VK_CHECK(vkCreateFence(device_, &fci, nullptr, &acquireFence_));
   VK_CHECK(vkCreateFence(device_, &fci, nullptr, &frameFence_));
@@ -489,6 +549,10 @@ VulkanDevice::~VulkanDevice() {
   if (!device_) return;
   vkDeviceWaitIdle(device_);
   retire_.flushAll();  // 退休资源在销毁设备前全部释放
+  for (auto& kv : pipelineCache_)  // 缓存持有的底层管线统一销毁
+    vkDestroyPipeline(device_, kv.second->pipeline, nullptr);
+  pipelineCache_.clear();
+  vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
   vkDestroyDescriptorPool(device_, descPool_, nullptr);
   vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
   vkDestroyRenderPass(device_, renderPass_, nullptr);
@@ -680,9 +744,13 @@ void VulkanDevice::destroyShaderModule(ShaderModuleHandle module) {
 }
 
 PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
-  // 深度附件尚未实现，先拒绝而非静默错误（与 Metal/GLES 一致）。
-  if (desc.depthTest) {
-    RD_LOGE("rhi.vk", "P0-1 离屏目标不支持 depthTest（P1 引入深度附件）");
+  // 深度附件与 MSAA 尚未实现,先拒绝而非静默错误(与 Metal/GLES 一致)。
+  if (desc.depthTest || desc.depthWrite) {
+    RD_LOGE("rhi.vk", "深度附件 P1 引入,当前拒绝 depthTest/depthWrite");
+    return {};
+  }
+  if (desc.sampleCount != 1) {
+    RD_LOGE("rhi.vk", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
     return {};
   }
   auto vsIt = shaders_.find(desc.vertexShader);
@@ -690,6 +758,29 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   if (vsIt == shaders_.end() || fsIt == shaders_.end()) {
     RD_LOGE("rhi.vk", "createPipeline: shader 句柄无效");
     return {};
+  }
+
+  // 缓存命中:直接包装新句柄返回(底层对象由缓存持有)
+  PipelineKey key;
+  key.vs = desc.vertexShader.value();
+  key.fs = desc.fragmentShader.value();
+  key.topology = uint32_t(desc.topology);
+  key.cull = uint32_t(desc.cullMode);
+  key.depthTest = desc.depthTest;
+  key.depthWrite = desc.depthWrite;
+  key.blendEnable = desc.blend.enable;
+  key.srcColor = uint32_t(desc.blend.srcColor);
+  key.dstColor = uint32_t(desc.blend.dstColor);
+  key.srcAlpha = uint32_t(desc.blend.srcAlpha);
+  key.dstAlpha = uint32_t(desc.blend.dstAlpha);
+  key.colorFormat = uint32_t(desc.colorFormat);
+  key.sampleCount = desc.sampleCount;
+  key.bindings = desc.vertexBindings;
+  key.attribs = desc.attributes;
+  if (auto it = pipelineCache_.find(key); it != pipelineCache_.end()) {
+    PipelineHandle h(nextId_++);
+    pipelines_.emplace(h, PipelineRec{it->second});
+    return h;
   }
 
   // 着色器阶段（入口名取 ShaderModuleDesc::entryPoint，SPIR-V 约定 "main"）
@@ -742,15 +833,22 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-  // 深度固定关闭（depthTest 已在入口拒绝）
+  // 深度固定关闭（depthTest/depthWrite 已在入口拒绝）
   VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
   ds.depthTestEnable = VK_FALSE;
   ds.depthWriteEnable = VK_FALSE;
 
-  // 无混合，RGBA 全写
+  // 混合状态由 desc.blend 填充(默认关闭,RGBA 全写)
   VkPipelineColorBlendAttachmentState blendAttachment{};
   blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  blendAttachment.blendEnable = desc.blend.enable ? VK_TRUE : VK_FALSE;
+  blendAttachment.srcColorBlendFactor = toVkBlendFactor(desc.blend.srcColor);
+  blendAttachment.dstColorBlendFactor = toVkBlendFactor(desc.blend.dstColor);
+  blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+  blendAttachment.srcAlphaBlendFactor = toVkBlendFactor(desc.blend.srcAlpha);
+  blendAttachment.dstAlphaBlendFactor = toVkBlendFactor(desc.blend.dstAlpha);
+  blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
   VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
   cb.attachmentCount = 1;
   cb.pAttachments = &blendAttachment;
@@ -759,17 +857,6 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dyn.dynamicStateCount = 2;
   dyn.pDynamicStates = dynamicStates;
-
-  // 管线布局 = 全局唯一 set0 布局（uniform 0..3 + sampler 4..11）
-  VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-  plci.setLayoutCount = 1;
-  plci.pSetLayouts = &setLayout_;
-  VkPipelineLayout layout;
-  VkResult layoutResult = vkCreatePipelineLayout(device_, &plci, nullptr, &layout);
-  if (layoutResult != VK_SUCCESS) {
-    RD_LOGE("rhi.vk", "vkCreatePipelineLayout 失败 (%d)", int(layoutResult));
-    return {};
-  }
 
   VkGraphicsPipelineCreateInfo gpci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
   gpci.stageCount = 2;
@@ -782,31 +869,25 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   gpci.pDepthStencilState = &ds;
   gpci.pColorBlendState = &cb;
   gpci.pDynamicState = &dyn;
-  gpci.layout = layout;
+  gpci.layout = pipelineLayout_;  // 全局唯一管线布局
   gpci.renderPass = renderPass_;
   VkPipeline pipeline;
   VkResult pipelineResult =
       vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline);
   if (pipelineResult != VK_SUCCESS) {
     RD_LOGE("rhi.vk", "vkCreateGraphicsPipelines 失败 (%d)", int(pipelineResult));
-    vkDestroyPipelineLayout(device_, layout, nullptr);
     return {};
   }
+  auto cached = std::make_shared<CachedPipeline>(CachedPipeline{pipeline, topology, cull});
+  pipelineCache_.emplace(std::move(key), cached);
   PipelineHandle h(nextId_++);
-  pipelines_.emplace(h, PipelineRec{pipeline, layout, topology, cull});
+  pipelines_.emplace(h, PipelineRec{std::move(cached)});
   return h;
 }
 
 void VulkanDevice::destroyPipeline(PipelineHandle pipeline) {
-  auto it = pipelines_.find(pipeline);
-  if (it == pipelines_.end()) return;
-  VkPipeline p = it->second.pipeline;
-  VkPipelineLayout l = it->second.layout;
-  pipelines_.erase(it);
-  retire_.retire(frameIndex_, [this, p, l] {
-    vkDestroyPipeline(device_, p, nullptr);
-    vkDestroyPipelineLayout(device_, l, nullptr);
-  });
+  // 只释放句柄引用;底层对象由 pipelineCache_ 持有(设备析构时统一销毁)
+  pipelines_.erase(pipeline);
 }
 
 /**
@@ -1195,11 +1276,11 @@ void VulkanCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor&
 void VulkanCommandBuffer::bindPipeline(PipelineHandle pipeline) {
   PipelineRec rec;
   if (!device_->pipeline(pipeline, rec)) return;
-  vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rec.pipeline);
-  currentLayout_ = rec.layout;
-  topology_ = rec.topology;
+  vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rec.cached->pipeline);
+  currentLayout_ = device_->pipelineLayout();
+  topology_ = rec.cached->topology;
   VkDescriptorSet set = device_->descriptorSet();
-  vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rec.layout, 0, 1,
+  vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, currentLayout_, 0, 1,
                           &set, 0, nullptr);
 }
 

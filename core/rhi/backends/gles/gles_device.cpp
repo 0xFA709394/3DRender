@@ -76,7 +76,10 @@ struct PipelineKeyHash {
     mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
     mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
     mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
-    for (const auto& b : k.bindings) mix((size_t(b.binding) << 8) | b.stride);
+    for (const auto& b : k.bindings) {
+      mix((size_t(b.binding) << 8) | b.stride);
+      mix(uint32_t(b.stepRate));
+    }
     for (const auto& a : k.attribs)
       mix((size_t(a.location) << 24) ^ (size_t(a.offset) << 8) ^ uint32_t(a.format) ^ a.binding);
     return h;
@@ -153,6 +156,10 @@ public:
   void bindTexture(uint32_t slot, TextureHandle texture, SamplerHandle sampler) override {}
   void draw(uint32_t vertexCount, uint32_t firstVertex) override;
   void drawIndexed(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset) override;
+  void drawInstanced(uint32_t vertexCount, uint32_t firstVertex, uint32_t instanceCount,
+                     uint32_t firstInstance) override;
+  void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
+                            uint32_t instanceCount, uint32_t firstInstance) override;
   /// GL 立即执行模型无需结束 pass 的动作，空实现。
   void endRenderPass() override {}
 
@@ -335,19 +342,45 @@ void GLESCommandBuffer::drawIndexed(uint32_t indexCount, uint32_t firstIndex, in
                  reinterpret_cast<const void*>(uintptr_t(indexOffset_ + firstIndex * (u16 ? 2 : 4))));
 }
 
+void GLESCommandBuffer::drawInstanced(uint32_t vertexCount, uint32_t firstVertex,
+                                      uint32_t instanceCount, uint32_t firstInstance) {
+  if (firstInstance != 0)
+    RD_LOGW("rhi.gles", "ES3.0 不支持 firstInstance,按 0 处理");
+  applyVertexState();
+  glDrawArraysInstanced(pipeline_.topology, GLint(firstVertex), GLsizei(vertexCount),
+                        GLsizei(instanceCount));
+}
+
+void GLESCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex,
+                                             int32_t vertexOffset, uint32_t instanceCount,
+                                             uint32_t firstInstance) {
+  if (vertexOffset != 0 || firstInstance != 0)
+    RD_LOGW("rhi.gles", "ES3.0 不支持 baseVertex/baseInstance,按 0 处理");
+  applyVertexState();
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, device_->buffer(indexBuffer_));
+  const bool u16 = indexType_ == IndexType::UInt16;
+  glDrawElementsInstanced(pipeline_.topology, GLsizei(indexCount),
+                          u16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
+                          reinterpret_cast<const void*>(uintptr_t(indexOffset_ + firstIndex * (u16 ? 2 : 4))),
+                          GLsizei(instanceCount));
+}
+
 /// 每次 draw 前按当前管线布局重建全部顶点属性指针（P0 无 VAO 缓存的最简实现）。
+/// divisor 按 binding 的 stepRate 显式设置(状态有粘性,必须每次覆盖)。
 void GLESCommandBuffer::applyVertexState() {
   for (const auto& a : pipeline_.attribs) {
     glEnableVertexAttribArray(a.location);
     glBindBuffer(GL_ARRAY_BUFFER, device_->buffer(vertexBuffers_[a.binding]));
-    // 在 bindings 中线性查找该属性所在槽位的 stride
+    // 在 bindings 中线性查找该属性所在槽位的 stride 与 stepRate
     uint32_t stride = 0;
+    VertexStepRate rate = VertexStepRate::Vertex;
     for (const auto& b : pipeline_.bindings) {
-      if (b.binding == a.binding) stride = b.stride;
+      if (b.binding == a.binding) { stride = b.stride; rate = b.stepRate; }
     }
     glVertexAttribPointer(a.location, toGLAttribSize(a.format), toGLAttribType(a.format),
                           a.format == Format::RGBA8_UNORM ? GL_TRUE : GL_FALSE, GLsizei(stride),
                           reinterpret_cast<const void*>(uintptr_t(vertexOffsets_[a.binding] + a.offset)));
+    glVertexAttribDivisor(a.location, rate == VertexStepRate::Instance ? 1 : 0);
   }
 }
 

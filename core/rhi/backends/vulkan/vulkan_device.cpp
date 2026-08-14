@@ -95,7 +95,10 @@ struct PipelineKeyHash {
     mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
     mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
     mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
-    for (const auto& b : k.bindings) mix((size_t(b.binding) << 8) | b.stride);
+    for (const auto& b : k.bindings) {
+      mix((size_t(b.binding) << 8) | b.stride);
+      mix(uint32_t(b.stepRate));
+    }
     for (const auto& a : k.attribs)
       mix((size_t(a.location) << 24) ^ (size_t(a.offset) << 8) ^ uint32_t(a.format) ^ a.binding);
     return h;
@@ -166,6 +169,10 @@ public:
   void bindTexture(uint32_t slot, TextureHandle texture, SamplerHandle sampler) override;
   void draw(uint32_t vertexCount, uint32_t firstVertex) override;
   void drawIndexed(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset) override;
+  void drawInstanced(uint32_t vertexCount, uint32_t firstVertex, uint32_t instanceCount,
+                     uint32_t firstInstance) override;
+  void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
+                            uint32_t instanceCount, uint32_t firstInstance) override;
   void endRenderPass() override;
 
   VulkanDevice* device_;
@@ -794,10 +801,13 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   stages[1].module = fsIt->second.module;
   stages[1].pName = fsIt->second.entry.c_str();
 
-  // 顶点输入布局（binding/attribute 直接一一映射）
+  // 顶点输入布局（binding/attribute 直接一一映射;stepRate 决定输入频率）
   std::vector<VkVertexInputBindingDescription> bindings;
   for (const auto& b : desc.vertexBindings) {
-    bindings.push_back({b.binding, b.stride, VK_VERTEX_INPUT_RATE_VERTEX});
+    bindings.push_back({b.binding, b.stride,
+                        b.stepRate == VertexStepRate::Instance
+                            ? VK_VERTEX_INPUT_RATE_INSTANCE
+                            : VK_VERTEX_INPUT_RATE_VERTEX});
   }
   std::vector<VkVertexInputAttributeDescription> attribs;
   for (const auto& a : desc.attributes) {
@@ -1324,6 +1334,17 @@ void VulkanCommandBuffer::draw(uint32_t vertexCount, uint32_t firstVertex) {
 void VulkanCommandBuffer::drawIndexed(uint32_t indexCount, uint32_t firstIndex,
                                       int32_t vertexOffset) {
   vkCmdDrawIndexed(cmd_, indexCount, 1, firstIndex, vertexOffset, 0);
+}
+
+void VulkanCommandBuffer::drawInstanced(uint32_t vertexCount, uint32_t firstVertex,
+                                        uint32_t instanceCount, uint32_t firstInstance) {
+  vkCmdDraw(cmd_, vertexCount, instanceCount, firstVertex, firstInstance);
+}
+
+void VulkanCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex,
+                                               int32_t vertexOffset, uint32_t instanceCount,
+                                               uint32_t firstInstance) {
+  vkCmdDrawIndexed(cmd_, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
 
 /**

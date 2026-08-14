@@ -6,6 +6,8 @@ rd_compile_shader(texquad.vert)
 rd_compile_shader(texquad.frag)
 rd_compile_shader(blend.vert)
 rd_compile_shader(blend.frag)
+rd_compile_shader(inst.vert)
+rd_compile_shader(inst.frag)
 
 # 生成路径头，供测试定位 shader 产物
 file(WRITE ${CMAKE_BINARY_DIR}/generated/rd_shader_dir.h

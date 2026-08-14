@@ -133,12 +133,16 @@ struct ShaderModuleDesc {
   std::string entryPoint = "main0";
 };
 
-/// 顶点缓冲绑定描述：一条 binding 槽位的步长。
+/// 顶点缓冲步进频率:每顶点 / 每实例。
+enum class VertexStepRate : uint32_t { Vertex, Instance };
+
+/// 顶点缓冲绑定描述：一条 binding 槽位的步长与步进频率。
 struct VertexBinding {
   uint32_t binding = 0;  ///< binding 槽位号（与 VertexAttribute::binding 对应）
-  uint32_t stride = 0;   ///< 相邻顶点间字节步长
+  uint32_t stride = 0;   ///< 相邻顶点(或实例)间字节步长
+  VertexStepRate stepRate = VertexStepRate::Vertex;  ///< Instance = 每实例步进
   bool operator==(const VertexBinding& o) const {
-    return binding == o.binding && stride == o.stride;
+    return binding == o.binding && stride == o.stride && stepRate == o.stepRate;
   }
 };
 

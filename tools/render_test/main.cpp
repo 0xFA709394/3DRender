@@ -51,10 +51,16 @@ int main(int argc, char** argv) {
 
   // ---- glTF 模型模式(renderer/scene/resource 新骨架驱动)----
   if (!model.empty()) {
-    auto vs = rd::test::loadShaderCode(backend, RD_SHADER_DIR, "unlit.vert");
-    auto fs = rd::test::loadShaderCode(backend, RD_SHADER_DIR, "unlit.frag");
+    auto load = [&](const char* name) {
+      return rd::test::loadShaderCode(backend, RD_SHADER_DIR, name);
+    };
+    auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
+    auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
+    auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
     rd::Renderer renderer;
-    rd::RendererShaderDesc sd{vs.code, fs.code, vs.entry, rd::Format::RGBA8_UNORM};
+    rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
+                              pfVs.code,   pfFs.code,   unlitVs.entry,
+                              rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;
     td.height = kH;

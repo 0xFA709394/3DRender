@@ -233,7 +233,7 @@ struct DeviceDesc {
 //   uniform slot N(0..3) ↔ Metal buffer(N) ↔ Vulkan set0 binding N ↔ GLES binding N
 //   texture slot N(0..7) ↔ Metal texture/sampler(N+4) ↔ Vulkan set0 binding(N+4) combined-image-sampler
 //                        ↔ GLES 纹理单元 N（sampler uniform 名:texN）
-//   vertex binding N ↔ Metal buffer(N+1)
+//   vertex binding N ↔ Metal buffer(N+4)(uniform 0..3 占 Metal buffer 0..3,顶点从 4 起)
 
 /// 返回 Format 每像素/每元素的字节数（如 RGBA8_UNORM=4，R32G32B32_FLOAT=12）。
 uint32_t formatSize(Format f);

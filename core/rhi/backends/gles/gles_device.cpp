@@ -744,10 +744,17 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
     glDeleteProgram(program);
     return {};
   }
-  // uniform block "UBO" ↔ slot 0（P0 硬编码；P1 由反射 JSON 驱动）
-  GLuint blockIndex = glGetUniformBlockIndex(program, "UBO");
-  if (blockIndex != GL_INVALID_INDEX) {
-    glUniformBlockBinding(program, blockIndex, 0);
+  // uniform block 名 → slot 约定(绑定约定;cube 遗留 "UBO"→0;
+  // PBR 系 FrameUBO→0,ItemUBO→1;不存在的块名返回 INVALID_INDEX 自动跳过)
+  static const struct {
+    const char* name;
+    uint32_t slot;
+  } kBlockTable[] = {
+      {"UBO", 0}, {"FrameUBO", 0}, {"ItemUBO", 1},
+  };
+  for (const auto& b : kBlockTable) {
+    GLuint blockIndex = glGetUniformBlockIndex(program, b.name);
+    if (blockIndex != GL_INVALID_INDEX) glUniformBlockBinding(program, blockIndex, b.slot);
   }
   programCache_.emplace(key, program);
   PipelineRec rec;

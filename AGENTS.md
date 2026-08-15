@@ -35,7 +35,7 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 数学：glm，全局 `GLM_FORCE_DEPTH_ZERO_TO_ONE`（NDC z ∈ [0,1]，右手系）
 - 句柄：`Handle<Tag>`，0 无效；GPU 资源只经 `rhi::Device` 创建/销毁
 - 绑定约定：uniform slot N ↔ Metal buffer(N) ↔ Vulkan set0 binding N ↔ GLES binding N；
-  vertex binding N ↔ Metal buffer(N+1)
+  vertex binding N ↔ Metal buffer(N+4)（uniform 0..3 占 Metal buffer 0..3，顶点从 4 起）
 - shader 入口名：Metal(metallib) 为 `main0`（spirv-cross 约定）；SPIR-V/GLSL ES 为 `main`
 - Vulkan 直连 MoltenVK ICD（不经过 Loader），不要请求 VK_KHR_portability_enumeration
 - 日志：`RD_LOGD/I/W/E(tag, fmt, ...)`，tag 用模块名（如 `rhi.vk`）

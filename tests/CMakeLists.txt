@@ -19,7 +19,7 @@ add_executable(rd_tests
   resource/mesh_utils_test.cpp
   scene/scene_test.cpp
   renderer/renderer_test.cpp
-  renderer/box_unlit_test.cpp
+  renderer/box_render_test.cpp
   renderer/environment_test.cpp
   renderer/prefilter_test.cpp
   common/image.cpp

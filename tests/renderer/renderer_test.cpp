@@ -14,10 +14,14 @@ namespace {
 constexpr uint32_t kW = 256, kH = 256;
 
 std::unique_ptr<rd::Renderer> makeRenderer(rd::Device& dev, rd::Backend b) {
-  auto vs = rd::test::loadShaderCode(b, RD_SHADER_DIR, "unlit.vert");
-  auto fs = rd::test::loadShaderCode(b, RD_SHADER_DIR, "unlit.frag");
+  auto load = [&](const char* name) { return rd::test::loadShaderCode(b, RD_SHADER_DIR, name); };
+  auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
+  auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
+  auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
   auto r = std::make_unique<rd::Renderer>();
-  rd::RendererShaderDesc sd{vs.code, fs.code, vs.entry, rd::Format::RGBA8_UNORM};
+  rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
+                            pfVs.code,   pfFs.code,   unlitVs.entry,
+                            rd::Format::RGBA8_UNORM};
   if (!r->init(dev, sd)) return nullptr;
   return r;
 }

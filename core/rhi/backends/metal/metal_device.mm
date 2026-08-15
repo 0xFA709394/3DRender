@@ -4,8 +4,9 @@
 // 架构要点：
 // - 句柄表：每类资源一张 unordered_map<Handle, Rec>，句柄值由 nextId_ 自增分配；
 //   destroy 即 erase，ARC 负责 ObjC 对象释放。
-// - 绑定约定（见 rhi_types.h）：uniform slot N ↔ Metal buffer(N)（顶点/片段同时绑）；
-//   texture slot N ↔ texture/sampler(N+4)；vertex binding N ↔ buffer(N+1)（0 留给 uniform）。
+// - 绑定约定（见 rhi_types.h）：uniform slot N ↔ Metal buffer(N)（顶点/片段同时绑）;
+//   texture slot N ↔ texture/sampler(N+4)；vertex binding N ↔ buffer(N+4)
+//   （uniform 0..3 占 buffer 0..3,顶点从 4 起,避免槽位碰撞）。
 // - 着色器：加载离线编译的 metallib（dispatch_data 包装），入口名约定 "main0"
 //   （spirv-cross 生成 MSL 的默认入口名）。
 // - swapchain：CAMetalLayer 颜色格式限 BGRA8 系（iOS 尤其严格），
@@ -367,16 +368,16 @@ public:
     pd.colorAttachments[0].sourceAlphaBlendFactor = toMTLBlendFactor(desc.blend.srcAlpha);
     pd.colorAttachments[0].destinationAlphaBlendFactor = toMTLBlendFactor(desc.blend.dstAlpha);
 
-    // 顶点布局：RHI binding N ↔ Metal buffer(N+1)，0 号留给 uniform 缓冲。
+    // 顶点布局：RHI binding N ↔ Metal buffer(N+4)(uniform slot 0..3 占 buffer 0..3)。
     MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
     for (const auto& a : desc.attributes) {
       vd.attributes[a.location].format = toMTLVertexFormat(a.format);
       vd.attributes[a.location].offset = a.offset;
-      vd.attributes[a.location].bufferIndex = a.binding + 1; // 约定：0 留给 uniform
+      vd.attributes[a.location].bufferIndex = a.binding + 4;  // 约定:0..3 留给 uniform
     }
     for (const auto& b : desc.vertexBindings) {
-      vd.layouts[b.binding + 1].stride = b.stride;
-      vd.layouts[b.binding + 1].stepFunction =
+      vd.layouts[b.binding + 4].stride = b.stride;
+      vd.layouts[b.binding + 4].stepFunction =
           b.stepRate == VertexStepRate::Instance ? MTLVertexStepFunctionPerInstance
                                                  : MTLVertexStepFunctionPerVertex;
     }
@@ -826,9 +827,9 @@ void MetalCommandBuffer::bindPipeline(PipelineHandle pipeline) {
   if (pipeline_.depthState) [encoder_ setDepthStencilState:pipeline_.depthState];
 }
 
-/// 绑定约定：vertex binding N ↔ Metal buffer(N+1)。
+/// 绑定约定：vertex binding N ↔ Metal buffer(N+4)。
 void MetalCommandBuffer::bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) {
-  [encoder_ setVertexBuffer:device_->buffer(buffer) offset:offset atIndex:binding + 1];
+  [encoder_ setVertexBuffer:device_->buffer(buffer) offset:offset atIndex:binding + 4];
 }
 
 /// Metal 的索引缓冲是 draw 参数而非独立状态：这里仅记录，drawIndexed 时取用。

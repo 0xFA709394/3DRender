@@ -7,14 +7,25 @@
 #include "rhi/rhi_device.h"
 
 namespace rd {
+namespace renderer {
+class Environment;
+}
+
+/// 渲染项录制上下文:per-frame 与 per-item UBO + 环境纹理(Renderer 注入)。
+struct RenderContext {
+  BufferHandle frameUbo;                    ///< slot0:FrameUBO(256B)
+  BufferHandle itemUbo;                     ///< slot1:ItemUBO(per-item 256B 步进)
+  uint64_t itemOffset = 0;                  ///< 本项在 itemUbo 中的偏移
+  const renderer::Environment* env = nullptr;  ///< 环境纹理(prefilter/LUT)
+};
 
 class Renderable {
 public:
   virtual ~Renderable() = default;
   /// render pass 前的预处理钩子(默认空)。
   virtual void prepass(CommandBuffer* cmd) { (void)cmd; }
-  /// 录制本项绘制命令;sceneUBO 为 per-item mvp 动态缓冲(offset 子区间绑定)。
-  virtual void record(CommandBuffer* cmd, BufferHandle sceneUBO, uint64_t uboOffset) = 0;
+  /// 录制本项绘制命令。
+  virtual void record(CommandBuffer* cmd, const RenderContext& ctx) = 0;
 };
 
 } // namespace rd

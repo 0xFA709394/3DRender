@@ -23,6 +23,8 @@ public:
   }
   math::Mat4 viewMatrix() const { return math::lookAt(eye_, center_, up_); }
   math::Mat4 projMatrix() const { return math::perspective(fovY_, aspect_, zNear_, zFar_); }
+  /// 相机世界位置(FrameUBO cameraPos 用)。
+  const math::Vec3& eye() const { return eye_; }
 
 private:
   math::Vec3 eye_{0, 0, 3}, center_{0}, up_{0, 1, 0};

@@ -11,8 +11,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - 阶段一完成：RHI 底座强化（能力表/内存 flag/N 帧退休/管线缓存/instancing/
   cube 渲染目标/GLES 纹理+延迟回放）
 - 阶段二 a 完成：renderer/scene/resource 三层骨架 + 离屏深度附件 + glTF unlit 渲染
-  （BoxTextured golden 双后端像素级一致）
-- 下一步：阶段二 b（PBR/IBL，uber-shader + 环境生成 + DamagedHelmet golden）
+- 阶段二 b 完成：PBR/IBL(glTF MR 全模型 + emissive/occlusion/KHR_texture_transform;
+  混合路径 IBL:GPU specular 预滤波 + CPU SH9/BRDF LUT;1 方向光;
+  DamagedHelmet golden 双后端像素级一致)
+- 下一步：阶段二 c(Orbit 手势 + 画质分级 + KTX2)/ P2(阴影+多光源+后处理+骨骼动画)
 
 ## 构建与测试
 ```bash
@@ -48,7 +50,14 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   device-local，`updateBuffer` 会被拒绝（动态数据须 `hostWrite=true`）
 - 纹理可作为渲染目标：`TextureUsage::RenderTargetAttachment` +
   `OffscreenTargetDesc.colorFromTexture(face/mip)`；GLES sampler uniform 命名 `texN ↔ slot N`
-- 顶点布局约定（glTF 模型）：pos(3f)@0 | normal(3f)@12 | uv(2f)@24，交错 stride 32
+- 顶点布局约定（glTF 模型）：pos(3f)@0 | normal(3f)@12 | tangent(4f)@24 | uv(2f)@40，
+  交错 stride 48，location 0/1/2/3
+- UBO 约定：slot0=FrameUBO(256B:viewProj|cameraPos|lightDir|lightColor|sh[9])，
+  slot1=ItemUBO(256B 步进:mvp|world|normalMatrix|factors|uvTransform)；
+  GLES uniform block 名表：UBO/FrameUBO→0，ItemUBO→1
+- 纹理槽位：0=baseColor，1=MR，2=normal，3=emissive，4=occlusion，5=prefilterCube，
+  6=brdfLut(nearest 采样)
+- cubemap 方向约定：GL/Khronos(u 右向、v 顶向下)，环境生成/预滤波/采样三处必须一致
 - 深度：离屏目标 `OffscreenTargetDesc.depth=true` + pipeline `depthTest/depthWrite`；
   depth 管线须配 depth 目标；CompareOp 默认 Less（Reverse-Z 预留）
 - renderer 层 per-item UBO 步进 256B（三后端对齐最小公倍）；渲染循环见

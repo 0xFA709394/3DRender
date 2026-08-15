@@ -7,7 +7,11 @@ add_library(rd_core STATIC
   resource/image_codec.cpp
   resource/gltf_loader.cpp
   resource/mesh_render_resource.cpp
+  renderer/renderer.cpp
+  renderer/mesh_renderable.cpp
   scene/cube_scene.cpp
+  scene/node.cpp
+  scene/scene.cpp
   api/rd_api.cpp
 )
 target_include_directories(rd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}

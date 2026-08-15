@@ -16,6 +16,7 @@ add_executable(rd_tests
   rhi/cube_target_test.cpp
   rhi/depth_test.cpp
   resource/gltf_test.cpp
+  resource/mesh_utils_test.cpp
   scene/scene_test.cpp
   renderer/renderer_test.cpp
   renderer/box_unlit_test.cpp

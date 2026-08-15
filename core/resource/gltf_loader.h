@@ -2,8 +2,9 @@
  * @file gltf_loader.h
  * @brief glTF 2.0 加载(cgltf):glb/gltf → ModelAsset(纯 CPU 数据,不碰 GPU)。
  *
- * 顶点统一规整为交错布局 pos(3f)|normal(3f)|uv(2f)(stride 32 字节);
- * 缺失属性(normal/uv)补 0。索引自适应 u16/u32(>65535 或源为 u32 时用 UInt32)。
+ * 顶点统一规整为交错布局 pos(3f)|normal(3f)|tangent(4f)|uv(2f)(stride 48 字节);
+ * 缺失属性(normal/uv)补 0;切线由 mesh_utils 计算(uv 退化时记警告降级)。
+ * 索引自适应 u16/u32(>65535 或源为 u32 时用 UInt32)。
  * 内嵌纹理图像解码为 RGBA8;解码失败返回无效 ImageData(调用方决定占位策略)。
  */
 #pragma once
@@ -15,19 +16,33 @@
 
 namespace rd {
 
+/// 材质数据(glTF metallic-roughness + 本框架支持的 KHR 扩展)。
+struct MaterialData {
+  ImageData baseColor;            float baseColorFactor[4] = {1, 1, 1, 1};
+  ImageData metallicRoughness;    float metallicFactor = 1.0f, roughnessFactor = 1.0f;
+  ImageData normal;               float normalScale = 1.0f;
+  ImageData emissive;             float emissiveFactor[3] = {0, 0, 0};
+  ImageData occlusion;            float occlusionStrength = 1.0f;
+  float uvOffset[2] = {0, 0};     // KHR_texture_transform(baseColor 通道;其余贴图同变换)
+  float uvScale[2] = {1, 1};
+  bool unlit = false;             // KHR_materials_unlit
+};
+
 /// 单个 mesh 的 CPU 数据。
 struct MeshData {
   std::string name;
-  std::vector<float> vertices;    // 交错 pos3|normal3|uv2
+  std::vector<float> vertices;    // 交错 pos3|normal3|tangent4|uv2(12 float,stride 48)
   std::vector<uint8_t> indices;   // 原始字节(indexType 决定位宽)
   IndexType indexType = IndexType::UInt16;
   uint32_t indexCount = 0;
-  ImageData baseColor;            // 内嵌 baseColor 纹理;无效(width==0)表示无
+  MaterialData material;
 };
 
-/// 模型资产:一组 mesh。valid()==false 表示加载失败。
+/// 模型资产:一组 mesh + 包围球(全部 mesh 的 POSITION 合并)。valid()==false 表示加载失败。
 struct ModelAsset {
   std::vector<MeshData> meshes;
+  float boundingCenter[3] = {0, 0, 0};
+  float boundingRadius = 1.0f;
   bool valid() const { return !meshes.empty(); }
 };
 

@@ -7,6 +7,7 @@ add_library(rd_core STATIC
   resource/image_codec.cpp
   resource/gltf_loader.cpp
   resource/mesh_render_resource.cpp
+  resource/mesh_utils.cpp
   renderer/renderer.cpp
   renderer/mesh_renderable.cpp
   scene/cube_scene.cpp

@@ -14,10 +14,11 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   PipelineDesc pd;
   pd.vertexShader = vs_;
   pd.fragmentShader = fs_;
-  pd.vertexBindings = {{0, 32}};  // pos3|normal3|uv2 交错
+  pd.vertexBindings = {{0, 48}};  // pos3|normal3|tangent4|uv2 交错
   pd.attributes = {{0, Format::R32G32B32_FLOAT, 0, 0},
                    {1, Format::R32G32B32_FLOAT, 12, 0},
-                   {2, Format::R32G32_FLOAT, 24, 0}};
+                   {2, Format::R32G32B32A32_FLOAT, 24, 0},
+                   {3, Format::R32G32_FLOAT, 40, 0}};
   pd.cullMode = CullMode::None;   // 2a 保守不剔除(绕序约定待 2b 定)
   pd.depthTest = true;
   pd.depthWrite = true;

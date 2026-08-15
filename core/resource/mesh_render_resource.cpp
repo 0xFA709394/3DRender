@@ -1,28 +1,49 @@
 // MeshRenderResource 的实现:ModelAsset → device-local GPU 资源上传与释放。
+// 占位纹理约定:baseColor/MR/occlusion 缺省绑白(采样 1,与 factor 相乘恒等);
+// emissive 缺省绑黑(0 贡献);normal 缺省绑平面法线(0.5,0.5,1)。
 #include "resource/mesh_render_resource.h"
 #include "foundation/log.h"
 
 namespace rd {
+namespace {
+
+TextureHandle makePixel(Device& dev, uint8_t r, uint8_t g, uint8_t b) {
+  const uint8_t px[4] = {r, g, b, 255};
+  rd::TextureDesc td;
+  td.width = 1;
+  td.height = 1;
+  td.data = px;
+  td.dataSize = 4;
+  return dev.createTexture(td);
+}
+
+TextureHandle uploadOr(Device& dev, const ImageData& img, TextureHandle fallback) {
+  if (img.width == 0) return fallback;
+  rd::TextureDesc td;
+  td.width = img.width;
+  td.height = img.height;
+  td.data = img.pixels.data();
+  td.dataSize = uint64_t(img.pixels.size());
+  return dev.createTexture(td);
+}
+
+} // namespace
 
 std::shared_ptr<MeshRenderResource> MeshRenderResource::upload(Device& dev,
                                                                const ModelAsset& model) {
   if (!model.valid()) return nullptr;
   auto res = std::shared_ptr<MeshRenderResource>(new MeshRenderResource());
-  // 1x1 中性灰占位:无纹理 mesh 的统一绑定对象(优雅降级)
-  const uint8_t gray[4] = {128, 128, 128, 255};
-  rd::TextureDesc fd;
-  fd.width = 1;
-  fd.height = 1;
-  fd.data = gray;
-  fd.dataSize = 4;
-  res->fallbackTex_ = dev.createTexture(fd);
+  res->fallbackWhite_ = makePixel(dev, 255, 255, 255);
+  res->fallbackBlack_ = makePixel(dev, 0, 0, 0);
+  res->fallbackNormal_ = makePixel(dev, 128, 128, 255);
   res->sampler_ = dev.createSampler({});
-  if (!res->fallbackTex_.valid() || !res->sampler_.valid()) {
+  if (!res->fallbackWhite_.valid() || !res->fallbackBlack_.valid() ||
+      !res->fallbackNormal_.valid() || !res->sampler_.valid()) {
     res->destroy(dev);
     return nullptr;
   }
 
-  for (const auto& m : model.meshes) {
+  for (auto m : model.meshes) {  // 按值拷贝:上传后清空 CPU 侧像素
     MeshGpuData g;
     g.vbo = dev.createBuffer({uint64_t(m.vertices.size() * 4), BufferUsage::Vertex, false,
                               false, m.vertices.data()});
@@ -30,18 +51,20 @@ std::shared_ptr<MeshRenderResource> MeshRenderResource::upload(Device& dev,
                               m.indices.data()});
     g.indexType = m.indexType;
     g.indexCount = m.indexCount;
-    if (m.baseColor.width > 0) {
-      rd::TextureDesc td;
-      td.width = m.baseColor.width;
-      td.height = m.baseColor.height;
-      td.data = m.baseColor.pixels.data();
-      td.dataSize = uint64_t(m.baseColor.pixels.size());
-      g.baseColorTex = dev.createTexture(td);
-    } else {
-      g.baseColorTex = res->fallbackTex_;
-      RD_LOGW("resource.gltf", "mesh %s 无 baseColor 纹理,用 1x1 灰占位", m.name.c_str());
-    }
-    if (!g.vbo.valid() || !g.ibo.valid() || !g.baseColorTex.valid()) {
+    g.baseColorTex = uploadOr(dev, m.material.baseColor, res->fallbackWhite_);
+    g.mrTex = uploadOr(dev, m.material.metallicRoughness, res->fallbackWhite_);
+    g.normalTex = uploadOr(dev, m.material.normal, res->fallbackNormal_);
+    g.emissiveTex = uploadOr(dev, m.material.emissive, res->fallbackBlack_);
+    g.occlusionTex = uploadOr(dev, m.material.occlusion, res->fallbackWhite_);
+    // CPU 像素已上传,清空以省内存(材质 factor 等元数据保留)
+    m.material.baseColor.pixels.clear();
+    m.material.metallicRoughness.pixels.clear();
+    m.material.normal.pixels.clear();
+    m.material.emissive.pixels.clear();
+    m.material.occlusion.pixels.clear();
+    g.material = std::move(m.material);
+    if (!g.vbo.valid() || !g.ibo.valid() || !g.baseColorTex.valid() || !g.mrTex.valid() ||
+        !g.normalTex.valid() || !g.emissiveTex.valid() || !g.occlusionTex.valid()) {
       res->destroy(dev);
       return nullptr;
     }
@@ -54,13 +77,21 @@ void MeshRenderResource::destroy(Device& dev) {
   for (auto& g : meshes_) {
     if (g.vbo.valid()) dev.destroyBuffer(g.vbo);
     if (g.ibo.valid()) dev.destroyBuffer(g.ibo);
-    if (g.baseColorTex.valid() && g.baseColorTex != fallbackTex_)
-      dev.destroyTexture(g.baseColorTex);
+    for (TextureHandle t : {g.baseColorTex, g.mrTex, g.normalTex, g.emissiveTex,
+                            g.occlusionTex}) {
+      // 只销毁非占位纹理(占位纹理由本对象统一销毁)
+      if (t.valid() && t != fallbackWhite_ && t != fallbackBlack_ && t != fallbackNormal_)
+        dev.destroyTexture(t);
+    }
   }
   meshes_.clear();
-  if (fallbackTex_.valid()) dev.destroyTexture(fallbackTex_);
+  if (fallbackWhite_.valid()) dev.destroyTexture(fallbackWhite_);
+  if (fallbackBlack_.valid()) dev.destroyTexture(fallbackBlack_);
+  if (fallbackNormal_.valid()) dev.destroyTexture(fallbackNormal_);
   if (sampler_.valid()) dev.destroySampler(sampler_);
-  fallbackTex_ = {};
+  fallbackWhite_ = {};
+  fallbackBlack_ = {};
+  fallbackNormal_ = {};
   sampler_ = {};
 }
 

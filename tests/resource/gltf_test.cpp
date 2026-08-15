@@ -17,9 +17,10 @@ TEST(Gltf, BoxTexturedStructure) {
   const auto& m = model.meshes[0];
   EXPECT_EQ(m.indexCount, 36u);
   EXPECT_EQ(m.indexType, rd::IndexType::UInt16);
-  EXPECT_EQ(m.vertices.size(), 24u * 8u);   // 24 顶点 × 8 float(stride 32)
-  EXPECT_GT(m.baseColor.width, 0u);         // 内嵌纹理解码成功
-  EXPECT_EQ(m.baseColor.pixels.size(), size_t(m.baseColor.width) * m.baseColor.height * 4u);
+  EXPECT_EQ(m.vertices.size(), 24u * 12u);  // 24 顶点 × 12 float(stride 48)
+  EXPECT_GT(m.material.baseColor.width, 0u);  // 内嵌纹理解码成功
+  EXPECT_EQ(m.material.baseColor.pixels.size(),
+            size_t(m.material.baseColor.width) * m.material.baseColor.height * 4u);
 }
 
 TEST(Gltf, DamagedHelmetStructure) {
@@ -32,8 +33,8 @@ TEST(Gltf, DamagedHelmetStructure) {
   const auto& m = model.meshes[0];
   EXPECT_EQ(m.indexCount, 46356u);
   EXPECT_EQ(m.indexType, rd::IndexType::UInt16);
-  EXPECT_EQ(m.vertices.size(), 14556u * 8u);
-  EXPECT_GT(m.baseColor.width, 0u);
+  EXPECT_EQ(m.vertices.size(), 14556u * 12u);
+  EXPECT_GT(m.material.baseColor.width, 0u);
 }
 
 TEST(Gltf, TetraU32IndicesAndMissingAttrs) {
@@ -47,8 +48,40 @@ TEST(Gltf, TetraU32IndicesAndMissingAttrs) {
   EXPECT_EQ(m.indexCount, 12u);
   EXPECT_EQ(m.indexType, rd::IndexType::UInt32);
   EXPECT_EQ(m.indices.size(), 12u * 4u);
-  EXPECT_EQ(m.vertices.size(), 4u * 8u);
-  EXPECT_EQ(m.baseColor.width, 0u);  // 无纹理 → 无效 ImageData(上传时走灰占位)
+  EXPECT_EQ(m.vertices.size(), 4u * 12u);  // 12 float/顶点(stride 48)
+  EXPECT_EQ(m.material.baseColor.width, 0u);  // 无纹理 → 无效 ImageData(上传走白占位)
+}
+
+TEST(Gltf, DamagedHelmetMaterials) {
+  std::string path = std::string(kAssets) + "/DamagedHelmet.glb";
+  auto model = rd::loadGltf(path.c_str());
+  ASSERT_TRUE(model.valid());
+  const auto& m = model.meshes[0].material;
+  EXPECT_GT(m.baseColor.width, 0u);          // 内嵌 JPEG 全部解码
+  EXPECT_GT(m.metallicRoughness.width, 0u);
+  EXPECT_GT(m.normal.width, 0u);
+  EXPECT_GT(m.emissive.width, 0u);
+  EXPECT_GT(m.occlusion.width, 0u);
+  EXPECT_FALSE(m.unlit);                     // DamagedHelmet 无 unlit 扩展
+  EXPECT_NEAR(m.roughnessFactor, 1.0f, 0.01f);
+}
+
+TEST(Gltf, BoundingSphere) {
+  std::string path = std::string(kAssets) + "/BoxTextured.glb";
+  auto model = rd::loadGltf(path.c_str());
+  ASSERT_TRUE(model.valid());
+  EXPECT_NEAR(model.boundingRadius, 0.866f, 0.01f);  // Box ±0.5 → 半径 √3/2
+  EXPECT_NEAR(model.boundingCenter[0], 0.0f, 0.01f);
+}
+
+TEST(Gltf, BoxHasTangents) {
+  // 48B 布局含非零切线(12 float/顶点)
+  std::string path = std::string(kAssets) + "/BoxTextured.glb";
+  auto model = rd::loadGltf(path.c_str());
+  ASSERT_TRUE(model.valid());
+  EXPECT_EQ(model.meshes[0].vertices.size(), 24u * 12u);
+  float t0 = model.meshes[0].vertices[6];  // 首顶点 tangent.x
+  EXPECT_GT(std::abs(t0), 0.5f);
 }
 
 TEST(Gltf, MissingFileReturnsEmpty) {

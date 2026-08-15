@@ -11,13 +11,18 @@
 
 namespace rd {
 
-/// 单个 mesh 的 GPU 资源。
+/// 单个 mesh 的 GPU 资源 + CPU 侧材质参数(UBO 填充用)。
 struct MeshGpuData {
   BufferHandle vbo;
   BufferHandle ibo;
   IndexType indexType = IndexType::UInt16;
   uint32_t indexCount = 0;
-  TextureHandle baseColorTex;   // 无纹理 mesh 指向 1x1 灰占位(与有纹理 mesh 统一绑定路径)
+  MaterialData material;        // 材质参数(ImageData.pixels 上传后已清空,仅作元数据)
+  TextureHandle baseColorTex;   // 缺省绑 1x1 白占位(采样 1×factor=factor)
+  TextureHandle mrTex;          // 缺省绑 1x1 白
+  TextureHandle normalTex;      // 缺省绑 1x1 平面法线(128,128,255)
+  TextureHandle emissiveTex;    // 缺省绑 1x1 黑
+  TextureHandle occlusionTex;   // 缺省绑 1x1 白
 };
 
 class MeshRenderResource {
@@ -33,7 +38,9 @@ public:
 private:
   std::vector<MeshGpuData> meshes_;
   SamplerHandle sampler_;
-  TextureHandle fallbackTex_;
+  TextureHandle fallbackWhite_;   // 1x1 白
+  TextureHandle fallbackBlack_;   // 1x1 黑
+  TextureHandle fallbackNormal_;  // 1x1 平面法线
 };
 
 } // namespace rd

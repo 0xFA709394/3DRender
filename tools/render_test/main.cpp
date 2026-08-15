@@ -10,6 +10,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <glm/glm.hpp>
 #include "common/image.h"
 #include "common/shader_code.h"
 #include "renderer/renderer.h"
@@ -27,6 +28,7 @@ int main(int argc, char** argv) {
   float angleDeg = 45.0f;
   std::string out = "cube.png";
   std::string model;
+  bool pbr = false;  // --pbr:包围球取景(任意模型自动取景);默认固定机位 (0,0,3)
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
       backend = !strcmp(argv[++i], "vulkan") ? rd::Backend::Vulkan : rd::Backend::Metal;
@@ -36,6 +38,8 @@ int main(int argc, char** argv) {
       out = argv[++i];
     } else if (!strcmp(argv[i], "--model") && i + 1 < argc) {
       model = argv[++i];
+    } else if (!strcmp(argv[i], "--pbr")) {
+      pbr = true;
     }
   }
 
@@ -78,8 +82,17 @@ int main(int argc, char** argv) {
     node->mesh = res;
     scene.root().addChild(std::move(node));
     rd::scene::Camera cam;
-    cam.lookAt({0, 0, 3}, {0, 0, 0}, {0, 1, 0});
-    cam.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+    if (pbr) {
+      // 包围球取景:任意模型自动框取(45° 方位角、20° 仰角)
+      const float dist = m.boundingRadius * 2.5f;
+      glm::vec3 center(m.boundingCenter[0], m.boundingCenter[1], m.boundingCenter[2]);
+      glm::vec3 eye = center + glm::vec3(dist * 0.65f, dist * 0.35f, dist * 0.65f);
+      cam.lookAt({eye.x, eye.y, eye.z}, {center.x, center.y, center.z}, {0, 1, 0});
+      cam.setPerspective(0.78539816f, 1.0f, dist * 0.1f, dist * 10.0f);
+    } else {
+      cam.lookAt({0, 0, 3}, {0, 0, 0}, {0, 1, 0});
+      cam.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+    }
     device->beginFrame();
     renderer.beginScene(cam, {0.2f, 0.2f, 0.25f, 1.0f});
     scene.collect(renderer);

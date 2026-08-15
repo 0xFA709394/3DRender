@@ -1,31 +1,20 @@
-// image.h 的实现：stb 单头库的 PNG 读写 + 逐像素容差比较。
+// image.h 的实现：PNG 读写委托 core/resource/image_codec；容差比较本地实现。
 #include "common/image.h"
-
-// stb 的 implementation 宏只能在一个编译单元定义（本文件即该单元）
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include <stb_image_write.h>
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
-
+#include "resource/image_codec.h"
 #include <cstdlib>
 
 namespace rd::test {
 
 bool savePNG(const std::string& path, uint32_t width, uint32_t height, const uint8_t* rgba) {
-  return stbi_write_png(path.c_str(), static_cast<int>(width), static_cast<int>(height), 4,
-                        rgba, static_cast<int>(width * 4)) != 0;
+  return rd::saveImagePNG(path.c_str(), width, height, rgba);
 }
 
 Image loadPNG(const std::string& path) {
   Image img;
-  int w = 0, h = 0, channels = 0;
-  // req_comp=4：无论源图通道数都强制转 RGBA8
-  uint8_t* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
-  if (!data) return img;
-  img.width = static_cast<uint32_t>(w);
-  img.height = static_cast<uint32_t>(h);
-  img.pixels.assign(data, data + static_cast<size_t>(w) * h * 4);
-  stbi_image_free(data);
+  auto d = rd::loadImageRGBA8(path.c_str());
+  img.width = d.width;
+  img.height = d.height;
+  img.pixels = std::move(d.pixels);
   return img;
 }
 

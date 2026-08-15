@@ -15,6 +15,7 @@ add_executable(rd_tests
   rhi/instancing_test.cpp
   rhi/cube_target_test.cpp
   rhi/depth_test.cpp
+  resource/gltf_test.cpp
   common/image.cpp
   common/image_test.cpp
   common/shader_code.cpp

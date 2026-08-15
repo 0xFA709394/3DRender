@@ -4,10 +4,14 @@ add_library(rd_core STATIC
   foundation/task_queue.cpp
   rhi/rhi_factory.cpp
   rhi/rhi_capability.cpp
+  resource/image_codec.cpp
+  resource/gltf_loader.cpp
+  resource/mesh_render_resource.cpp
   scene/cube_scene.cpp
   api/rd_api.cpp
 )
-target_include_directories(rd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(rd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+  ${stb_SOURCE_DIR} ${cgltf_SOURCE_DIR})
 target_link_libraries(rd_core PUBLIC glm::glm)
 target_compile_definitions(rd_core PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE)
 

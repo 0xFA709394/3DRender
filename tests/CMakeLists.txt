@@ -20,6 +20,7 @@ add_executable(rd_tests
   scene/scene_test.cpp
   renderer/renderer_test.cpp
   renderer/box_render_test.cpp
+  renderer/pbr_test.cpp
   renderer/environment_test.cpp
   renderer/prefilter_test.cpp
   common/image.cpp

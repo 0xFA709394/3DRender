@@ -44,7 +44,7 @@ struct BufferRec {
   bool hostVisible = false;  ///< hostWrite/hostRead(行为一致性守卫用)
 };
 struct ShaderRec { GLuint shader = 0; ShaderStage stage; };
-/// 管线：GL program + 顶点布局缓存（draw 时重建属性指针用）+ 拓扑/剔除/混合状态。
+/// 管线：GL program + 顶点布局缓存（draw 时重建属性指针用）+ 拓扑/剔除/混合/深度状态。
 struct PipelineRec {
   GLuint program = 0;
   std::vector<VertexBinding> bindings;
@@ -52,6 +52,9 @@ struct PipelineRec {
   GLenum topology = GL_TRIANGLES;
   CullMode cull = CullMode::None;
   BlendDesc blend;
+  bool depthTest = false;
+  bool depthWrite = false;
+  DepthCompareOp depthCompare = DepthCompareOp::Less;
 };
 
 /// 管线缓存 key:影响 program 链接与状态的全部参数。
@@ -59,6 +62,7 @@ struct PipelineKey {
   uint32_t vs = 0, fs = 0;
   uint32_t topology = 0, cull = 0;
   bool depthTest = false, depthWrite = false;
+  uint32_t depthCompare = 0;
   bool blendEnable = false;
   uint32_t srcColor = 0, dstColor = 0, srcAlpha = 0, dstAlpha = 0;
   uint32_t colorFormat = 0;
@@ -68,6 +72,7 @@ struct PipelineKey {
   bool operator==(const PipelineKey& o) const {
     return vs == o.vs && fs == o.fs && topology == o.topology && cull == o.cull &&
            depthTest == o.depthTest && depthWrite == o.depthWrite &&
+           depthCompare == o.depthCompare &&
            blendEnable == o.blendEnable && srcColor == o.srcColor && dstColor == o.dstColor &&
            srcAlpha == o.srcAlpha && dstAlpha == o.dstAlpha && colorFormat == o.colorFormat &&
            sampleCount == o.sampleCount && bindings == o.bindings && attribs == o.attribs;
@@ -78,7 +83,7 @@ struct PipelineKeyHash {
     size_t h = std::hash<uint64_t>()((uint64_t(k.vs) << 32) | k.fs);
     auto mix = [&h](size_t v) { h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2); };
     mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
-    mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
+    mix(k.depthTest); mix(k.depthWrite); mix(k.depthCompare); mix(k.blendEnable);
     mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
     for (const auto& b : k.bindings) {
       mix((size_t(b.binding) << 8) | b.stride);
@@ -109,6 +114,8 @@ struct TargetRec {
   uint32_t width = 0, height = 0;
   bool isSwapchain = false;
   bool textureBacked = false;  ///< 挂载已有纹理的 face/mip 子资源
+  GLuint depthRbo = 0;         ///< 深度 renderbuffer(hasDepth 时有效)
+  bool hasDepth = false;
   EGLSurface surface = EGL_NO_SURFACE; // swapchain target 专用：beginRenderPass 时切回窗口 surface
 };
 struct SwapChainRec {
@@ -325,7 +332,13 @@ void GLESCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& c
     glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
     glViewport(0, 0, GLsizei(t.width), GLsizei(t.height));
     glClearColor(clear.r, clear.g, clear.b, clear.a);
-    glClear(GL_COLOR_BUFFER_BIT);
+    if (t.hasDepth) {
+      glDepthMask(GL_TRUE);  // 清深度前确保可写
+      glClearDepthf(clear.depth);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    } else {
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
   });
 }
 
@@ -352,6 +365,14 @@ void GLESCommandBuffer::bindPipeline(PipelineHandle pipeline) {
     } else {
       glDisable(GL_BLEND);
     }
+    // 深度状态:管线驱动(须配 depth 目标;否则深度写入无附着点)
+    if (rec.depthTest) {
+      glEnable(GL_DEPTH_TEST);
+      glDepthFunc(rec.depthCompare == DepthCompareOp::Greater ? GL_GREATER : GL_LESS);
+    } else {
+      glDisable(GL_DEPTH_TEST);
+    }
+    glDepthMask(rec.depthWrite ? GL_TRUE : GL_FALSE);
   });
 }
 
@@ -652,11 +673,8 @@ void GLESDevice::destroyShaderModule(ShaderModuleHandle module) {
 }
 
 PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
-  // 深度附件与 MSAA 尚未实现，先拒绝而非静默错误（与 Metal/Vulkan 一致）。
-  if (desc.depthTest || desc.depthWrite) {
-    RD_LOGE("rhi.gles", "深度附件 P1 引入,当前拒绝 depthTest/depthWrite");
-    return {};
-  }
+  // MSAA 尚未实现，先拒绝而非静默错误（与 Metal/Vulkan 一致）。
+  // 注意:depthTest/depthWrite 管线须配 depth=true 的渲染目标(反之亦然)。
   if (desc.sampleCount != 1) {
     RD_LOGE("rhi.gles", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
     return {};
@@ -672,6 +690,7 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
   key.cull = uint32_t(desc.cullMode);
   key.depthTest = desc.depthTest;
   key.depthWrite = desc.depthWrite;
+  key.depthCompare = uint32_t(desc.depthCompare);
   key.blendEnable = desc.blend.enable;
   key.srcColor = uint32_t(desc.blend.srcColor);
   key.dstColor = uint32_t(desc.blend.dstColor);
@@ -689,6 +708,9 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
     cached.topology = toGLTopology(desc.topology);
     cached.cull = desc.cullMode;
     cached.blend = desc.blend;
+    cached.depthTest = desc.depthTest;
+    cached.depthWrite = desc.depthWrite;
+    cached.depthCompare = desc.depthCompare;
     PipelineHandle h(nextId_++);
     pipelines_.emplace(h, cached);
     return h;
@@ -721,6 +743,9 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
   rec.topology = toGLTopology(desc.topology);
   rec.cull = desc.cullMode;
   rec.blend = desc.blend;
+  rec.depthTest = desc.depthTest;
+  rec.depthWrite = desc.depthWrite;
+  rec.depthCompare = desc.depthCompare;
   PipelineHandle h(nextId_++);
   pipelines_.emplace(h, rec);
   return h;
@@ -775,6 +800,16 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
   glGenFramebuffers(1, &rec.fbo);
   glBindFramebuffer(GL_FRAMEBUFFER, rec.fbo);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rec.colorTex, 0);
+  // 深度 renderbuffer(ES3 通用;可采样深度纹理归 P2 阴影)
+  if (desc.depth) {
+    glGenRenderbuffers(1, &rec.depthRbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, rec.depthRbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, GLsizei(desc.width),
+                          GLsizei(desc.height));
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
+                              rec.depthRbo);
+    rec.hasDepth = true;
+  }
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
     RD_LOGE("rhi.gles", "FBO 不完整");
     return {};
@@ -793,6 +828,7 @@ void GLESDevice::destroyTarget(TargetHandle target) {
   ensureOffscreenCurrent();
   glDeleteFramebuffers(1, &it->second.fbo);
   if (it->second.colorTex) glDeleteTextures(1, &it->second.colorTex);
+  if (it->second.depthRbo) glDeleteRenderbuffers(1, &it->second.depthRbo);
   targets_.erase(it);
 }
 

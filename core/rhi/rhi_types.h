@@ -91,6 +91,9 @@ enum class WrapMode { Clamp, Repeat };
 enum class ShaderStage { Vertex, Fragment };
 /// 图元拓扑。
 enum class PrimitiveTopology { TriangleList, TriangleStrip, LineList };
+
+/// 深度比较方式(Reverse-Z 预留:Greater + clearDepth 0.0 + 投影 near/far 对调)。
+enum class DepthCompareOp { Less, Greater };
 /// 面剔除模式。
 enum class CullMode { None, Front, Back };
 
@@ -108,9 +111,10 @@ struct BlendDesc {
 
 // ---- 描述体（Desc）：创建资源时传入的参数包，均有默认值，按需覆盖 ----
 
-/// 清屏颜色（RGBA，默认不透明黑）。
+/// 清屏值（RGBA + 深度;默认不透明黑 + 远平面 1.0）。
 struct ClearColor {
   float r = 0, g = 0, b = 0, a = 1;
+  float depth = 1.0f;  ///< 深度清屏值;Reverse-Z 场景传 0.0
 };
 
 /// 缓冲创建参数。
@@ -166,8 +170,9 @@ struct PipelineDesc {
   std::vector<VertexAttribute> attributes;    ///< 顶点属性布局
   PrimitiveTopology topology = PrimitiveTopology::TriangleList;  ///< 图元拓扑
   CullMode cullMode = CullMode::None;   ///< 面剔除
-  bool depthTest = false;               ///< 深度测试(深度附件 P1 引入;当前三后端拒绝 true)
-  bool depthWrite = false;              ///< 深度写入(与 depthTest 拆分;同样暂拒绝 true)
+  bool depthTest = false;               ///< 深度测试(须配 depth=true 的渲染目标)
+  bool depthWrite = false;              ///< 深度写入
+  DepthCompareOp depthCompare = DepthCompareOp::Less;  ///< 深度比较(Reverse-Z 用 Greater)
   BlendDesc blend;                      ///< 颜色混合(默认关闭)
   /// MSAA 采样数(预留;>1 需 caps().msaa 支持,当前后端拒绝非 1 值)。
   uint32_t sampleCount = 1;

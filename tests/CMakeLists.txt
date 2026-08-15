@@ -18,6 +18,7 @@ add_executable(rd_tests
   resource/gltf_test.cpp
   scene/scene_test.cpp
   renderer/renderer_test.cpp
+  renderer/box_unlit_test.cpp
   common/image.cpp
   common/image_test.cpp
   common/shader_code.cpp

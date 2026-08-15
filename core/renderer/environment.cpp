@@ -1,6 +1,7 @@
 // environment 的实现(CPU 部分):程序化摄影棚环境、SH9 投影、BRDF LUT 积分。
 // 方向约定:GL/Khronos cubemap 约定(与 GPU 采样一致;旧 CPU 自洽约定已废弃)。
 #include "renderer/environment.h"
+#include "rhi/rhi_device.h"
 #include <algorithm>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -188,6 +189,143 @@ std::vector<float> integrateBrdfLut(uint32_t size) {
     }
   }
   return lut;
+}
+
+// ---------------- Environment:GPU 资源与预滤波 ----------------
+namespace {
+constexpr uint32_t kEnvSize = 64;
+constexpr uint32_t kPrefilterMips = 5;
+constexpr uint32_t kLutSize = 32;
+
+/// 6 面 × mip 紧凑打包(与 createTexture 的 cube 数据布局一致)
+std::vector<uint8_t> packFaces(const EnvCubemap& env) {
+  std::vector<uint8_t> out;
+  out.reserve(size_t(env.size) * env.size * 4 * 6);
+  for (const auto& f : env.faces) out.insert(out.end(), f.begin(), f.end());
+  return out;
+}
+
+// face 基向量表(GPU 约定;frag 内 dir = fwd + ndc.x*right + ndc.y*upNdc)
+// {fwd.xyz, right.xyz, upNdc.xyz}
+const float kFaceBasis[6][9] = {
+    {1, 0, 0,  0, 0, -1,  0, 1, 0},   // +X
+    {-1, 0, 0, 0, 0, 1,   0, 1, 0},   // -X
+    {0, 1, 0,  1, 0, 0,   0, 0, -1},  // +Y
+    {0, -1, 0, 1, 0, 0,   0, 0, 1},   // -Y
+    {0, 0, 1,  1, 0, 0,   0, 1, 0},   // +Z
+    {0, 0, -1, -1, 0, 0,  0, 1, 0},   // -Z
+};
+} // namespace
+
+bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
+                        const std::vector<uint8_t>& pfFsCode, const std::string& entry,
+                        Format colorFormat) {
+  // 1. 程序化环境 + 上传
+  env_ = buildEnvCubemap(kEnvSize);
+  auto packed = packFaces(env_);
+  TextureDesc etd;
+  etd.type = TextureType::Cube;
+  etd.width = kEnvSize;
+  etd.height = kEnvSize;
+  etd.data = packed.data();
+  etd.dataSize = uint64_t(packed.size());
+  envTex_ = dev.createTexture(etd);
+  if (!envTex_.valid()) return false;
+
+  // 2. SH9(CPU)
+  auto sh = projectToSH(env_.faces, env_.size);
+  for (int i = 0; i < 9; ++i)
+    for (int c = 0; c < 3; ++c) sh_[i * 3 + c] = sh[i][c];
+
+  // 3. BRDF LUT(CPU)→ R32G32_FLOAT 纹理 + nearest 采样器
+  auto lut = integrateBrdfLut(kLutSize);
+  TextureDesc ltd;
+  ltd.width = kLutSize;
+  ltd.height = kLutSize;
+  ltd.format = Format::R32G32_FLOAT;
+  ltd.data = lut.data();
+  ltd.dataSize = uint64_t(lut.size() * 4);
+  brdfLutTex_ = dev.createTexture(ltd);
+  SamplerDesc lsd;
+  lsd.minFilter = Filter::Nearest;
+  lsd.magFilter = Filter::Nearest;
+  lsd.mipFilter = Filter::Nearest;
+  lutSampler_ = dev.createSampler(lsd);
+  cubeSampler_ = dev.createSampler({});
+  if (!brdfLutTex_.valid() || !lutSampler_.valid() || !cubeSampler_.valid()) return false;
+
+  // 4. 预滤波 cubemap(RenderTargetAttachment,5 级 mip)
+  TextureDesc ptd;
+  ptd.type = TextureType::Cube;
+  ptd.width = kEnvSize;
+  ptd.height = kEnvSize;
+  ptd.mipLevels = kPrefilterMips;
+  ptd.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
+  prefilterCube_ = dev.createTexture(ptd);
+  if (!prefilterCube_.valid()) return false;
+
+  // 5. 预滤波管线与 UBO
+  auto vsm = dev.createShaderModule({ShaderStage::Vertex, pfVsCode, entry});
+  auto fsm = dev.createShaderModule({ShaderStage::Fragment, pfFsCode, entry});
+  PipelineDesc pd;
+  pd.vertexShader = vsm;
+  pd.fragmentShader = fsm;
+  pd.colorFormat = colorFormat;
+  prefilterPipeline_ = dev.createPipeline(pd);
+  prefilterUbo_ = dev.createBuffer({256, BufferUsage::Uniform, true, false, nullptr});
+  dev.destroyShaderModule(vsm);
+  dev.destroyShaderModule(fsm);
+  if (!prefilterPipeline_.valid() || !prefilterUbo_.valid()) return false;
+
+  // 6. 逐 face × mip 渲染(N=V=R;roughness = mip/(mips-1))
+  for (uint32_t mip = 0; mip < kPrefilterMips; ++mip) {
+    const uint32_t sz = kEnvSize >> mip;
+    const float roughness = float(mip) / float(kPrefilterMips - 1);
+    for (uint32_t face = 0; face < 6; ++face) {
+      OffscreenTargetDesc td;
+      td.width = sz;
+      td.height = sz;
+      td.colorFromTexture = prefilterCube_;
+      td.face = face;
+      td.mipLevel = mip;
+      auto target = dev.createOffscreenTarget(td);
+      if (!target.valid()) return false;
+      float u[16] = {};
+      u[0] = kFaceBasis[face][0]; u[1] = kFaceBasis[face][1]; u[2] = kFaceBasis[face][2];
+      u[4] = kFaceBasis[face][3]; u[5] = kFaceBasis[face][4]; u[6] = kFaceBasis[face][5];
+      u[8] = kFaceBasis[face][6]; u[9] = kFaceBasis[face][7]; u[10] = kFaceBasis[face][8];
+      u[12] = roughness;
+      dev.updateBuffer(prefilterUbo_, u, sizeof(u), 0);
+      auto* cmd = dev.acquireCommandBuffer();
+      cmd->beginRenderPass(target, {0, 0, 0, 1});
+      cmd->bindPipeline(prefilterPipeline_);
+      cmd->bindUniformBuffer(0, prefilterUbo_, 0, 64);
+      cmd->bindTexture(0, envTex_, cubeSampler_);
+      cmd->draw(3, 0);
+      cmd->endRenderPass();
+      dev.submit(cmd);
+      dev.waitIdle();
+      dev.destroyTarget(target);
+    }
+  }
+  return true;
+}
+
+void Environment::destroy(Device& dev) {
+  if (envTex_.valid()) dev.destroyTexture(envTex_);
+  if (prefilterCube_.valid()) dev.destroyTexture(prefilterCube_);
+  if (brdfLutTex_.valid()) dev.destroyTexture(brdfLutTex_);
+  if (cubeSampler_.valid()) dev.destroySampler(cubeSampler_);
+  if (lutSampler_.valid()) dev.destroySampler(lutSampler_);
+  if (prefilterPipeline_.valid()) dev.destroyPipeline(prefilterPipeline_);
+  if (prefilterUbo_.valid()) dev.destroyBuffer(prefilterUbo_);
+  envTex_ = {};
+  prefilterCube_ = {};
+  brdfLutTex_ = {};
+  cubeSampler_ = {};
+  lutSampler_ = {};
+  prefilterPipeline_ = {};
+  prefilterUbo_ = {};
 }
 
 } // namespace rd::renderer

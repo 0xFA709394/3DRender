@@ -37,6 +37,7 @@ MTLPixelFormat toMTLPixelFormat(Format f) {
   switch (f) {
     case Format::RGBA8_UNORM: return MTLPixelFormatRGBA8Unorm;
     case Format::BGRA8_UNORM: return MTLPixelFormatBGRA8Unorm;
+    case Format::R32G32_FLOAT: return MTLPixelFormatRG32Float;
     case Format::D32_FLOAT:   return MTLPixelFormatDepth32Float;
     default:                  return MTLPixelFormatInvalid;
   }

@@ -21,6 +21,7 @@ add_executable(rd_tests
   renderer/renderer_test.cpp
   renderer/box_unlit_test.cpp
   renderer/environment_test.cpp
+  renderer/prefilter_test.cpp
   common/image.cpp
   common/image_test.cpp
   common/shader_code.cpp

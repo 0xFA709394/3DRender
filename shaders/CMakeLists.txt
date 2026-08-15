@@ -14,6 +14,8 @@ rd_compile_shader(depth.vert)
 rd_compile_shader(depth.frag)
 rd_compile_shader(unlit.vert)
 rd_compile_shader(unlit.frag)
+rd_compile_shader(prefilter.vert)
+rd_compile_shader(prefilter.frag)
 
 # 生成路径头，供测试定位 shader 产物
 file(WRITE ${CMAKE_BINARY_DIR}/generated/rd_shader_dir.h

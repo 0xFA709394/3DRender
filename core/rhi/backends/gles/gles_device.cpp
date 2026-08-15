@@ -146,6 +146,20 @@ GLenum toGLTopology(PrimitiveTopology t) {
 
 /// 顶点属性元素类型：仅 RGBA8_UNORM 用归一化字节，其余按 float。
 GLenum toGLAttribType(Format f) { return f == Format::RGBA8_UNORM ? GL_UNSIGNED_BYTE : GL_FLOAT; }
+
+/// 纹理格式 → (internalFormat, upload format, type) 三元组。
+void toGLTexFormat(Format f, GLint& internal, GLenum& upload, GLenum& type) {
+  switch (f) {
+    case Format::RGBA8_UNORM:
+      internal = GL_RGBA8; upload = GL_RGBA; type = GL_UNSIGNED_BYTE; break;
+    case Format::R32G32_FLOAT:
+      internal = GL_RG32F; upload = GL_RG; type = GL_FLOAT; break;
+    case Format::R32G32B32A32_FLOAT:
+      internal = GL_RGBA32F; upload = GL_RGBA; type = GL_FLOAT; break;
+    default:  // 其余格式(顶点用居多)按 RGBA8 兜底
+      internal = GL_RGBA8; upload = GL_RGBA; type = GL_UNSIGNED_BYTE; break;
+  }
+}
 /// 顶点属性分量数。
 GLint toGLAttribSize(Format f) {
   switch (f) {
@@ -856,7 +870,9 @@ TextureHandle GLESDevice::createTexture(const TextureDesc& desc) {
   glGenTextures(1, &rec.tex);
   glBindTexture(rec.target, rec.tex);
   const uint32_t fmtSize = formatSize(desc.format);
-  const bool rgba8 = desc.format == Format::RGBA8_UNORM;
+  GLint internal;
+  GLenum uploadFmt, uploadType;
+  toGLTexFormat(desc.format, internal, uploadFmt, uploadType);
   const uint8_t* src = static_cast<const uint8_t*>(desc.data);
   uint64_t offset = 0;
   const uint32_t faces = desc.type == TextureType::Cube ? 6 : 1;
@@ -871,8 +887,8 @@ TextureHandle GLESDevice::createTexture(const TextureDesc& desc) {
       }
       GLenum faceTarget = rec.target == GL_TEXTURE_CUBE_MAP
                               ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : GL_TEXTURE_2D;
-      glTexImage2D(faceTarget, GLint(mip), rgba8 ? GL_RGBA8 : GL_RGBA32F, GLsizei(w),
-                   GLsizei(hgt), 0, GL_RGBA, rgba8 ? GL_UNSIGNED_BYTE : GL_FLOAT,
+      glTexImage2D(faceTarget, GLint(mip), internal, GLsizei(w),
+                   GLsizei(hgt), 0, uploadFmt, uploadType,
                    src ? src + offset : nullptr);
       offset += bytes;
       w = w > 1 ? w / 2 : 1;
@@ -949,9 +965,12 @@ void GLESDevice::updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t fa
   glBindTexture(tr.target, tr.tex);
   GLenum faceTarget =
       tr.target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : GL_TEXTURE_2D;
-  const bool rgba8 = tr.format == Format::RGBA8_UNORM;
-  glTexSubImage2D(faceTarget, GLint(mipLevel), 0, 0, GLsizei(w), GLsizei(hgt), GL_RGBA,
-                  rgba8 ? GL_UNSIGNED_BYTE : GL_FLOAT, data);
+  GLint internal;
+  GLenum uploadFmt, uploadType;
+  toGLTexFormat(tr.format, internal, uploadFmt, uploadType);
+  (void)internal;
+  glTexSubImage2D(faceTarget, GLint(mipLevel), 0, 0, GLsizei(w), GLsizei(hgt), uploadFmt,
+                  uploadType, data);
   glBindTexture(tr.target, 0);
 }
 

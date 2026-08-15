@@ -5,8 +5,10 @@
  * +X:(1,-v,-u);-X:(-1,-v,u);+Y:(u,1,v);-Y:(u,-1,-v);+Z:(u,-v,1);-Z:(-u,-v,-1)。
  */
 #pragma once
+#include "rhi/rhi_types.h"
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace rd {
@@ -31,5 +33,34 @@ std::vector<std::array<float, 3>> projectToSH(const std::vector<std::vector<uint
 float evalSH(const std::vector<std::array<float, 3>>& sh, float nx, float ny, float nz);
 /// BRDF 积分 LUT:size² 每像素 (A,B) 两个 float。
 std::vector<float> integrateBrdfLut(uint32_t size);
+
+/// 环境 GPU 资源与预滤波。init 期一次性生成:envTex 上传、SH 投影、LUT 纹理、
+/// GPU 预滤波 prefilterCube(5 级 mip)。destroy 释放全部 GPU 资源。
+class Environment {
+public:
+  /// 生成全部资源;失败返回 false(pfVsCode/pfFsCode 为 prefilter shader 字节)。
+  bool build(Device& dev, const std::vector<uint8_t>& pfVsCode,
+             const std::vector<uint8_t>& pfFsCode, const std::string& entry,
+             Format colorFormat);
+  void destroy(Device& dev);
+
+  TextureHandle prefilterCube() const { return prefilterCube_; }
+  TextureHandle brdfLut() const { return brdfLutTex_; }
+  SamplerHandle cubeSampler() const { return cubeSampler_; }   // Linear+mip
+  SamplerHandle lutSampler() const { return lutSampler_; }     // Nearest
+  const float* sh() const { return sh_; }                      // 27 float(9×vec3)
+  const EnvCubemap& cubemap() const { return env_; }
+
+private:
+  EnvCubemap env_;
+  TextureHandle envTex_;
+  TextureHandle prefilterCube_;
+  TextureHandle brdfLutTex_;
+  SamplerHandle cubeSampler_;
+  SamplerHandle lutSampler_;
+  PipelineHandle prefilterPipeline_;
+  BufferHandle prefilterUbo_;
+  float sh_[27] = {};
+};
 
 } // namespace rd::renderer

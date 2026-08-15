@@ -15,6 +15,15 @@ FetchContent_Declare(glm
   URL https://github.com/g-truc/glm/archive/refs/tags/1.0.1.tar.gz)
 FetchContent_MakeAvailable(glm)
 
+# stb/cgltf:纯 C 头文件库,全平台需要(image_codec/gltf_loader 编进 rd_core)
+FetchContent_Declare(stb
+  URL https://github.com/nothings/stb/archive/refs/heads/master.tar.gz)
+FetchContent_MakeAvailable(stb)
+
+FetchContent_Declare(cgltf
+  URL https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.14.tar.gz)
+FetchContent_MakeAvailable(cgltf)
+
 if(ANDROID)
   FetchContent_Declare(VulkanHeaders
     URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.3.296.0.tar.gz)
@@ -50,10 +59,6 @@ if(NOT ANDROID AND NOT IOS)
   FetchContent_Declare(spirv-cross
     URL https://github.com/KhronosGroup/SPIRV-Cross/archive/refs/tags/vulkan-sdk-1.3.296.0.tar.gz)
   FetchContent_MakeAvailable(spirv-cross)
-
-  FetchContent_Declare(stb
-    URL https://github.com/nothings/stb/archive/refs/heads/master.tar.gz)
-  FetchContent_MakeAvailable(stb)
 
   FetchContent_Declare(VulkanHeaders
     URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.3.296.0.tar.gz)

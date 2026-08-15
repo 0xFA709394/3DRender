@@ -91,6 +91,7 @@ struct PipelineKey {
   uint32_t vs = 0, fs = 0;
   uint32_t topology = 0, cull = 0;
   bool depthTest = false, depthWrite = false;
+  uint32_t depthCompare = 0;
   bool blendEnable = false;
   uint32_t srcColor = 0, dstColor = 0, srcAlpha = 0, dstAlpha = 0;
   uint32_t colorFormat = 0;
@@ -100,6 +101,7 @@ struct PipelineKey {
   bool operator==(const PipelineKey& o) const {
     return vs == o.vs && fs == o.fs && topology == o.topology && cull == o.cull &&
            depthTest == o.depthTest && depthWrite == o.depthWrite &&
+           depthCompare == o.depthCompare &&
            blendEnable == o.blendEnable && srcColor == o.srcColor && dstColor == o.dstColor &&
            srcAlpha == o.srcAlpha && dstAlpha == o.dstAlpha && colorFormat == o.colorFormat &&
            sampleCount == o.sampleCount && bindings == o.bindings && attribs == o.attribs;
@@ -110,7 +112,7 @@ struct PipelineKeyHash {
     size_t h = std::hash<uint64_t>()((uint64_t(k.vs) << 32) | k.fs);
     auto mix = [&h](size_t v) { h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2); };
     mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
-    mix(k.depthTest); mix(k.depthWrite); mix(k.blendEnable);
+    mix(k.depthTest); mix(k.depthWrite); mix(k.depthCompare); mix(k.blendEnable);
     mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
     for (const auto& b : k.bindings) {
       mix((size_t(b.binding) << 8) | b.stride);
@@ -131,6 +133,7 @@ PipelineKey makePipelineKey(const PipelineDesc& desc) {
   key.cull = uint32_t(desc.cullMode);
   key.depthTest = desc.depthTest;
   key.depthWrite = desc.depthWrite;
+  key.depthCompare = uint32_t(desc.depthCompare);
   key.blendEnable = desc.blend.enable;
   key.srcColor = uint32_t(desc.blend.srcColor);
   key.dstColor = uint32_t(desc.blend.dstColor);
@@ -147,13 +150,20 @@ PipelineKey makePipelineKey(const PipelineDesc& desc) {
 
 struct BufferRec { id<MTLBuffer> buffer; bool hostVisible = false; };
 struct ShaderRec { id<MTLLibrary> library; std::string entry; };  ///< entry=入口名（约定 main0）
-struct PipelineRec { id<MTLRenderPipelineState> state; MTLPrimitiveType topology; MTLCullMode cull; };
+struct PipelineRec {
+  id<MTLRenderPipelineState> state;
+  MTLPrimitiveType topology;
+  MTLCullMode cull;
+  id<MTLDepthStencilState> depthState = nil;  ///< 深度状态(depthTest/Write 时创建)
+};
 struct TargetRec {
   id<MTLTexture> color;
   uint32_t width;
   uint32_t height;
   bool textureBacked = false;  ///< 挂载已有纹理的 face/mip(资源归纹理所有)
   uint32_t face = 0, mip = 0;
+  id<MTLTexture> depth = nil;  ///< 深度附件(Depth32Float,hasDepth 时有效)
+  bool hasDepth = false;
 };
 struct SwapChainRec {
   CAMetalLayer* layer = nil;
@@ -315,11 +325,8 @@ public:
   }
 
   PipelineHandle createPipeline(const PipelineDesc& desc) override {
-    // 深度附件与 MSAA 尚未实现，先拒绝而非静默错误（与 Vulkan/GLES 一致）。
-    if (desc.depthTest || desc.depthWrite) {
-      RD_LOGE("rhi.metal", "深度附件 P1 引入,当前拒绝 depthTest/depthWrite");
-      return {};
-    }
+    // MSAA 尚未实现，先拒绝而非静默错误（与 Vulkan/GLES 一致）。
+    // 注意:depthTest/depthWrite 管线须配 depth=true 的渲染目标(反之亦然)。
     if (desc.sampleCount != 1) {
       RD_LOGE("rhi.metal", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
       return {};
@@ -328,12 +335,14 @@ public:
     auto fsIt = shaders_.find(desc.fragmentShader);
     if (vsIt == shaders_.end() || fsIt == shaders_.end()) return {};
 
-    // 缓存命中:直接包装新句柄返回(底层 MTLRenderPipelineState 由缓存持有)
+    // 缓存命中:直接包装新句柄返回(底层 MTLRenderPipelineState 由缓存持有;
+    // depthState 轻量,逐句柄创建)
     PipelineKey key = makePipelineKey(desc);
     if (auto it = pipelineCache_.find(key); it != pipelineCache_.end()) {
       PipelineHandle h(nextId_++);
       pipelines_.emplace(h, PipelineRec{it->second, toMTLTopology(desc.topology),
-                                        toMTLCull(desc.cullMode)});
+                                        toMTLCull(desc.cullMode),
+                                        makeDepthState(desc)});
       return h;
     }
 
@@ -346,6 +355,9 @@ public:
     // 颜色格式须与渲染目标一致：渲染到 swapchain 时调用方应传 swapChainColorFormat()。
     pd.colorAttachments[0].pixelFormat = toMTLPixelFormat(desc.colorFormat);
     if (!pd.vertexFunction || !pd.fragmentFunction) return {};
+    // 深度:PSO 需声明附件格式(与 depth 目标匹配);状态经独立 DepthStencilState 下发
+    if (desc.depthTest || desc.depthWrite)
+      pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 
     // 混合状态(默认关闭)
     pd.colorAttachments[0].blendingEnabled = desc.blend.enable;
@@ -381,13 +393,24 @@ public:
     pipelineCache_.emplace(key, state);
     PipelineHandle h(nextId_++);
     pipelines_.emplace(h, PipelineRec{state, toMTLTopology(desc.topology),
-                                      toMTLCull(desc.cullMode)});
+                                      toMTLCull(desc.cullMode), makeDepthState(desc)});
     return h;
   }
 
   void destroyPipeline(PipelineHandle pipeline) override {
     // 只释放句柄引用;底层对象由 pipelineCache_ 持有(设备析构时统一释放)
     pipelines_.erase(pipeline);
+  }
+
+  /// 由 desc 创建深度状态(depthTest/Write 关闭时返回 nil)。
+  id<MTLDepthStencilState> makeDepthState(const PipelineDesc& desc) {
+    if (!desc.depthTest && !desc.depthWrite) return nil;
+    MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+    dsd.depthCompareFunction = desc.depthCompare == DepthCompareOp::Greater
+                                   ? MTLCompareFunctionGreater
+                                   : MTLCompareFunctionLess;
+    dsd.depthWriteEnabled = desc.depthWrite;
+    return [device_ newDepthStencilStateWithDescriptor:dsd];
   }
 
   /// 创建离屏目标。colorFromTexture 非空时挂载该纹理的 face/mip 子资源为颜色附件;
@@ -420,7 +443,24 @@ public:
     id<MTLTexture> tex = [device_ newTextureWithDescriptor:td];
     if (!tex) return {};
     TargetHandle h(nextId_++);
-    targets_.emplace(h, TargetRec{tex, desc.width, desc.height});
+    TargetRec rec;
+    rec.color = tex;
+    rec.width = desc.width;
+    rec.height = desc.height;
+    // 深度附件(Depth32Float,Private;Metal 深度状态在 encoder 侧按管线设置)
+    if (desc.depth) {
+      MTLTextureDescriptor* dd =
+          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                             width:desc.width
+                                                            height:desc.height
+                                                         mipmapped:NO];
+      dd.usage = MTLTextureUsageRenderTarget;
+      dd.storageMode = MTLStorageModePrivate;
+      rec.depth = [device_ newTextureWithDescriptor:dd];
+      if (!rec.depth) return {};
+      rec.hasDepth = true;
+    }
+    targets_.emplace(h, rec);
     return h;
   }
 
@@ -764,6 +804,12 @@ void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& 
     rp.colorAttachments[0].slice = t.face;  // cube 面(2D 传 0)
     rp.colorAttachments[0].level = t.mip;   // mip 级
   }
+  if (t.hasDepth) {
+    rp.depthAttachment.texture = t.depth;
+    rp.depthAttachment.loadAction = MTLLoadActionClear;
+    rp.depthAttachment.clearDepth = clear.depth;
+    rp.depthAttachment.storeAction = MTLStoreActionDontCare;
+  }
   rp.colorAttachments[0].loadAction = MTLLoadActionClear;
   rp.colorAttachments[0].clearColor = MTLClearColorMake(clear.r, clear.g, clear.b, clear.a);
   rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -776,6 +822,7 @@ void MetalCommandBuffer::bindPipeline(PipelineHandle pipeline) {
   if (!device_->pipeline(pipeline, pipeline_)) return;
   [encoder_ setRenderPipelineState:pipeline_.state];
   [encoder_ setCullMode:pipeline_.cull];
+  if (pipeline_.depthState) [encoder_ setDepthStencilState:pipeline_.depthState];
 }
 
 /// 绑定约定：vertex binding N ↔ Metal buffer(N+1)。

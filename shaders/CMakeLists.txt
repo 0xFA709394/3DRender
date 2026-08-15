@@ -10,6 +10,8 @@ rd_compile_shader(inst.vert)
 rd_compile_shader(inst.frag)
 rd_compile_shader(texcube.vert)
 rd_compile_shader(texcube.frag)
+rd_compile_shader(depth.vert)
+rd_compile_shader(depth.frag)
 
 # 生成路径头，供测试定位 shader 产物
 file(WRITE ${CMAKE_BINARY_DIR}/generated/rd_shader_dir.h

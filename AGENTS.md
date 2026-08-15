@@ -8,7 +8,11 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 ## 当前状态
 - P0 完成：构建基建 + foundation + RHI 三后端（Vulkan/Metal/GLES）+ shader 离线管线
   + C API（rd_engine）+ Android/iOS RenderView 容器 + 双端模拟器截图验证
-- P1 待做：glTF 加载 + PBR/IBL（resource/renderer/scene 层）
+- 阶段一完成：RHI 底座强化（能力表/内存 flag/N 帧退休/管线缓存/instancing/
+  cube 渲染目标/GLES 纹理+延迟回放）
+- 阶段二 a 完成：renderer/scene/resource 三层骨架 + 离屏深度附件 + glTF unlit 渲染
+  （BoxTextured golden 双后端像素级一致）
+- 下一步：阶段二 b（PBR/IBL，uber-shader + 环境生成 + DamagedHelmet golden）
 
 ## 构建与测试
 ```bash
@@ -44,6 +48,11 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   device-local，`updateBuffer` 会被拒绝（动态数据须 `hostWrite=true`）
 - 纹理可作为渲染目标：`TextureUsage::RenderTargetAttachment` +
   `OffscreenTargetDesc.colorFromTexture(face/mip)`；GLES sampler uniform 命名 `texN ↔ slot N`
+- 顶点布局约定（glTF 模型）：pos(3f)@0 | normal(3f)@12 | uv(2f)@24，交错 stride 32
+- 深度：离屏目标 `OffscreenTargetDesc.depth=true` + pipeline `depthTest/depthWrite`；
+  depth 管线须配 depth 目标；CompareOp 默认 Less（Reverse-Z 预留）
+- renderer 层 per-item UBO 步进 256B（三后端对齐最小公倍）；渲染循环见
+  `tests/renderer/renderer_test.cpp` 的 beginFrame/beginScene/collect/endScene/submit/endFrame 顺序
 - shader 内嵌：embedded_shaders.cpp 自动生成（host=build 期；Android/iOS=configure 期），勿手改；
   iOS 真机/模拟器 metallib 分别编译（RD_EMBED_IOS_METAL / RD_EMBED_IOS_SIMULATOR）
 - Metal swapchain 颜色格式为 BGRA8（layer 限制）；pipeline 格式须经 swapChainColorFormat 对齐

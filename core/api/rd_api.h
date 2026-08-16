@@ -32,6 +32,7 @@ typedef enum rd_result {
   RD_ERROR_SURFACE = 2,     ///< 表面/swapchain 创建失败
   RD_ERROR_SHADER = 3,      ///< 内嵌 shader 缺失或不可用
   RD_ERROR_SCENE = 4,       ///< 场景初始化失败（资源/管线创建失败）
+  RD_ERROR_ASSET = 5,       ///< 资产加载/解析失败
 } rd_result_t;
 
 /**
@@ -58,9 +59,25 @@ void rd_engine_resize(rd_engine* engine, uint32_t width, uint32_t height);
 
 /**
  * @brief 渲染一帧并上屏。无 surface 或场景未就绪时为安全 no-op（偶发记警告）。
- * @param dt_seconds 距上一帧的秒数，驱动演示旋转动画。
+ * @param dt_seconds 距上一帧的秒数，驱动 Orbit 惯性等动画。
  */
 void rd_engine_render_frame(rd_engine* engine, float dt_seconds);
+
+/// 画质档位（AUTO=caps 启发式默认，引擎初始状态）。
+typedef enum rd_quality {
+  RD_QUALITY_AUTO = 0,
+  RD_QUALITY_HIGH = 1,
+  RD_QUALITY_MID = 2,
+  RD_QUALITY_LOW = 3,
+} rd_quality_t;
+
+/**
+ * @brief 设置画质档位；立即生效（下一次 render_frame 应用分辨率/MSAA/IBL 变化）。
+ * @note 线程约定同 render_frame。
+ */
+rd_result_t rd_engine_set_quality(rd_engine* engine, rd_quality_t quality);
+/// 当前生效档（AUTO 时返回启发式解析结果，不会返回 AUTO）；空引擎返回 RD_QUALITY_LOW。
+rd_quality_t rd_engine_get_quality(rd_engine* engine);
 
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。

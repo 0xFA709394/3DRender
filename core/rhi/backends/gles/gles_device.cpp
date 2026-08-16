@@ -119,6 +119,9 @@ struct TargetRec {
   EGLSurface surface = EGL_NO_SURFACE; // swapchain target 专用：beginRenderPass 时切回窗口 surface
   TextureHandle colorHandle;   ///< 自建路径注册的可采样颜色句柄
   TextureHandle srcTexture;    ///< textureBacked 的源纹理(destroy 不释放)
+  uint32_t samples = 1;        ///< MSAA 采样数(>1 时渲染到 msaaColorRbo,blit 到 colorTex)
+  GLuint msaaColorRbo = 0;     ///< MSAA 颜色 renderbuffer(samples>1 时有效)
+  GLuint resolveFbo = 0;       ///< resolve 目标 FBO(colorTex 挂在这里)
 };
 struct SwapChainRec {
   ANativeWindow* window = nullptr;      ///< 持有引用（create 时 acquire，destroy 时 release）
@@ -202,8 +205,21 @@ public:
                      uint32_t firstInstance) override;
   void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
                             uint32_t instanceCount, uint32_t firstInstance) override;
-  /// pass 结束无动作(回放模型下清屏/绑定都已在 beginRenderPass 闭包内)。
-  void endRenderPass() override {}
+  /// pass 结束:MSAA 目标录制一条 resolve blit(回放期执行);
+  /// 非 MSAA 无动作(回放模型下清屏/绑定都已在 beginRenderPass 闭包内)。
+  void endRenderPass() override {
+    if (current_.samples <= 1) return;
+    const GLuint src = current_.fbo, dst = current_.resolveFbo;
+    const uint32_t w = current_.width, h = current_.height;
+    cmds_.push_back([src, dst, w, h] {
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, src);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst);
+      glBlitFramebuffer(0, 0, GLint(w), GLint(h), 0, 0, GLint(w), GLint(h),
+                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    });
+  }
 
   /// 回放全部已录命令并清空(submit 调用)。
   void replay() {
@@ -701,8 +717,9 @@ void GLESDevice::destroyShaderModule(ShaderModuleHandle module) {
 PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
   // MSAA 尚未实现，先拒绝而非静默错误（与 Metal/Vulkan 一致）。
   // 注意:depthTest/depthWrite 管线须配 depth=true 的渲染目标(反之亦然)。
-  if (desc.sampleCount != 1) {
-    RD_LOGE("rhi.gles", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
+  const uint32_t maxMsaa = caps_.get(Capability::msaa);
+  if (desc.sampleCount == 0 || desc.sampleCount > maxMsaa) {
+    RD_LOGE("rhi.gles", "createPipeline: sampleCount %u 超出 caps %u", desc.sampleCount, maxMsaa);
     return {};
   }
   auto vsIt = shaders_.find(desc.vertexShader);
@@ -793,6 +810,17 @@ void GLESDevice::destroyPipeline(PipelineHandle pipeline) {
 /// 否则自建 RGBA8 颜色纹理挂到 FBO 的 COLOR_ATTACHMENT0（无深度附件）。
 TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) {
   ensureOffscreenCurrent();
+  if (desc.sampleCount > 1) {
+    const uint32_t maxMsaa = caps_.get(Capability::msaa);
+    if (desc.sampleCount > maxMsaa) {
+      RD_LOGE("rhi.gles", "MSAA 目标 sampleCount %u 超出 caps %u", desc.sampleCount, maxMsaa);
+      return {};
+    }
+    if (desc.colorFromTexture.valid()) {
+      RD_LOGE("rhi.gles", "texture-backed 目标不支持 MSAA");
+      return {};
+    }
+  }
   if (desc.colorFromTexture.valid()) {
     auto it = textures_.find(desc.colorFromTexture);
     if (it == textures_.end()) return {};
@@ -824,6 +852,7 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
   TargetRec rec;
   rec.width = desc.width;
   rec.height = desc.height;
+  rec.samples = desc.sampleCount;
   glGenTextures(1, &rec.colorTex);
   glBindTexture(GL_TEXTURE_2D, rec.colorTex);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(desc.width), GLsizei(desc.height), 0, GL_RGBA,
@@ -833,13 +862,35 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glGenFramebuffers(1, &rec.fbo);
   glBindFramebuffer(GL_FRAMEBUFFER, rec.fbo);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rec.colorTex, 0);
-  // 深度 renderbuffer(ES3 通用;可采样深度纹理归 P2 阴影)
+  if (desc.sampleCount > 1) {
+    // MSAA:渲染到多重采样 renderbuffer;colorTex 挂 resolveFbo 作 resolve 目标
+    glGenRenderbuffers(1, &rec.msaaColorRbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, rec.msaaColorRbo);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, GLsizei(desc.sampleCount), GL_RGBA8,
+                                     GLsizei(desc.width), GLsizei(desc.height));
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
+                              rec.msaaColorRbo);
+    glGenFramebuffers(1, &rec.resolveFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, rec.resolveFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rec.colorTex,
+                          0);
+    glBindFramebuffer(GL_FRAMEBUFFER, rec.fbo);
+  } else {
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rec.colorTex,
+                           0);
+  }
+  // 深度 renderbuffer(ES3 通用;可采样深度纹理归 P2 阴影;MSAA 同步采样数)
   if (desc.depth) {
     glGenRenderbuffers(1, &rec.depthRbo);
     glBindRenderbuffer(GL_RENDERBUFFER, rec.depthRbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, GLsizei(desc.width),
-                          GLsizei(desc.height));
+    if (desc.sampleCount > 1) {
+      glRenderbufferStorageMultisample(GL_RENDERBUFFER, GLsizei(desc.sampleCount),
+                                       GL_DEPTH_COMPONENT24, GLsizei(desc.width),
+                                       GLsizei(desc.height));
+    } else {
+      glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, GLsizei(desc.width),
+                            GLsizei(desc.height));
+    }
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
                               rec.depthRbo);
     rec.hasDepth = true;
@@ -847,6 +898,15 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
     RD_LOGE("rhi.gles", "FBO 不完整");
     return {};
+  }
+  if (rec.resolveFbo) {  // resolve FBO 完整性一并检查
+    glBindFramebuffer(GL_FRAMEBUFFER, rec.resolveFbo);
+    const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!ok) {
+      RD_LOGE("rhi.gles", "resolve FBO 不完整");
+      return {};
+    }
   }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   // 注册可采样颜色句柄(纹理归 TargetRec 所有,句柄仅引用)
@@ -874,6 +934,8 @@ void GLESDevice::destroyTarget(TargetHandle target) {
   ensureOffscreenCurrent();
   if (it->second.colorHandle.valid()) textures_.erase(it->second.colorHandle);  // 只摘句柄
   glDeleteFramebuffers(1, &it->second.fbo);
+  if (it->second.resolveFbo) glDeleteFramebuffers(1, &it->second.resolveFbo);
+  if (it->second.msaaColorRbo) glDeleteRenderbuffers(1, &it->second.msaaColorRbo);
   if (it->second.colorTex) glDeleteTextures(1, &it->second.colorTex);
   if (it->second.depthRbo) glDeleteRenderbuffers(1, &it->second.depthRbo);
   targets_.erase(it);
@@ -1060,7 +1122,7 @@ bool GLESDevice::readbackTarget(TargetHandle target, void* outRGBA8, uint64_t ou
   const uint64_t rowBytes = uint64_t(t.width) * 4;
   if (outSize < rowBytes * t.height) return false;
   ensureOffscreenCurrent();
-  glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, t.samples > 1 ? t.resolveFbo : t.fbo);
   std::vector<uint8_t> raw(rowBytes * t.height);
   glReadPixels(0, 0, GLsizei(t.width), GLsizei(t.height), GL_RGBA, GL_UNSIGNED_BYTE, raw.data());
   glBindFramebuffer(GL_FRAMEBUFFER, 0);

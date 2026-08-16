@@ -129,6 +129,12 @@ public:
   virtual TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) = 0;
   /// 销毁渲染目标（离屏或 swapchain 帧目标均经此释放后端侧封装）。
   virtual void destroyTarget(TargetHandle target) = 0;
+  /// 查询目标尺寸（离屏/texture-backed/swapchain 目标均有效；无效句柄输出 0）。
+  virtual void targetSize(TargetHandle target, uint32_t& outW, uint32_t& outH) const = 0;
+  /// 目标的可采样颜色纹理：MSAA 目标返回 resolve 纹理；texture-backed 返回源纹理；
+  /// swapchain 目标/无效句柄返回无效 TextureHandle。
+  /// 句柄生命周期随目标（destroyTarget 后失效，勿 destroyTexture）。
+  virtual TextureHandle targetColorTexture(TargetHandle target) = 0;
   /// @}
 
   /// @name 纹理与采样器

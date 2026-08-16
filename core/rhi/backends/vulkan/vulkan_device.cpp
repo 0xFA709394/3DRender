@@ -137,6 +137,7 @@ struct TargetRec {
   VkDeviceMemory depthMem = VK_NULL_HANDLE;
   VkImageView depthView = VK_NULL_HANDLE;
   bool hasDepth = false;
+  TextureHandle colorTex;                       ///< 自建路径注册的可采样颜色句柄
 };
 
 /// 交换链：surface + swapchain 对象 + 每帧图像注册的 TargetHandle 列表。
@@ -215,6 +216,17 @@ public:
   void destroyPipeline(PipelineHandle pipeline) override;
   TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) override;
   void destroyTarget(TargetHandle target) override;
+  void targetSize(TargetHandle target, uint32_t& outW, uint32_t& outH) const override {
+    auto it = targets_.find(target);
+    outW = it != targets_.end() ? it->second.width : 0;
+    outH = it != targets_.end() ? it->second.height : 0;
+  }
+  TextureHandle targetColorTexture(TargetHandle target) override {
+    auto it = targets_.find(target);
+    if (it == targets_.end() || it->second.isSwapchain) return {};
+    const TargetRec& t = it->second;
+    return t.textureBacked ? t.srcTexture : t.colorTex;
+  }
   TextureHandle createTexture(const TextureDesc& desc) override;
   void destroyTexture(TextureHandle texture) override;
   void updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face, const void* data,
@@ -994,7 +1006,8 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
   rec.height = desc.height;
   if (!createImage(desc.width, desc.height, toVkFormat(desc.colorFormat),
                    VK_IMAGE_TILING_OPTIMAL,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, rec.color, rec.colorMem)) {
     return {};
   }
@@ -1005,6 +1018,21 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
   vci.format = toVkFormat(desc.colorFormat);
   vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   if (vkCreateImageView(device_, &vci, nullptr, &rec.view) != VK_SUCCESS) return {};
+
+  // 注册可采样颜色句柄(图像/视图归 TargetRec 所有,句柄仅引用)
+  {
+    TextureRec trec{};
+    trec.image = rec.color;
+    trec.view = rec.view;
+    trec.width = desc.width;
+    trec.height = desc.height;
+    trec.mipLevels = 1;
+    trec.format = desc.colorFormat;
+    trec.faces = 1;
+    trec.subLayouts = {VK_IMAGE_LAYOUT_UNDEFINED};
+    rec.colorTex = TextureHandle(nextId_++);
+    textures_.emplace(rec.colorTex, trec);
+  }
 
   // 深度附件(D32,device-local;storeOp=DONT_CARE 由 render pass 决定)
   if (desc.depth) {
@@ -1058,6 +1086,7 @@ void VulkanDevice::destroyTarget(TargetHandle target) {
   }
   const TargetRec t = it->second;  // 按值取出,退休闭包持有
   targets_.erase(it);
+  if (t.colorTex.valid()) textures_.erase(t.colorTex);  // 只摘句柄,底层随 TargetRec 释放
   if (t.textureBacked) {  // 只销毁 fb/view;纹理本身归调用方
     retire_.retire(frameIndex_, [this, t] {
       vkDestroyFramebuffer(device_, t.fb, nullptr);
@@ -1665,6 +1694,8 @@ void VulkanCommandBuffer::endRenderPass() {
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     return;
   }
+  // swapchain 目标无 staging:pass 结束即完成(present 由后端负责)
+  if (t.isSwapchain) return;
   // staging: UNDEFINED -> TRANSFER_DST，拷贝后 -> GENERAL（供 host 读）
   VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   barrier.srcAccessMask = 0;
@@ -1689,6 +1720,19 @@ void VulkanCommandBuffer::endRenderPass() {
   barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
   vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
                        nullptr, 0, nullptr, 1, &barrier);
+
+  // 颜色附件转 SHADER_READ_ONLY(可采样化,targetColorTexture);
+  // 下帧 pass initialLayout=UNDEFINED 兼容任意入 layout。
+  VkImageMemoryBarrier toRead{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  toRead.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  toRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  toRead.image = t.color;
+  toRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                       &toRead);
 }
 
 // ---------------- SwapChain（Android）----------------

@@ -47,6 +47,8 @@ enum class Format {
   R32G32B32_FLOAT,     ///< 3×float32（如 3D 位置）
   R32G32B32A32_FLOAT,  ///< 4×float32
   D32_FLOAT,           ///< 32bit 深度
+  ASTC_4x4_UNORM,      ///< ASTC 4x4 block 压缩(16B/block;Metal/Vulkan caps 门控)
+  ETC2_RGBA8_UNORM,    ///< ETC2 RGBA 压缩(16B/block;GLES ES3 core,Vulkan 罕见)
 };
 
 /// 缓冲用途位标志（可按位或组合，如 Vertex|Index 不常见，Uniform 常单用）。
@@ -250,8 +252,33 @@ inline uint32_t formatSize(Format f) {
       return 12;
     case Format::R32G32B32A32_FLOAT:
       return 16;
+    case Format::ASTC_4x4_UNORM:
+    case Format::ETC2_RGBA8_UNORM:
+      return 0;  // 压缩格式按 block 计，见 formatBlockInfo
   }
   return 0;
+}
+
+/// 压缩格式 block 信息；非压缩格式退化为 1x1、bytesPerBlock=formatSize。
+struct FormatBlockInfo {
+  uint32_t blockW, blockH, bytesPerBlock;
+};
+
+inline FormatBlockInfo formatBlockInfo(Format f) {
+  switch (f) {
+    case Format::ASTC_4x4_UNORM:
+    case Format::ETC2_RGBA8_UNORM:
+      return {4, 4, 16};
+    default:
+      return {1, 1, formatSize(f)};
+  }
+}
+
+/// 单 mip（或单 face-mip）数据字节数：尺寸按 block 上取整 × bytesPerBlock。
+inline uint64_t formatMipBytes(Format f, uint32_t w, uint32_t h) {
+  const FormatBlockInfo bi = formatBlockInfo(f);
+  return uint64_t((w + bi.blockW - 1) / bi.blockW) *
+         ((h + bi.blockH - 1) / bi.blockH) * bi.bytesPerBlock;
 }
 
 } // namespace rd

@@ -12,4 +12,6 @@ RD_CAPABILITY(depth_texture)            // 可采样深度附件(预留,P2 阴�
 RD_CAPABILITY(cube_render_target)       // 渲染到 cube 指定 face/mip(IBL 预滤波)
 RD_CAPABILITY(generate_mipmap)          // 运行时 mip 生成
 RD_CAPABILITY(anisotropy)               // 最大各向异性等级(0/1 = 不支持)
+RD_CAPABILITY(texture_compression_astc) // ASTC 4x4 LDR 纹理(1=支持)
+RD_CAPABILITY(texture_compression_etc2) // ETC2 RGBA 纹理(1=支持)
 #undef RD_CAPABILITY

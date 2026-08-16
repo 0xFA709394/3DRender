@@ -40,6 +40,8 @@ MTLPixelFormat toMTLPixelFormat(Format f) {
     case Format::BGRA8_UNORM: return MTLPixelFormatBGRA8Unorm;
     case Format::R32G32_FLOAT: return MTLPixelFormatRG32Float;
     case Format::D32_FLOAT:   return MTLPixelFormatDepth32Float;
+    case Format::ASTC_4x4_UNORM: return MTLPixelFormatASTC_4x4_LDR;
+    case Format::ETC2_RGBA8_UNORM: return MTLPixelFormatInvalid;  // Metal 不支持 ETC2
     default:                  return MTLPixelFormatInvalid;
   }
 }
@@ -240,6 +242,10 @@ public:
     caps_.set(Capability::cube_render_target, 1);
     caps_.set(Capability::generate_mipmap, 1);
     caps_.set(Capability::anisotropy, 16);  // Apple GPU 实际支持 16
+    const bool isAppleGpu = [device_ supportsFamily:MTLGPUFamilyApple1] ||
+                            [device_ supportsFamily:MTLGPUFamilyMac2];
+    caps_.set(Capability::texture_compression_astc, isAppleGpu ? 1 : 0);
+    caps_.set(Capability::texture_compression_etc2, 0);  // Metal 无 ETC2
     return true;
   }
 
@@ -492,6 +498,13 @@ public:
               maxMipLevels, desc.width, desc.height);
       return {};
     }
+    if ((desc.format == Format::ASTC_4x4_UNORM &&
+         !caps_.supports(Capability::texture_compression_astc)) ||
+        (desc.format == Format::ETC2_RGBA8_UNORM &&
+         !caps_.supports(Capability::texture_compression_etc2))) {
+      RD_LOGE("rhi.metal", "createTexture: 压缩格式 %d 不受本后端支持", int(desc.format));
+      return {};
+    }
     MTLTextureDescriptor* td;
     if (desc.type == TextureType::Cube) {
       td = [MTLTextureDescriptor textureCubeDescriptorWithPixelFormat:toMTLPixelFormat(desc.format)
@@ -514,7 +527,7 @@ public:
     // 初始数据上传：布局为 slice（cube 6 面）× mip 逐层紧凑排列，
     // 每层尺寸逐级减半；越界检查失败时返回无效句柄（已创建的 tex 由 ARC 回收）。
     if (desc.data) {
-      const uint32_t fmtSize = formatSize(desc.format);
+      const FormatBlockInfo bi = formatBlockInfo(desc.format);
       const uint8_t* src = static_cast<const uint8_t*>(desc.data);
       uint64_t offset = 0;
       const uint32_t slices = desc.type == TextureType::Cube ? 6 : 1;
@@ -522,16 +535,19 @@ public:
         uint32_t w = desc.width;
         uint32_t h = desc.height;
         for (uint32_t mip = 0; mip < desc.mipLevels; ++mip) {
-          const uint64_t levelBytes = uint64_t(w) * h * fmtSize;
+          const uint64_t levelBytes = formatMipBytes(desc.format, w, h);
           if (offset + levelBytes > desc.dataSize) {
             RD_LOGE("rhi.metal", "createTexture: 数据越界（slice %u mip %u）", slice, mip);
             return {};
           }
+          // 压缩格式 bytesPerRow = 每行 block 数 × block 字节数
+          const uint64_t rowBytes =
+              uint64_t((w + bi.blockW - 1) / bi.blockW) * bi.bytesPerBlock;
           [tex replaceRegion:MTLRegionMake2D(0, 0, w, h)
                  mipmapLevel:mip
-                       slice:slice
-                   withBytes:src + offset
-                 bytesPerRow:w * fmtSize
+                        slice:slice
+                    withBytes:src + offset
+                 bytesPerRow:rowBytes
                bytesPerImage:desc.type == TextureType::Cube ? levelBytes : 0];
           offset += levelBytes;
           w = w > 1 ? w / 2 : 1;
@@ -563,16 +579,18 @@ public:
     uint32_t w = tr.width >> mipLevel, h = tr.height >> mipLevel;
     if (w == 0) w = 1;
     if (h == 0) h = 1;
-    const uint64_t need = uint64_t(w) * h * formatSize(tr.format);
+    const uint64_t need = formatMipBytes(tr.format, w, h);
     if (size < need) {
       RD_LOGE("rhi.metal", "updateTexture: 数据不足(需 %llu)", (unsigned long long)need);
       return;
     }
+    const FormatBlockInfo bi = formatBlockInfo(tr.format);
+    const uint64_t rowBytes = uint64_t((w + bi.blockW - 1) / bi.blockW) * bi.bytesPerBlock;
     [tr.texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
                   mipmapLevel:mipLevel
                         slice:face
                     withBytes:data
-                  bytesPerRow:w * formatSize(tr.format)
+                  bytesPerRow:rowBytes
                 bytesPerImage:tr.isCube ? need : 0];
   }
 

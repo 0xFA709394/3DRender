@@ -20,6 +20,14 @@ TEST(Caps, NameTableComplete) {
   }
 }
 
+// 压缩纹理能力名表(枚举与名表同源)
+TEST(Caps, CompressionCapsNames) {
+  EXPECT_STREQ(rd::DeviceCaps::name(rd::Capability::texture_compression_astc),
+               "texture_compression_astc");
+  EXPECT_STREQ(rd::DeviceCaps::name(rd::Capability::texture_compression_etc2),
+               "texture_compression_etc2");
+}
+
 TEST(Caps, MetalReports) {
 #if defined(__APPLE__)
   auto dev = make(rd::Backend::Metal);

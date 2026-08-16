@@ -175,6 +175,18 @@ struct TextureRec {
 };
 struct SamplerRec { VkSampler sampler = VK_NULL_HANDLE; };
 
+/// 每 draw 的绑定状态 key(POD;memcmp 比较,须零初始化构造)。
+struct DescriptorKey {
+  VkBuffer ubo[4];
+  uint64_t uboOffset[4];
+  uint64_t uboSize[4];
+  VkImageView texView[8];
+  VkSampler texSampler[8];
+  bool operator<(const DescriptorKey& o) const {
+    return memcmp(this, &o, sizeof(DescriptorKey)) < 0;
+  }
+};
+
 class VulkanDevice;
 
 /**
@@ -204,6 +216,9 @@ public:
   TargetHandle currentTarget_;                       ///< 当前 pass 目标（endRenderPass 拷贝用）
   VkPipelineLayout currentLayout_ = VK_NULL_HANDLE;  ///< 当前管线布局（绑描述符用）
   VkPrimitiveTopology topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  DescriptorKey bound_{};                            ///< 当前绑定状态(draw 时物化)
+  /// draw 前按 bound_ 绑定 descriptor set。
+  void bindDescriptorForDraw();
 };
 
 class VulkanDevice final : public Device {
@@ -287,7 +302,8 @@ public:
     auto it = renderPasses_.find({format, depth, samples});
     return it != renderPasses_.end() ? it->second : VK_NULL_HANDLE;
   }
-  VkDescriptorSet descriptorSet() const { return descSet_; }
+  /// 按绑定状态 find-or-create descriptor set(创建时一次性写入全部非空绑定)。
+  VkDescriptorSet descriptorSetFor(const DescriptorKey& key);
   VkPipelineLayout pipelineLayout() const { return pipelineLayout_; }
   VkDevice device() const { return device_; }
   /// 录制子资源 layout 转换 barrier 到指定命令缓冲(并更新 subLayouts 追踪)。
@@ -295,17 +311,7 @@ public:
                                uint32_t mip, VkImageLayout from, VkImageLayout to,
                                VkAccessFlags srcAccess, VkAccessFlags dstAccess,
                                VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage);
-  /// 写全局唯一 descriptor set 的 uniform binding（绑定约定：slot N ↔ set0 binding N）。
-  void writeUniformDescriptor(uint32_t slot, VkBuffer buffer, uint64_t offset, uint64_t size) {
-    VkDescriptorBufferInfo info{buffer, offset, size};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = descSet_;
-    write.dstBinding = slot;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.pBufferInfo = &info;
-    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-  }
+
 
 private:
   uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags props) const;
@@ -350,7 +356,8 @@ private:
   std::map<RenderPassKey, VkRenderPass> renderPasses_;
   VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;  ///< set0：binding 0..3 uniform + 4..11 sampler
   VkDescriptorPool descPool_ = VK_NULL_HANDLE;
-  VkDescriptorSet descSet_ = VK_NULL_HANDLE;          ///< 全局唯一 descriptor set
+  /// descriptor set 缓存(按绑定状态;池耗尽前不回收,帧内异构绑定组合有限)
+  std::map<DescriptorKey, VkDescriptorSet> descSetCache_;
   VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;  ///< 全局唯一管线布局(所有管线共享 setLayout_)
   /// 管线缓存:缓存持有底层 VkPipeline 本体,句柄表只持 shared_ptr 引用
   std::unordered_map<PipelineKey, std::shared_ptr<CachedPipeline>, PipelineKeyHash>
@@ -540,22 +547,18 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   dslci.pBindings = bindings;
   VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &setLayout_));
 
-  // 描述符池：只需容纳 1 个 set（全局唯一，bind 时原地覆写）
+  // 描述符池:按绑定状态缓存分配(每 draw 的实际绑定组合一个 set;
+  // 容量 256 覆盖帧内异构绑定,超出时 descriptorSetFor 记错误日志)
+  constexpr uint32_t kMaxDescSets = 256;
   VkDescriptorPoolSize poolSizes[] = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxUniformSlots},
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxUniformSlots * kMaxDescSets},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * kMaxDescSets},
   };
   VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  dpci.maxSets = 1;
+  dpci.maxSets = kMaxDescSets;
   dpci.poolSizeCount = 2;
   dpci.pPoolSizes = poolSizes;
   VK_CHECK(vkCreateDescriptorPool(device_, &dpci, nullptr, &descPool_));
-
-  VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  dsai.descriptorPool = descPool_;
-  dsai.descriptorSetCount = 1;
-  dsai.pSetLayouts = &setLayout_;
-  VK_CHECK(vkAllocateDescriptorSets(device_, &dsai, &descSet_));
 
   // 全局唯一管线布局:所有管线共享同一 setLayout_,只建一次
   VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -573,6 +576,51 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
 /// (storeOp DONT_CARE)+ resolve 附件(单采样,STORE,finalLayout=TRANSFER_SRC
 /// 供 staging 拷贝,随后 endRenderPass 转 SHADER_READ 供采样);可选 D32 深度附件
 /// (MSAA 时同步多采样)。两条 subpass 依赖保证写完成后再做 transfer 读。
+/// 按绑定状态 find-or-create descriptor set:创建时把 key 里的非空绑定写入;
+/// 池满返回 VK_NULL_HANDLE 并记错误(draw 侧跳过绑定,画面异常但不崩)。
+VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
+  auto it = descSetCache_.find(key);
+  if (it != descSetCache_.end()) return it->second;
+  VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  dsai.descriptorPool = descPool_;
+  dsai.descriptorSetCount = 1;
+  dsai.pSetLayouts = &setLayout_;
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (vkAllocateDescriptorSets(device_, &dsai, &set) != VK_SUCCESS) {
+    RD_LOGE("rhi.vk", "descriptor 池耗尽(绑定组合过多)");
+    return VK_NULL_HANDLE;
+  }
+  VkWriteDescriptorSet writes[12]{};
+  VkDescriptorBufferInfo uboInfos[4]{};
+  VkDescriptorImageInfo imgInfos[8]{};
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (key.ubo[i] == VK_NULL_HANDLE) continue;
+    uboInfos[i] = {key.ubo[i], key.uboOffset[i], key.uboSize[i]};
+    auto& w = writes[count++];
+    w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = set;
+    w.dstBinding = i;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    w.pBufferInfo = &uboInfos[i];
+  }
+  for (uint32_t i = 0; i < 8; ++i) {
+    if (key.texView[i] == VK_NULL_HANDLE) continue;
+    imgInfos[i] = {key.texSampler[i], key.texView[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    auto& w = writes[count++];
+    w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = set;
+    w.dstBinding = i + 4;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo = &imgInfos[i];
+  }
+  if (count > 0) vkUpdateDescriptorSets(device_, count, writes, 0, nullptr);
+  descSetCache_.emplace(key, set);
+  return set;
+}
+
 VkRenderPass VulkanDevice::findOrCreateRenderPass(VkFormat format, bool withDepth,
                                                   uint32_t samples) {
   const RenderPassKey key{format, withDepth, samples};
@@ -1704,16 +1752,13 @@ void VulkanCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor&
   vkCmdSetScissor(cmd_, 0, 1, &scissor);
 }
 
-/// 绑定管线并随之绑定全局唯一 descriptor set（set 0）。
+/// 绑定管线(descriptor set 延迟到 draw 时按绑定状态绑定,支持逐 draw 异构绑定)。
 void VulkanCommandBuffer::bindPipeline(PipelineHandle pipeline) {
   PipelineRec rec;
   if (!device_->pipeline(pipeline, rec)) return;
   vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rec.cached->pipeline);
   currentLayout_ = device_->pipelineLayout();
   topology_ = rec.cached->topology;
-  VkDescriptorSet set = device_->descriptorSet();
-  vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, currentLayout_, 0, 1,
-                          &set, 0, nullptr);
 }
 
 void VulkanCommandBuffer::bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) {
@@ -1727,45 +1772,54 @@ void VulkanCommandBuffer::bindIndexBuffer(BufferHandle buffer, uint64_t offset, 
 }
 
 /// 绑定约定：texture slot N ↔ set0 binding(N+4) combined-image-sampler；
-/// 直接覆写全局唯一 descriptor set（须在 bindPipeline 之后、draw 之前调用才生效）。
+/// 只记录绑定状态,descriptor set 在 draw 时按状态缓存命中/创建后绑定。
 void VulkanCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
                                       SamplerHandle sampler) {
   const TextureRec* rec = device_->texture(texture);
   VkSampler s = device_->sampler(sampler);
-  if (!rec || s == VK_NULL_HANDLE) return;
-  VkDescriptorImageInfo info{s, rec->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  write.dstSet = device_->descriptorSet();
-  write.dstBinding = slot + 4;
-  write.descriptorCount = 1;
-  write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  write.pImageInfo = &info;
-  vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
+  if (!rec || s == VK_NULL_HANDLE || slot >= 8) return;
+  bound_.texView[slot] = rec->view;
+  bound_.texSampler[slot] = s;
 }
 
-/// 绑定约定：uniform slot N ↔ set0 binding N（同样覆写全局 descriptor set）。
+/// 绑定约定：uniform slot N ↔ set0 binding N(同样只记录状态)。
 void VulkanCommandBuffer::bindUniformBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset,
                                             uint64_t size) {
-  device_->writeUniformDescriptor(slot, device_->buffer(buffer), offset, size);
+  if (slot >= 4) return;
+  bound_.ubo[slot] = device_->buffer(buffer);
+  bound_.uboOffset[slot] = offset;
+  bound_.uboSize[slot] = size;
+}
+
+/// draw 前按当前绑定状态绑定 descriptor set(缓存命中 O(log n),未命中创建)。
+void VulkanCommandBuffer::bindDescriptorForDraw() {
+  VkDescriptorSet set = device_->descriptorSetFor(bound_);
+  if (set != VK_NULL_HANDLE)
+    vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, currentLayout_, 0, 1,
+                            &set, 0, nullptr);
 }
 
 void VulkanCommandBuffer::draw(uint32_t vertexCount, uint32_t firstVertex) {
+  bindDescriptorForDraw();
   vkCmdDraw(cmd_, vertexCount, 1, firstVertex, 0);
 }
 
 void VulkanCommandBuffer::drawIndexed(uint32_t indexCount, uint32_t firstIndex,
                                       int32_t vertexOffset) {
+  bindDescriptorForDraw();
   vkCmdDrawIndexed(cmd_, indexCount, 1, firstIndex, vertexOffset, 0);
 }
 
 void VulkanCommandBuffer::drawInstanced(uint32_t vertexCount, uint32_t firstVertex,
                                         uint32_t instanceCount, uint32_t firstInstance) {
+  bindDescriptorForDraw();
   vkCmdDraw(cmd_, vertexCount, instanceCount, firstVertex, firstInstance);
 }
 
 void VulkanCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex,
                                                int32_t vertexOffset, uint32_t instanceCount,
                                                uint32_t firstInstance) {
+  bindDescriptorForDraw();
   vkCmdDrawIndexed(cmd_, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
 

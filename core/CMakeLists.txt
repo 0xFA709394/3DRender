@@ -46,7 +46,9 @@ else()
     COMMAND ${CMAKE_COMMAND} -DOUT=${RD_EMBEDDED_CPP} -DDIR=${RD_SHADER_OUT}
             -DDIR_IOS=${RD_SHADER_OUT}_ios -DDIR_IOSSIM=${RD_SHADER_OUT}_iossim
             -P ${CMAKE_SOURCE_DIR}/cmake/GenEmbedded.cmake
-    DEPENDS shader_cube.vert shader_cube.frag
+    DEPENDS shader_cube.vert shader_cube.frag shader_unlit.vert shader_unlit.frag
+            shader_pbr_forward.vert shader_pbr_forward.frag shader_prefilter.vert
+            shader_prefilter.frag shader_blit.vert shader_blit.frag
     COMMENT "生成 embedded_shaders.cpp")
   target_sources(rd_core PRIVATE ${RD_EMBEDDED_CPP})
 endif()

@@ -193,8 +193,6 @@ std::vector<float> integrateBrdfLut(uint32_t size) {
 
 // ---------------- Environment:GPU 资源与预滤波 ----------------
 namespace {
-constexpr uint32_t kEnvSize = 64;
-constexpr uint32_t kPrefilterMips = 5;
 constexpr uint32_t kLutSize = 32;
 
 /// 6 面 × mip 紧凑打包(与 createTexture 的 cube 数据布局一致)
@@ -219,14 +217,14 @@ const float kFaceBasis[6][9] = {
 
 bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
                         const std::vector<uint8_t>& pfFsCode, const std::string& entry,
-                        Format colorFormat) {
+                        Format colorFormat, uint32_t cubeSize, uint32_t prefilterMips) {
   // 1. 程序化环境 + 上传
-  env_ = buildEnvCubemap(kEnvSize);
+  env_ = buildEnvCubemap(cubeSize);
   auto packed = packFaces(env_);
   TextureDesc etd;
   etd.type = TextureType::Cube;
-  etd.width = kEnvSize;
-  etd.height = kEnvSize;
+  etd.width = cubeSize;
+  etd.height = cubeSize;
   etd.data = packed.data();
   etd.dataSize = uint64_t(packed.size());
   envTex_ = dev.createTexture(etd);
@@ -254,12 +252,12 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
   cubeSampler_ = dev.createSampler({});
   if (!brdfLutTex_.valid() || !lutSampler_.valid() || !cubeSampler_.valid()) return false;
 
-  // 4. 预滤波 cubemap(RenderTargetAttachment,5 级 mip)
+  // 4. 预滤波 cubemap(RenderTargetAttachment,prefilterMips 级 mip)
   TextureDesc ptd;
   ptd.type = TextureType::Cube;
-  ptd.width = kEnvSize;
-  ptd.height = kEnvSize;
-  ptd.mipLevels = kPrefilterMips;
+  ptd.width = cubeSize;
+  ptd.height = cubeSize;
+  ptd.mipLevels = prefilterMips;
   ptd.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
   prefilterCube_ = dev.createTexture(ptd);
   if (!prefilterCube_.valid()) return false;
@@ -278,9 +276,9 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
   if (!prefilterPipeline_.valid() || !prefilterUbo_.valid()) return false;
 
   // 6. 逐 face × mip 渲染(N=V=R;roughness = mip/(mips-1))
-  for (uint32_t mip = 0; mip < kPrefilterMips; ++mip) {
-    const uint32_t sz = kEnvSize >> mip;
-    const float roughness = float(mip) / float(kPrefilterMips - 1);
+  for (uint32_t mip = 0; mip < prefilterMips; ++mip) {
+    const uint32_t sz = std::max(1u, cubeSize >> mip);
+    const float roughness = float(mip) / float(prefilterMips - 1);
     for (uint32_t face = 0; face < 6; ++face) {
       OffscreenTargetDesc td;
       td.width = sz;

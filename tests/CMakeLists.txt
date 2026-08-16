@@ -27,6 +27,7 @@ add_executable(rd_tests
   renderer/pbr_test.cpp
   renderer/environment_test.cpp
   renderer/prefilter_test.cpp
+  renderer/quality_test.cpp
   common/image.cpp
   common/image_test.cpp
   common/ktx2_gen.cpp

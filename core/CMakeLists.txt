@@ -12,6 +12,7 @@ add_library(rd_core STATIC
   renderer/renderer.cpp
   renderer/mesh_renderable.cpp
   renderer/environment.cpp
+  renderer/quality.cpp
   scene/cube_scene.cpp
   scene/node.cpp
   scene/scene.cpp

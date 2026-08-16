@@ -17,6 +17,7 @@ add_executable(rd_tests
   rhi/depth_test.cpp
   rhi/compressed_texture_test.cpp
   rhi/target_texture_test.cpp
+  rhi/msaa_test.cpp
   resource/gltf_test.cpp
   resource/mesh_utils_test.cpp
   scene/scene_test.cpp

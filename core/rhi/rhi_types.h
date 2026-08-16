@@ -223,6 +223,10 @@ struct OffscreenTargetDesc {
   TextureHandle colorFromTexture;
   uint32_t face = 0;                          ///< cube 面 0..5(+X,-X,+Y,-Y,+Z,-Z);2D 传 0
   uint32_t mipLevel = 0;                      ///< 挂载的 mip 级
+  /// MSAA 采样数(默认 1);>1 时创建 MSAA 颜色附件 + 单采样 resolve 纹理,
+  /// pass 结束自动 resolve;须 ≤ caps().get(Capability::msaa)。
+  /// texture-backed 目标不支持 MSAA。
+  uint32_t sampleCount = 1;
 };
 
 /// 设备创建参数。

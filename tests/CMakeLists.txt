@@ -19,6 +19,7 @@ add_executable(rd_tests
   rhi/target_texture_test.cpp
   rhi/msaa_test.cpp
   resource/gltf_test.cpp
+  resource/ktx2_test.cpp
   resource/mesh_utils_test.cpp
   scene/scene_test.cpp
   renderer/renderer_test.cpp
@@ -28,6 +29,7 @@ add_executable(rd_tests
   renderer/prefilter_test.cpp
   common/image.cpp
   common/image_test.cpp
+  common/ktx2_gen.cpp
   common/shader_code.cpp
   rhi/cube_test.cpp
   rhi/swapchain_test.cpp
@@ -35,11 +37,12 @@ add_executable(rd_tests
   rhi/texture_quad_test.cpp
   api/api_test.cpp
 )
-target_link_libraries(rd_tests PRIVATE rd_core GTest::gtest_main)
+target_link_libraries(rd_tests PRIVATE rd_core GTest::gtest_main ktx)
 target_include_directories(rd_tests PRIVATE
   ${CMAKE_BINARY_DIR}/generated
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ${stb_SOURCE_DIR})
+  ${stb_SOURCE_DIR}
+  ${ktx_SOURCE_DIR}/include)
 target_compile_definitions(rd_tests PRIVATE RD_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 set_target_properties(rd_tests PROPERTIES
   BUILD_RPATH "/opt/homebrew/lib;/usr/local/lib;$ENV{VULKAN_SDK}/lib")

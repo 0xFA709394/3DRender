@@ -24,6 +24,24 @@ FetchContent_Declare(cgltf
   URL https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.14.tar.gz)
 FetchContent_MakeAvailable(cgltf)
 
+# KTX-Software:KTX2/BasisU 解码与转码(裁剪:无 tools/tests/doc,静态库)
+set(KTX_FEATURE_TOOLS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_TESTS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_DOC OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_LOADTEST_APPS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+FetchContent_Declare(ktx
+  URL https://github.com/KhronosGroup/KTX-Software/archive/refs/tags/v4.3.2.tar.gz)
+FetchContent_MakeAvailable(ktx)
+# astcenc 自带 -Werror 且 AppleClang 下同目标的 -ffp-model/-ffp-contract 冲突会致命,
+# 关掉该告警名(目标名随 ISA 变,逐个存在性检查)
+foreach(astcenc_tgt astcenc-neon-static astcenc-avx2-static astcenc-sse4.1-static
+                    astcenc-sse2-static astcenc-none-static astcenc-static)
+  if(TARGET ${astcenc_tgt})
+    target_compile_options(${astcenc_tgt} PRIVATE -Wno-overriding-option)
+  endif()
+endforeach()
+
 if(ANDROID)
   FetchContent_Declare(VulkanHeaders
     URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.3.296.0.tar.gz)

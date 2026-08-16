@@ -3,6 +3,7 @@
 #include "renderer/mesh_renderable.h"
 #include "scene/camera.h"
 #include "foundation/log.h"
+#include <algorithm>
 #include <glm/glm.hpp>
 
 namespace rd {
@@ -33,6 +34,10 @@ static_assert(sizeof(ItemUBOData) == 256, "ItemUBO 必须 256B");
 
 bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   dev_ = &dev;
+  colorFormat_ = desc.colorFormat;
+  entry_ = desc.entry;
+  pfVsCode_ = desc.prefilterVs;
+  pfFsCode_ = desc.prefilterFs;
 
   // unlit 管线(shader 模块用完即销毁)
   auto uvs = dev.createShaderModule({ShaderStage::Vertex, desc.unlitVs, desc.entry});
@@ -67,12 +72,33 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   itemUbo_ = dev.createBuffer({uint64_t(kUboStride) * kMaxItems, BufferUsage::Uniform, true,
                                false, nullptr});
 
-  // 环境(SH/LUT/GPU 预滤波,init 期一次性)
+  // blit 管线(无顶点缓冲:gl_VertexIndex 全屏三角形)
+  auto bvs = dev.createShaderModule({ShaderStage::Vertex, desc.blitVs, desc.entry});
+  auto bfs = dev.createShaderModule({ShaderStage::Fragment, desc.blitFs, desc.entry});
+  PipelineDesc bpd;
+  bpd.vertexShader = bvs;
+  bpd.fragmentShader = bfs;
+  bpd.cullMode = CullMode::None;
+  bpd.colorFormat = desc.colorFormat;
+  blitPipeline_ = dev.createPipeline(bpd);
+  dev.destroyShaderModule(bvs);
+  dev.destroyShaderModule(bfs);
+  blitUbo_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
+  const float vflip = dev.backend() == Backend::GLES ? 1.0f : 0.0f;
+  const float params[4] = {vflip, 0.0f, 0.0f, 0.0f};
+  if (blitUbo_.valid()) dev.updateBuffer(blitUbo_, params, sizeof(params), 0);
+  SamplerDesc bsd;
+  bsd.wrapU = WrapMode::Clamp;
+  bsd.wrapV = WrapMode::Clamp;
+  blitSampler_ = dev.createSampler(bsd);
+
+  // 环境(SH/LUT/GPU 预滤波,init 期一次性;尺寸/级数按画质档,默认现状 64/5)
   const bool envOk = env_.build(dev, desc.prefilterVs, desc.prefilterFs, desc.entry,
-                                desc.colorFormat);
+                                desc.colorFormat, iblSize_, iblMips_);
 
   if (!unlitPipeline_.valid() || !pbrPipeline_.valid() || !frameUbo_.valid() ||
-      !itemUbo_.valid() || !envOk) {
+      !itemUbo_.valid() || !blitPipeline_.valid() || !blitUbo_.valid() ||
+      !blitSampler_.valid() || !envOk) {
     shutdown();
     return false;
   }
@@ -82,19 +108,52 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
 void Renderer::shutdown() {
   if (!dev_) return;
   env_.destroy(*dev_);
+  if (sceneTarget_.valid()) dev_->destroyTarget(sceneTarget_);
+  if (blitPipeline_.valid()) dev_->destroyPipeline(blitPipeline_);
+  if (blitUbo_.valid()) dev_->destroyBuffer(blitUbo_);
+  if (blitSampler_.valid()) dev_->destroySampler(blitSampler_);
   if (unlitPipeline_.valid()) dev_->destroyPipeline(unlitPipeline_);
   if (pbrPipeline_.valid()) dev_->destroyPipeline(pbrPipeline_);
   if (vs_.valid()) dev_->destroyShaderModule(vs_);
   if (fs_.valid()) dev_->destroyShaderModule(fs_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
+  sceneTarget_ = {};
+  blitPipeline_ = {};
+  blitUbo_ = {};
+  blitSampler_ = {};
   unlitPipeline_ = {};
   pbrPipeline_ = {};
   vs_ = {};
   fs_ = {};
   frameUbo_ = {};
   itemUbo_ = {};
+  sceneW_ = sceneH_ = sceneSamples_ = 0;
   dev_ = nullptr;
+}
+
+TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
+  const uint32_t w = std::max(1u, uint32_t(float(targetW) * renderScale_));
+  const uint32_t h = std::max(1u, uint32_t(float(targetH) * renderScale_));
+  const uint32_t capMsaa = dev_->caps().get(Capability::msaa);
+  const uint32_t samples = std::max(1u, std::min(msaa_, capMsaa));
+  if (sceneTarget_.valid() && w == sceneW_ && h == sceneH_ && samples == sceneSamples_)
+    return sceneTarget_;
+  if (sceneTarget_.valid()) dev_->destroyTarget(sceneTarget_);
+  OffscreenTargetDesc td;
+  td.width = w;
+  td.height = h;
+  td.depth = true;
+  td.sampleCount = samples;
+  td.colorFormat = colorFormat_;
+  sceneTarget_ = dev_->createOffscreenTarget(td);
+  if (!sceneTarget_.valid()) {
+    RD_LOGE("renderer", "SceneTarget 创建失败(%ux%u samples=%u)", w, h, samples);
+  }
+  sceneW_ = w;
+  sceneH_ = h;
+  sceneSamples_ = samples;
+  return sceneTarget_;
 }
 
 void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) {
@@ -176,7 +235,14 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(i) * kUboStride);
   }
 
-  cmd->beginRenderPass(target, clear_);
+  // 上屏链:场景 → 内部 SceneTarget(分辨率缩放/MSAA 按画质档)→ blit upscale → 最终目标
+  uint32_t tw = 0, th = 0;
+  dev_->targetSize(target, tw, th);
+  TargetHandle scene = ensureSceneTarget(tw, th);
+  if (!scene.valid()) {  // 场景目标失败:退化为直接渲染到最终目标
+    scene = target;
+  }
+  cmd->beginRenderPass(scene, clear_);
   RenderContext ctx;
   ctx.frameUbo = frameUbo_;
   ctx.itemUbo = itemUbo_;
@@ -187,6 +253,14 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     queue_[i]->record(cmd, ctx);
   }
   cmd->endRenderPass();
+  if (scene != target) {  // upscale pass(P2 后处理链挂载点)
+    cmd->beginRenderPass(target, clear_);
+    cmd->bindPipeline(blitPipeline_);
+    cmd->bindUniformBuffer(0, blitUbo_, 0, 16);
+    cmd->bindTexture(0, dev_->targetColorTexture(scene), blitSampler_);
+    cmd->draw(3, 0);
+    cmd->endRenderPass();
+  }
   queue_.clear();
   worldStack_.clear();
 }

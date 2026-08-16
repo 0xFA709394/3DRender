@@ -39,9 +39,10 @@ std::vector<float> integrateBrdfLut(uint32_t size);
 class Environment {
 public:
   /// 生成全部资源;失败返回 false(pfVsCode/pfFsCode 为 prefilter shader 字节)。
+  /// cubeSize/prefilterMips 控制 prefilter 精度(画质档旋钮)。
   bool build(Device& dev, const std::vector<uint8_t>& pfVsCode,
              const std::vector<uint8_t>& pfFsCode, const std::string& entry,
-             Format colorFormat);
+             Format colorFormat, uint32_t cubeSize = 64, uint32_t prefilterMips = 5);
   void destroy(Device& dev);
 
   TextureHandle prefilterCube() const { return prefilterCube_; }

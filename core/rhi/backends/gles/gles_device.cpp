@@ -779,7 +779,7 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
     const char* name;
     uint32_t slot;
   } kBlockTable[] = {
-      {"UBO", 0}, {"FrameUBO", 0}, {"ItemUBO", 1},
+      {"UBO", 0}, {"FrameUBO", 0}, {"ItemUBO", 1}, {"BlitUBO", 0},
   };
   for (const auto& b : kBlockTable) {
     GLuint blockIndex = glGetUniformBlockIndex(program, b.name);

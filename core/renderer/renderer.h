@@ -10,6 +10,7 @@
 #pragma once
 #include "renderer/renderable.h"
 #include "renderer/environment.h"
+#include "renderer/quality.h"
 #include "foundation/math.h"
 #include <memory>
 #include <vector>
@@ -44,8 +45,16 @@ public:
   void beginScene(const scene::Camera& camera, const ClearColor& clear);
   /// 提交一个网格渲染项(资源 shared_ptr 持久持有,本帧引用)。
   void submit(const std::shared_ptr<MeshRenderResource>& mesh, const math::Mat4& world);
-  /// pass 序列执行:prepass 钩子 → MainPass(depth);帧末队列清空。
+  /// pass 序列执行:prepass 钩子 → MainPass(depth,SceneTarget) → blit upscale;
+  /// 帧末队列清空。
   void endScene(CommandBuffer* cmd, TargetHandle target);
+
+  /// 应用画质预设:renderScale/msaa 下次 endScene 重建 SceneTarget 生效;
+  /// IBL 尺寸变化立即重建环境(GPU 预滤波链);maxTextureDim 仅记录,
+  /// 由加载链(rd_engine_load_gltf)读取。
+  void setQuality(const QualityPreset& q);
+  /// 当前生效的纹理解码尺寸上限(加载链用)。
+  uint32_t maxTextureDim() const { return maxTextureDim_; }
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍

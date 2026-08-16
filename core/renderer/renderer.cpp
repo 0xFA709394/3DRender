@@ -132,6 +132,19 @@ void Renderer::shutdown() {
   dev_ = nullptr;
 }
 
+void Renderer::setQuality(const QualityPreset& q) {
+  renderScale_ = q.renderScale;
+  msaa_ = q.msaa;
+  maxTextureDim_ = q.maxTextureDim;
+  if (q.iblPrefilterSize != iblSize_ || q.iblPrefilterMips != iblMips_) {
+    iblSize_ = q.iblPrefilterSize;
+    iblMips_ = q.iblPrefilterMips;
+    env_.destroy(*dev_);
+    if (!env_.build(*dev_, pfVsCode_, pfFsCode_, entry_, colorFormat_, iblSize_, iblMips_))
+      RD_LOGE("renderer", "IBL 环境重建失败(size=%u mips=%u)", iblSize_, iblMips_);
+  }
+}
+
 TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
   const uint32_t w = std::max(1u, uint32_t(float(targetW) * renderScale_));
   const uint32_t h = std::max(1u, uint32_t(float(targetH) * renderScale_));

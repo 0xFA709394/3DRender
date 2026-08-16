@@ -168,6 +168,8 @@ struct TargetRec {
   uint32_t face = 0, mip = 0;
   id<MTLTexture> depth = nil;  ///< 深度附件(Depth32Float,hasDepth 时有效)
   bool hasDepth = false;
+  TextureHandle colorHandle;   ///< 自建路径注册的可采样颜色句柄
+  TextureHandle srcTexture;    ///< textureBacked 的源纹理(destroy 不释放)
 };
 struct SwapChainRec {
   CAMetalLayer* layer = nil;
@@ -438,6 +440,7 @@ public:
       rec.textureBacked = true;
       rec.face = desc.face;
       rec.mip = desc.mipLevel;
+      rec.srcTexture = desc.colorFromTexture;
       targets_.emplace(h, rec);
       return h;
     }
@@ -455,6 +458,18 @@ public:
     rec.color = tex;
     rec.width = desc.width;
     rec.height = desc.height;
+    // 注册可采样颜色句柄(纹理归 TargetRec 所有,句柄仅引用)
+    {
+      TextureRec trec;
+      trec.texture = tex;
+      trec.width = desc.width;
+      trec.height = desc.height;
+      trec.mipLevels = 1;
+      trec.format = desc.colorFormat;
+      trec.isCube = false;
+      rec.colorHandle = TextureHandle(nextId_++);
+      textures_.emplace(rec.colorHandle, trec);
+    }
     // 深度附件(Depth32Float,Private;Metal 深度状态在 encoder 侧按管线设置)
     if (desc.depth) {
       MTLTextureDescriptor* dd =
@@ -477,7 +492,21 @@ public:
     if (it == targets_.end()) return;
     TargetRec rec = it->second;
     targets_.erase(it);
+    if (rec.colorHandle.valid()) textures_.erase(rec.colorHandle);  // 只摘句柄
     retire_.retire(frameIndex_, [rec] { (void)rec; });
+  }
+
+  void targetSize(TargetHandle target, uint32_t& outW, uint32_t& outH) const override {
+    auto it = targets_.find(target);
+    outW = it != targets_.end() ? it->second.width : 0;
+    outH = it != targets_.end() ? it->second.height : 0;
+  }
+
+  TextureHandle targetColorTexture(TargetHandle target) override {
+    auto it = targets_.find(target);
+    if (it == targets_.end()) return {};
+    const TargetRec& t = it->second;
+    return t.textureBacked ? t.srcTexture : t.colorHandle;
   }
 
   TextureHandle createTexture(const TextureDesc& desc) override {

@@ -117,6 +117,8 @@ struct TargetRec {
   GLuint depthRbo = 0;         ///< 深度 renderbuffer(hasDepth 时有效)
   bool hasDepth = false;
   EGLSurface surface = EGL_NO_SURFACE; // swapchain target 专用：beginRenderPass 时切回窗口 surface
+  TextureHandle colorHandle;   ///< 自建路径注册的可采样颜色句柄
+  TextureHandle srcTexture;    ///< textureBacked 的源纹理(destroy 不释放)
 };
 struct SwapChainRec {
   ANativeWindow* window = nullptr;      ///< 持有引用（create 时 acquire，destroy 时 release）
@@ -244,6 +246,8 @@ public:
   void destroyPipeline(PipelineHandle pipeline) override;
   TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) override;
   void destroyTarget(TargetHandle target) override;
+  void targetSize(TargetHandle target, uint32_t& outW, uint32_t& outH) const override;
+  TextureHandle targetColorTexture(TargetHandle target) override;
   TextureHandle createTexture(const TextureDesc& desc) override;
   void destroyTexture(TextureHandle texture) override;
   void updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t face, const void* data,
@@ -799,6 +803,7 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
     rec.width = desc.width;
     rec.height = desc.height;
     rec.textureBacked = true;
+    rec.srcTexture = desc.colorFromTexture;
     glGenFramebuffers(1, &rec.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, rec.fbo);
     GLenum attachmentTarget = it->second.target == GL_TEXTURE_CUBE_MAP
@@ -844,6 +849,18 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
     return {};
   }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  // 注册可采样颜色句柄(纹理归 TargetRec 所有,句柄仅引用)
+  {
+    TextureRec trec;
+    trec.tex = rec.colorTex;
+    trec.target = GL_TEXTURE_2D;
+    trec.width = desc.width;
+    trec.height = desc.height;
+    trec.mipLevels = 1;
+    trec.format = desc.colorFormat;
+    rec.colorHandle = TextureHandle(nextId_++);
+    textures_.emplace(rec.colorHandle, trec);
+  }
   TargetHandle h(nextId_++);
   targets_.emplace(h, rec);
   return h;
@@ -855,10 +872,24 @@ void GLESDevice::destroyTarget(TargetHandle target) {
   auto it = targets_.find(target);
   if (it == targets_.end() || it->second.isSwapchain) return;
   ensureOffscreenCurrent();
+  if (it->second.colorHandle.valid()) textures_.erase(it->second.colorHandle);  // 只摘句柄
   glDeleteFramebuffers(1, &it->second.fbo);
   if (it->second.colorTex) glDeleteTextures(1, &it->second.colorTex);
   if (it->second.depthRbo) glDeleteRenderbuffers(1, &it->second.depthRbo);
   targets_.erase(it);
+}
+
+void GLESDevice::targetSize(TargetHandle target, uint32_t& outW, uint32_t& outH) const {
+  auto it = targets_.find(target);
+  outW = it != targets_.end() ? it->second.width : 0;
+  outH = it != targets_.end() ? it->second.height : 0;
+}
+
+TextureHandle GLESDevice::targetColorTexture(TargetHandle target) {
+  auto it = targets_.find(target);
+  if (it == targets_.end() || it->second.isSwapchain) return {};
+  const TargetRec& t = it->second;
+  return t.textureBacked ? t.srcTexture : t.colorHandle;
 }
 
 /// 创建纹理:2D/Cube,逐 face/mip 上传(数据布局与其他后端一致:面 × mip 紧凑排列,

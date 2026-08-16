@@ -22,9 +22,17 @@ TextureHandle uploadOr(Device& dev, const ImageData& img, TextureHandle fallback
   rd::TextureDesc td;
   td.width = img.width;
   td.height = img.height;
+  td.format = img.format;        // 压缩格式直通(RHI caps 门控)
+  td.mipLevels = img.mipLevels;
   td.data = img.pixels.data();
   td.dataSize = uint64_t(img.pixels.size());
-  return dev.createTexture(td);
+  auto tex = dev.createTexture(td);
+  if (!tex.valid() && img.format != Format::RGBA8_UNORM) {
+    // 压缩格式目标由 caps 推导,正常不会失败;失败时回退占位避免整个模型加载失败
+    RD_LOGE("resource", "压缩纹理创建失败(format=%d),回退占位", int(img.format));
+    return fallback;
+  }
+  return tex;
 }
 
 } // namespace

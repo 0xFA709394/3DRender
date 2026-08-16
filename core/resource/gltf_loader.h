@@ -9,6 +9,7 @@
  */
 #pragma once
 #include "resource/image_codec.h"
+#include "resource/ktx2_codec.h"
 #include "rhi/rhi_types.h"
 #include <cstdint>
 #include <string>
@@ -46,7 +47,17 @@ struct ModelAsset {
   bool valid() const { return !meshes.empty(); }
 };
 
+/// 纹理解码偏好(由调用方按 device caps 推导;loader 不直接碰 device)。
+struct TextureLoadPref {
+  Ktx2Target ktx2Target = Ktx2Target::Rgba32;  ///< KTX2 转码目标
+  uint32_t maxDim = 4096;                       ///< PNG/JPEG 解码尺寸上限(等比降采样)
+};
+
 /// 加载 glb/gltf 文件;失败(不存在/解析错/无 mesh)返回空 ModelAsset 并记日志。
+/// 单参版本等价于 loadGltf(path, TextureLoadPref{})。
 ModelAsset loadGltf(const char* path);
+/// 带纹理解码偏好的加载:KTX2(KHR_texture_basisu/魔数探测)按 pref.ktx2Target 转码,
+/// PNG/JPEG 按 pref.maxDim 降采样;支持内嵌 buffer_view 与外链 URI 图像。
+ModelAsset loadGltf(const char* path, const TextureLoadPref& pref);
 
 } // namespace rd

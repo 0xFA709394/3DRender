@@ -1,6 +1,9 @@
 // image.h 的单元测试：PNG 读写回环、compareRGBA8 的容差语义。
 #include <gtest/gtest.h>
 #include "common/image.h"
+#include "resource/image_codec.h"
+#include <cstdio>
+#include <filesystem>
 #include <vector>
 
 namespace {
@@ -55,4 +58,36 @@ TEST(Image, CompareRatioTolerance) {
   b[0] = 255; // 1/16 像素超差
   EXPECT_FALSE(rd::test::compareRGBA8(a.data(), b.data(), 4, 4, 3, 0.0).pass);
   EXPECT_TRUE(rd::test::compareRGBA8(a.data(), b.data(), 4, 4, 3, 0.10).pass);
+}
+
+// maxDim 等比降采样:16x8 PNG 限 8 → 8x4(image_codec 层,内核共用)
+TEST(Image, MaxDimDownscale) {
+  std::vector<uint8_t> px(16 * 8 * 4);
+  for (uint32_t y = 0; y < 8; ++y)
+    for (uint32_t x = 0; x < 16; ++x) {
+      uint8_t* p = px.data() + (size_t(y) * 16 + x) * 4;
+      p[0] = uint8_t(x * 16);
+      p[1] = uint8_t(y * 32);
+      p[3] = 255;
+    }
+  const std::string path =
+      (std::filesystem::temp_directory_path() / "rd_maxdim.png").string();
+  ASSERT_TRUE(rd::saveImagePNG(path.c_str(), 16, 8, px.data()));
+  std::vector<uint8_t> bytes;
+  {
+    FILE* f = fopen(path.c_str(), "rb");
+    ASSERT_NE(f, nullptr);
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    bytes.resize(size_t(n));
+    ASSERT_EQ(fread(bytes.data(), 1, bytes.size(), f), bytes.size());
+    fclose(f);
+  }
+  auto img = rd::decodeImageRGBA8(bytes.data(), bytes.size(), 8);
+  EXPECT_EQ(img.width, 8u);
+  EXPECT_EQ(img.height, 4u);
+  auto full = rd::decodeImageRGBA8(bytes.data(), bytes.size());
+  EXPECT_EQ(full.width, 16u);
+  EXPECT_EQ(full.height, 8u);
 }

@@ -33,3 +33,22 @@ TEST(Api, InvalidArgsRejected) {
 TEST(Api, GlesUnavailableOnHost) {
   EXPECT_EQ(rd_engine_create(RD_BACKEND_GLES), nullptr);
 }
+
+// 画质 API:AUTO 默认;设置/读取往返;非法引擎安全
+TEST(Api, QualityRoundtrip) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  // 初始为 AUTO 解析后的有效档(host Metal:msaa=4 且 maxTextureSize=16384 → High)
+  const rd_quality_t initial = rd_engine_get_quality(e);
+  EXPECT_TRUE(initial == RD_QUALITY_HIGH || initial == RD_QUALITY_MID ||
+              initial == RD_QUALITY_LOW);
+  EXPECT_EQ(rd_engine_set_quality(e, RD_QUALITY_LOW), RD_OK);
+  EXPECT_EQ(rd_engine_get_quality(e), RD_QUALITY_LOW);
+  EXPECT_EQ(rd_engine_set_quality(e, RD_QUALITY_AUTO), RD_OK);
+  EXPECT_EQ(rd_engine_get_quality(e), initial);  // AUTO 回到启发式
+  rd_engine_destroy(e);
+}
+TEST(Api, QualityNullSafe) {
+  EXPECT_EQ(rd_engine_set_quality(nullptr, RD_QUALITY_HIGH), RD_ERROR_INVALID_ARG);
+  EXPECT_EQ(rd_engine_get_quality(nullptr), RD_QUALITY_LOW);  // 空引擎返回占位
+}

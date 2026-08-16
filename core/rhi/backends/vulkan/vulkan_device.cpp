@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -138,6 +139,11 @@ struct TargetRec {
   VkImageView depthView = VK_NULL_HANDLE;
   bool hasDepth = false;
   TextureHandle colorTex;                       ///< 自建路径注册的可采样颜色句柄
+  Format format = Format::RGBA8_UNORM;          ///< 颜色附件格式(beginRenderPass 选 pass 用)
+  uint32_t samples = 1;                         ///< MSAA 采样数(>1 时颜色为 MSAA 附件)
+  VkImage msaaColor = VK_NULL_HANDLE;           ///< MSAA 颜色图像(samples>1 时有效)
+  VkDeviceMemory msaaColorMem = VK_NULL_HANDLE;
+  VkImageView msaaView = VK_NULL_HANDLE;
 };
 
 /// 交换链：surface + swapchain 对象 + 每帧图像注册的 TargetHandle 列表。
@@ -276,8 +282,11 @@ public:
     auto it = samplers_.find(h);
     return it == samplers_.end() ? VK_NULL_HANDLE : it->second.sampler;
   }
-  VkRenderPass renderPass() const { return renderPass_; }
-  VkRenderPass renderPassDepth() const { return renderPassDepth_; }
+  /// render pass 缓存只读查询(目标创建时已确保存在;CommandBuffer 侧用)。
+  VkRenderPass renderPassAt(VkFormat format, bool depth, uint32_t samples) const {
+    auto it = renderPasses_.find({format, depth, samples});
+    return it != renderPasses_.end() ? it->second : VK_NULL_HANDLE;
+  }
   VkDescriptorSet descriptorSet() const { return descSet_; }
   VkPipelineLayout pipelineLayout() const { return pipelineLayout_; }
   VkDevice device() const { return device_; }
@@ -301,9 +310,11 @@ public:
 private:
   uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags props) const;
   bool createImage(uint32_t w, uint32_t h, VkFormat format, VkImageTiling tiling,
+                   uint32_t samples,
                    VkImageUsageFlags usage, VkMemoryPropertyFlags memProps, VkImage& image,
                    VkDeviceMemory& memory);
-  bool createRenderPass(VkFormat format, bool withDepth, VkRenderPass& out);
+  /// 按 (格式,深度,采样数) find-or-create render pass;samples>1 时带 resolve 附件。
+  VkRenderPass findOrCreateRenderPass(VkFormat format, bool depth, uint32_t samples);
   bool createSwapchainObject(SwapChainRec& rec, VkSwapchainKHR oldSwapchain);
   bool buildSwapChainTargets(SwapChainRec& rec);
   void destroySwapChainImages(SwapChainRec& rec);
@@ -325,8 +336,18 @@ private:
   VkQueue queue_ = VK_NULL_HANDLE;
   VkCommandPool cmdPool_ = VK_NULL_HANDLE;
   VkCommandBuffer cmd_ = VK_NULL_HANDLE;       ///< 设备唯一命令缓冲（单线程模型）
-  VkRenderPass renderPass_ = VK_NULL_HANDLE;      ///< 无深度 render pass
-  VkRenderPass renderPassDepth_ = VK_NULL_HANDLE;  ///< 带 D32 深度附件 render pass
+  /// render pass 缓存:按 (格式,深度,采样数) find-or-create;MSAA pass 带 resolve 附件
+  struct RenderPassKey {
+    VkFormat format;
+    bool depth;
+    uint32_t samples;
+    bool operator<(const RenderPassKey& o) const {
+      if (format != o.format) return format < o.format;
+      if (depth != o.depth) return depth < o.depth;
+      return samples < o.samples;
+    }
+  };
+  std::map<RenderPassKey, VkRenderPass> renderPasses_;
   VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;  ///< set0：binding 0..3 uniform + 4..11 sampler
   VkDescriptorPool descPool_ = VK_NULL_HANDLE;
   VkDescriptorSet descSet_ = VK_NULL_HANDLE;          ///< 全局唯一 descriptor set
@@ -495,9 +516,9 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   cbai.commandBufferCount = 1;
   VK_CHECK(vkAllocateCommandBuffers(device_, &cbai, &cmd_));
 
-  // 离屏 render pass：无深度 + 带深度两个实例（target/pipeline 按深度性选用）
-  if (!createRenderPass(VK_FORMAT_R8G8B8A8_UNORM, false, renderPass_)) return false;
-  if (!createRenderPass(VK_FORMAT_R8G8B8A8_UNORM, true, renderPassDepth_)) return false;
+  // 离屏 render pass：无深度 + 带深度两个实例（缓存预热;target/pipeline 按参数取用）
+  if (!findOrCreateRenderPass(VK_FORMAT_R8G8B8A8_UNORM, false, 1)) return false;
+  if (!findOrCreateRenderPass(VK_FORMAT_R8G8B8A8_UNORM, true, 1)) return false;
 
   // 描述符布局（绑定约定）：
   // binding 0..3：uniform buffer；binding 4..11：combined image sampler（texture slot 0..7）
@@ -548,22 +569,33 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   return true;
 }
 
-/// render pass 参数化创建：单颜色附件（finalLayout=TRANSFER_SRC 供 readback 拷贝），
-/// 可选 D32 深度附件（storeOp=DONT_CARE）；两条 subpass 依赖保证写完成后再做 transfer 读。
-bool VulkanDevice::createRenderPass(VkFormat format, bool withDepth, VkRenderPass& out) {
+/// render pass 参数化创建(find-or-create):单颜色附件;samples>1 时颜色为 MSAA
+/// (storeOp DONT_CARE)+ resolve 附件(单采样,STORE,finalLayout=TRANSFER_SRC
+/// 供 staging 拷贝,随后 endRenderPass 转 SHADER_READ 供采样);可选 D32 深度附件
+/// (MSAA 时同步多采样)。两条 subpass 依赖保证写完成后再做 transfer 读。
+VkRenderPass VulkanDevice::findOrCreateRenderPass(VkFormat format, bool withDepth,
+                                                  uint32_t samples) {
+  const RenderPassKey key{format, withDepth, samples};
+  auto it = renderPasses_.find(key);
+  if (it != renderPasses_.end()) return it->second;
+
+  const VkSampleCountFlagBits vkSamples = VkSampleCountFlagBits(samples);
   VkAttachmentDescription color{};
   color.format = format;
-  color.samples = VK_SAMPLE_COUNT_1_BIT;
+  color.samples = vkSamples;
   color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  // MSAA 颜色内容 resolve 后即弃;单采样须 STORE(staging 拷贝/readback 依赖)
+  color.storeOp = samples > 1 ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                              : VK_ATTACHMENT_STORE_OP_STORE;
   color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  color.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  color.finalLayout = samples > 1 ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                  : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
   VkAttachmentDescription depth{};
   depth.format = VK_FORMAT_D32_SFLOAT;
-  depth.samples = VK_SAMPLE_COUNT_1_BIT;
+  depth.samples = vkSamples;
   depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -571,13 +603,27 @@ bool VulkanDevice::createRenderPass(VkFormat format, bool withDepth, VkRenderPas
   depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+  VkAttachmentDescription resolve{};
+  resolve.format = format;
+  resolve.samples = VK_SAMPLE_COUNT_1_BIT;
+  resolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  resolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  resolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  resolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  resolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  resolve.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
   VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
   VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference resolveRef{withDepth ? 2u : 1u,
+                                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
   VkSubpassDescription subpass{};
   subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
   subpass.colorAttachmentCount = 1;
   subpass.pColorAttachments = &colorRef;
   if (withDepth) subpass.pDepthStencilAttachment = &depthRef;
+  if (samples > 1) subpass.pResolveAttachments = &resolveRef;
 
   // 依赖：外部→subpass（颜色输出可写）；subpass→外部（颜色写完 → transfer 可读）
   VkSubpassDependency deps[2]{};
@@ -593,17 +639,21 @@ bool VulkanDevice::createRenderPass(VkFormat format, bool withDepth, VkRenderPas
   deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
   deps[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
-  VkAttachmentDescription attachments[2] = {color, depth};
+  // 附件顺序:0=color,1=depth(若有),MSAA 时 resolve 居末(无 depth 时在下标 1)
+  VkAttachmentDescription attachments[3] = {color, depth, resolve};
+  if (samples > 1 && !withDepth) attachments[1] = resolve;
   VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-  rpci.attachmentCount = withDepth ? 2 : 1;
+  rpci.attachmentCount = samples > 1 ? (withDepth ? 3u : 2u) : (withDepth ? 2u : 1u);
   rpci.pAttachments = attachments;
   rpci.subpassCount = 1;
   rpci.pSubpasses = &subpass;
   rpci.dependencyCount = 2;
   rpci.pDependencies = deps;
-  VK_CHECK(vkCreateRenderPass(device_, &rpci, nullptr, &out));
-  renderPassFormat_ = format;
-  return true;
+  VkRenderPass rp = VK_NULL_HANDLE;
+  if (vkCreateRenderPass(device_, &rpci, nullptr, &rp) != VK_SUCCESS) return VK_NULL_HANDLE;
+  renderPasses_.emplace(key, rp);
+  renderPassFormat_ = format;  // 保留既有语义(swapchain 对齐用)
+  return rp;
 }
 
 /// 析构：等 GPU 空闲后按依赖逆序销毁（资源句柄表中的对象由调用方先行销毁；
@@ -618,8 +668,8 @@ VulkanDevice::~VulkanDevice() {
   vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
   vkDestroyDescriptorPool(device_, descPool_, nullptr);
   vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
-  vkDestroyRenderPass(device_, renderPass_, nullptr);
-  if (renderPassDepth_) vkDestroyRenderPass(device_, renderPassDepth_, nullptr);
+  for (auto& kv : renderPasses_) vkDestroyRenderPass(device_, kv.second, nullptr);
+  renderPasses_.clear();
   vkDestroyCommandPool(device_, cmdPool_, nullptr);
   if (acquireFence_) vkDestroyFence(device_, acquireFence_, nullptr);
   if (frameFence_) vkDestroyFence(device_, frameFence_, nullptr);
@@ -640,15 +690,16 @@ uint32_t VulkanDevice::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags p
 /// 建图辅助：创建 2D 图像 + 分配绑定独占内存（mipLevels/arrayLayers 固定为 1，
 /// 供渲染目标/staging 用；纹理走 createTexture 的独立路径）。
 bool VulkanDevice::createImage(uint32_t w, uint32_t h, VkFormat format, VkImageTiling tiling,
-                               VkImageUsageFlags usage, VkMemoryPropertyFlags memProps,
-                               VkImage& image, VkDeviceMemory& memory) {
+                               uint32_t samples, VkImageUsageFlags usage,
+                               VkMemoryPropertyFlags memProps, VkImage& image,
+                               VkDeviceMemory& memory) {
   VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ici.imageType = VK_IMAGE_TYPE_2D;
   ici.format = format;
   ici.extent = {w, h, 1};
   ici.mipLevels = 1;
   ici.arrayLayers = 1;
-  ici.samples = VK_SAMPLE_COUNT_1_BIT;
+  ici.samples = VkSampleCountFlagBits(samples);
   ici.tiling = tiling;
   ici.usage = usage;
   ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -808,10 +859,11 @@ void VulkanDevice::destroyShaderModule(ShaderModuleHandle module) {
 }
 
 PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
-  // MSAA 尚未实现,先拒绝而非静默错误(与 Metal/GLES 一致)。
-  // 注意:depthTest/depthWrite 管线须配 depth=true 的渲染目标(反之亦然)。
-  if (desc.sampleCount != 1) {
-    RD_LOGE("rhi.vk", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
+  // 注意:depthTest/depthWrite 管线须配 depth=true 的渲染目标(反之亦然);
+  // sampleCount 须与目标的 MSAA 附件一致且 ≤ caps。
+  const uint32_t maxMsaa = caps_.get(Capability::msaa);
+  if (desc.sampleCount == 0 || desc.sampleCount > maxMsaa) {
+    RD_LOGE("rhi.vk", "createPipeline: sampleCount %u 超出 caps %u", desc.sampleCount, maxMsaa);
     return {};
   }
   auto vsIt = shaders_.find(desc.vertexShader);
@@ -896,7 +948,7 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   rs.lineWidth = 1.0f;
 
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-  ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  ms.rasterizationSamples = VkSampleCountFlagBits(desc.sampleCount);
 
   // 深度状态(须与渲染目标的深度性匹配;CompareOp 默认 Less,Reverse-Z 用 Greater)
   auto toVkCompare = [](DepthCompareOp op) {
@@ -939,9 +991,10 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   gpci.pColorBlendState = &cb;
   gpci.pDynamicState = &dyn;
   gpci.layout = pipelineLayout_;  // 全局唯一管线布局
-  // 深度性须与 render pass 匹配:depth 管线 → depth pass,否则 → 无深度 pass
+  // 深度性/采样数须与 render pass 匹配:按 (格式,深度,采样数) 取缓存 pass
   const bool useDepth = desc.depthTest || desc.depthWrite;
-  gpci.renderPass = useDepth ? renderPassDepth_ : renderPass_;
+  gpci.renderPass =
+      findOrCreateRenderPass(toVkFormat(desc.colorFormat), useDepth, desc.sampleCount);
   VkPipeline pipeline;
   VkResult pipelineResult =
       vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline);
@@ -967,6 +1020,18 @@ void VulkanDevice::destroyPipeline(PipelineHandle pipeline) {
  * 并查询 staging 的 rowPitch（可能大于 width*4，读取时须按行距步进）。
  */
 TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) {
+  // MSAA 参数校验:超 caps 拒绝;texture-backed 不支持 MSAA
+  if (desc.sampleCount > 1) {
+    const uint32_t maxMsaa = caps_.get(Capability::msaa);
+    if (desc.sampleCount > maxMsaa) {
+      RD_LOGE("rhi.vk", "MSAA 目标 sampleCount %u 超出 caps %u", desc.sampleCount, maxMsaa);
+      return {};
+    }
+    if (desc.colorFromTexture.valid()) {
+      RD_LOGE("rhi.vk", "texture-backed 目标不支持 MSAA");
+      return {};
+    }
+  }
   // texture-backed:挂载已有纹理的 face/mip 子资源为颜色附件(无 staging,不支持 readback)
   if (desc.colorFromTexture.valid()) {
     auto tit = textures_.find(desc.colorFromTexture);
@@ -981,6 +1046,7 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
     rec.srcTexture = desc.colorFromTexture;
     rec.srcFace = desc.face;
     rec.srcMip = desc.mipLevel;
+    rec.format = tr.format;
     // 视图:2D 类型视图指向指定 face/mip 子资源
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image = tr.image;
@@ -989,7 +1055,7 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, desc.mipLevel, 1, desc.face, 1};
     if (vkCreateImageView(device_, &vci, nullptr, &rec.view) != VK_SUCCESS) return {};
     VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    fbci.renderPass = renderPass_;
+    fbci.renderPass = findOrCreateRenderPass(toVkFormat(tr.format), false, 1);
     fbci.attachmentCount = 1;
     fbci.pAttachments = &rec.view;
     fbci.width = desc.width;
@@ -1001,11 +1067,14 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
     return h;
   }
   // ---- 自建附件路径(颜色图像 + view + framebuffer + readback staging)----
+  // MSAA 时:rec.color 为单采样 resolve 目标(可采样/readback 源),渲染写在 MSAA 附件
   TargetRec rec{};
   rec.width = desc.width;
   rec.height = desc.height;
+  rec.format = desc.colorFormat;
+  rec.samples = desc.sampleCount;
   if (!createImage(desc.width, desc.height, toVkFormat(desc.colorFormat),
-                   VK_IMAGE_TILING_OPTIMAL,
+                   VK_IMAGE_TILING_OPTIMAL, 1,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                        VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, rec.color, rec.colorMem)) {
@@ -1034,10 +1103,26 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
     textures_.emplace(rec.colorTex, trec);
   }
 
-  // 深度附件(D32,device-local;storeOp=DONT_CARE 由 render pass 决定)
+  // MSAA 颜色附件(不可采样;pass 结束自动 resolve 到 rec.color)
+  if (desc.sampleCount > 1) {
+    if (!createImage(desc.width, desc.height, toVkFormat(desc.colorFormat),
+                     VK_IMAGE_TILING_OPTIMAL, desc.sampleCount,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, rec.msaaColor, rec.msaaColorMem)) {
+      return {};
+    }
+    VkImageViewCreateInfo mvci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    mvci.image = rec.msaaColor;
+    mvci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    mvci.format = toVkFormat(desc.colorFormat);
+    mvci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device_, &mvci, nullptr, &rec.msaaView) != VK_SUCCESS) return {};
+  }
+
+  // 深度附件(D32,device-local;storeOp=DONT_CARE 由 render pass 决定;MSAA 同步采样数)
   if (desc.depth) {
     if (!createImage(desc.width, desc.height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
-                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                     desc.sampleCount, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, rec.depthImg, rec.depthMem)) {
       return {};
     }
@@ -1050,10 +1135,15 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
     rec.hasDepth = true;
   }
 
-  VkImageView fbViews[2] = {rec.view, rec.depthView};
+  // framebuffer 附件顺序与 render pass 一致:[color(MSAA 时为 msaaView), depth?, resolve?]
+  VkImageView fbViews[3] = {rec.msaaView ? rec.msaaView : rec.view, rec.depthView, rec.view};
   VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-  fbci.renderPass = desc.depth ? renderPassDepth_ : renderPass_;
-  fbci.attachmentCount = desc.depth ? 2 : 1;
+  fbci.renderPass =
+      findOrCreateRenderPass(toVkFormat(desc.colorFormat), desc.depth, desc.sampleCount);
+  fbci.attachmentCount =
+      desc.sampleCount > 1 ? (desc.depth ? 3u : 2u) : (desc.depth ? 2u : 1u);
+  // MSAA 无深度时附件为 [msaaView, rec.view](resolve 居下标 1)
+  if (desc.sampleCount > 1 && !desc.depth) fbViews[1] = rec.view;
   fbci.pAttachments = fbViews;
   fbci.width = desc.width;
   fbci.height = desc.height;
@@ -1062,7 +1152,7 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
 
   // readback staging：LINEAR tiling + host 可见，接收颜色附件的拷贝
   if (!createImage(desc.width, desc.height, toVkFormat(desc.colorFormat), VK_IMAGE_TILING_LINEAR,
-                   VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   1, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                    rec.staging, rec.stagingMem)) {
     return {};
@@ -1096,6 +1186,9 @@ void VulkanDevice::destroyTarget(TargetHandle target) {
   }
   retire_.retire(frameIndex_, [this, t] {
     vkDestroyFramebuffer(device_, t.fb, nullptr);
+    if (t.msaaView) vkDestroyImageView(device_, t.msaaView, nullptr);
+    if (t.msaaColor) vkDestroyImage(device_, t.msaaColor, nullptr);
+    if (t.msaaColorMem) vkFreeMemory(device_, t.msaaColorMem, nullptr);
     if (t.depthView) vkDestroyImageView(device_, t.depthView, nullptr);
     if (t.depthImg) vkDestroyImage(device_, t.depthImg, nullptr);
     if (t.depthMem) vkFreeMemory(device_, t.depthMem, nullptr);
@@ -1592,14 +1685,15 @@ void VulkanCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor&
   if (!device_->target(target, t)) return;
   currentTarget_ = target;
 
-  VkClearValue clears[2]{};
+  // 附件顺序与 render pass 一致:[color, depth?, resolve?];resolve 的 clear 值无用
+  VkClearValue clears[3]{};
   clears[0].color = {{clear.r, clear.g, clear.b, clear.a}};
   clears[1].depthStencil = {clear.depth, 0};
   VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-  rp.renderPass = t.hasDepth ? device_->renderPassDepth() : device_->renderPass();
+  rp.renderPass = device_->renderPassAt(toVkFormat(t.format), t.hasDepth, t.samples);
   rp.framebuffer = t.fb;
   rp.renderArea = {{0, 0}, {t.width, t.height}};
-  rp.clearValueCount = t.hasDepth ? 2 : 1;
+  rp.clearValueCount = t.samples > 1 ? (t.hasDepth ? 3u : 2u) : (t.hasDepth ? 2u : 1u);
   rp.pClearValues = clears;
   vkCmdBeginRenderPass(cmd_, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -1791,7 +1885,7 @@ bool VulkanDevice::buildSwapChainTargets(SwapChainRec& rec) {
     VkImageView view;
     VK_CHECK(vkCreateImageView(device_, &vci, nullptr, &view));
     VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    fbci.renderPass = renderPass_;
+    fbci.renderPass = findOrCreateRenderPass(renderPassFormat_, false, 1);
     fbci.attachmentCount = 1;
     fbci.pAttachments = &view;
     fbci.width = rec.width;
@@ -1806,6 +1900,8 @@ bool VulkanDevice::buildSwapChainTargets(SwapChainRec& rec) {
     t.width = rec.width;
     t.height = rec.height;
     t.isSwapchain = true;
+    t.format = renderPassFormat_ == VK_FORMAT_B8G8R8A8_UNORM ? Format::BGRA8_UNORM
+                                                            : Format::RGBA8_UNORM;
     TargetHandle th(nextId_++);
     targets_.emplace(th, t);
     rec.imageTargets.push_back(th);
@@ -1869,12 +1965,11 @@ SwapChainHandle VulkanDevice::createSwapChain(void* nativeWindow, uint32_t width
     }
   }
   if (surfaceFormat != renderPassFormat_) {
-    RD_LOGI("rhi.vk", "swapchain 格式 %d ≠ render pass 格式 %d，重建 render pass",
+    RD_LOGI("rhi.vk", "swapchain 格式 %d ≠ render pass 格式 %d，按表面格式建 render pass",
             int(surfaceFormat), int(renderPassFormat_));
-    vkDestroyRenderPass(device_, renderPass_, nullptr);
-    if (renderPassDepth_) vkDestroyRenderPass(device_, renderPassDepth_, nullptr);
-    if (!createRenderPass(surfaceFormat, false, renderPass_) ||
-        !createRenderPass(surfaceFormat, true, renderPassDepth_)) {
+    // 缓存幂等:直接建表面格式的 pass(旧 pass 留缓存,不影响既有离屏目标)
+    if (!findOrCreateRenderPass(surfaceFormat, false, 1) ||
+        !findOrCreateRenderPass(surfaceFormat, true, 1)) {
       vkDestroySurfaceKHR(instance_, surface, nullptr);
       ANativeWindow_release(window);
       return {};

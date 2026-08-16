@@ -34,23 +34,67 @@ void readFloatAttr(const cgltf_attribute* attrs, cgltf_size attrCount,
   }
 }
 
-/// 解码纹理视图(仅内嵌 buffer view 路径;URI 外链记警告跳过)。
-ImageData decodeImage(const cgltf_texture* tex) {
+/// 读文件全部字节(外链 URI 用);失败返回空 vector 并记警告。
+std::vector<uint8_t> readFileBytes(const std::string& path) {
+  std::vector<uint8_t> out;
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) {
+    RD_LOGW("resource.gltf", "外链资源打开失败: %s", path.c_str());
+    return out;
+  }
+  fseek(f, 0, SEEK_END);
+  const long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (n > 0) {
+    out.resize(size_t(n));
+    if (fread(out.data(), 1, out.size(), f) != out.size()) out.clear();
+  }
+  fclose(f);
+  return out;
+}
+
+/// 图像字节 → ImageData:KTX2 走 ktx2_codec(带转码目标),否则 stb 解码(带 maxDim)。
+ImageData decodeImageBytes(const uint8_t* bytes, uint64_t size,
+                           const TextureLoadPref& pref) {
   ImageData img;
-  if (!tex || !tex->image) return img;
-  const cgltf_image* image = tex->image;
+  if (!bytes || size == 0) return img;
+  if (isKtx2(bytes, size)) {
+    Ktx2Image k = decodeKtx2(bytes, size, pref.ktx2Target);
+    img.width = k.width;
+    img.height = k.height;
+    img.pixels = std::move(k.data);
+    img.format = k.format;
+    img.mipLevels = k.mipLevels;
+    return img;
+  }
+  img = decodeImageRGBA8(bytes, size, pref.maxDim);
+  return img;
+}
+
+/// 解码纹理视图:内嵌 buffer_view 与外链 URI(相对 gltf 文件目录)两条路径;
+/// KHR_texture_basisu 优先取 basisu_image。
+ImageData decodeImage(const cgltf_texture* tex, const char* gltfDir,
+                      const TextureLoadPref& pref) {
+  ImageData img;
+  if (!tex) return img;
+  const cgltf_image* image = tex->basisu_image ? tex->basisu_image : tex->image;
+  if (!image) return img;
   if (image->buffer_view) {
     const cgltf_buffer_view* bv = image->buffer_view;
     const auto* bytes = static_cast<const uint8_t*>(bv->buffer->data);
-    img = decodeImageRGBA8(bytes + bv->offset, uint64_t(bv->size));
-  } else if (image->uri) {
-    RD_LOGW("resource.gltf", "外链纹理 URI 暂不支持(2c KTX2 一起处理): %s", image->uri);
+    return decodeImageBytes(bytes + bv->offset, uint64_t(bv->size), pref);
+  }
+  if (image->uri) {
+    const std::string full = std::string(gltfDir) + "/" + image->uri;
+    const auto bytes = readFileBytes(full);
+    if (!bytes.empty()) return decodeImageBytes(bytes.data(), bytes.size(), pref);
   }
   return img;
 }
 
-/// 读取材质(glTF metallic-roughness + KHR_texture_transform + unlit)。
-MaterialData readMaterial(const cgltf_primitive& prim) {
+/// 读取材质(glTF metallic-roughness + KHR_texture_transform + unlit + basisu)。
+MaterialData readMaterial(const cgltf_primitive& prim, const char* gltfDir,
+                          const TextureLoadPref& pref) {
   MaterialData m;
   const cgltf_material* mat = prim.material;
   if (!mat) return m;
@@ -58,7 +102,7 @@ MaterialData readMaterial(const cgltf_primitive& prim) {
   if (mat->has_pbr_metallic_roughness) {
     const auto& pbr = mat->pbr_metallic_roughness;
     if (pbr.base_color_texture.texture) {
-      m.baseColor = decodeImage(pbr.base_color_texture.texture);
+      m.baseColor = decodeImage(pbr.base_color_texture.texture, gltfDir, pref);
       if (pbr.base_color_texture.has_transform) {  // KHR_texture_transform
         m.uvOffset[0] = pbr.base_color_texture.transform.offset[0];
         m.uvOffset[1] = pbr.base_color_texture.transform.offset[1];
@@ -70,17 +114,17 @@ MaterialData readMaterial(const cgltf_primitive& prim) {
     m.metallicFactor = pbr.metallic_factor;
     m.roughnessFactor = pbr.roughness_factor;
     if (pbr.metallic_roughness_texture.texture)
-      m.metallicRoughness = decodeImage(pbr.metallic_roughness_texture.texture);
+      m.metallicRoughness = decodeImage(pbr.metallic_roughness_texture.texture, gltfDir, pref);
   }
   if (mat->normal_texture.texture) {
-    m.normal = decodeImage(mat->normal_texture.texture);
+    m.normal = decodeImage(mat->normal_texture.texture, gltfDir, pref);
     m.normalScale = mat->normal_texture.scale;
   }
   if (mat->emissive_texture.texture)
-    m.emissive = decodeImage(mat->emissive_texture.texture);
+    m.emissive = decodeImage(mat->emissive_texture.texture, gltfDir, pref);
   memcpy(m.emissiveFactor, mat->emissive_factor, sizeof(m.emissiveFactor));
   if (mat->occlusion_texture.texture) {
-    m.occlusion = decodeImage(mat->occlusion_texture.texture);
+    m.occlusion = decodeImage(mat->occlusion_texture.texture, gltfDir, pref);
     m.occlusionStrength = mat->occlusion_texture.scale;
   }
   return m;
@@ -88,8 +132,14 @@ MaterialData readMaterial(const cgltf_primitive& prim) {
 
 } // namespace
 
-ModelAsset loadGltf(const char* path) {
+ModelAsset loadGltf(const char* path) { return loadGltf(path, TextureLoadPref{}); }
+
+ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
   ModelAsset model;
+  // gltf 文件目录(外链 URI 相对它解析)
+  const std::string pathStr = path ? path : "";
+  const size_t slash = pathStr.find_last_of('/');
+  const std::string gltfDir = slash == std::string::npos ? "." : pathStr.substr(0, slash);
   cgltf_options options{};
   cgltf_data* data = nullptr;
   if (cgltf_parse_file(&options, path, &data) != cgltf_result_success) {
@@ -164,7 +214,7 @@ ModelAsset loadGltf(const char* path) {
                 out.name.c_str());
       }
 
-      out.material = readMaterial(prim);
+      out.material = readMaterial(prim, gltfDir.c_str(), pref);
       model.meshes.push_back(std::move(out));
     }
   }

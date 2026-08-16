@@ -1,9 +1,12 @@
 // glTF 加载与资源上传测试:BoxTextured 结构断言、DamagedHelmet 多 mesh/32 位索引、
 // 不存在文件返回空;GPU 上传(host Metal)句柄有效。
 #include <gtest/gtest.h>
+#include "common/ktx2_gen.h"
 #include "resource/gltf_loader.h"
 #include "resource/mesh_render_resource.h"
 #include "rhi/rhi_device.h"
+#include <cstring>
+#include <filesystem>
 
 namespace {
 const char* kAssets = RD_TEST_DATA_DIR "/assets";
@@ -107,4 +110,67 @@ TEST(Gltf, UploadGpuResourcesMetal) {
   EXPECT_TRUE(res->sampler().valid());
   res->destroy(*dev);
 #endif
+}
+
+// KHR_texture_basisu + 外链 URI:运行时生成 gltf+bin+ktx2 到临时目录再加载。
+TEST(Gltf, BasisuExternalUri) {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "rd_gltf_basisu";
+  fs::create_directories(dir);
+  const std::string gltfPath = (dir / "tri.gltf").string();
+  const std::string binPath = (dir / "tri.bin").string();
+  const std::string ktxPath = (dir / "tex.ktx2").string();
+  ASSERT_TRUE(rd::test::writeTestKtx2(ktxPath.c_str(), 8));
+
+  // 单三角形:pos(36B)|uv(24B)|idx(6B) 三段布局写入 tri.bin(共 66B)
+  const float pos[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  const float uv[6] = {0, 0, 1, 0, 0, 1};
+  const uint16_t idx[3] = {0, 1, 2};
+  {
+    FILE* f = fopen(binPath.c_str(), "wb");
+    ASSERT_NE(f, nullptr);
+    fwrite(pos, 4, 9, f);
+    fwrite(uv, 4, 6, f);
+    fwrite(idx, 2, 3, f);
+    fclose(f);
+  }
+  // gltf JSON:KHR_texture_basisu 引用外链 tex.ktx2;POSITION/UV 各一个 bufferView
+  const char* json = R"({
+    "asset": {"version": "2.0"},
+    "extensionsUsed": ["KHR_texture_basisu"],
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1},
+                                "indices": 2, "material": 0}]}],
+    "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+    "textures": [{"extensions": {"KHR_texture_basisu": {"source": 0}}}],
+    "images": [{"uri": "tex.ktx2"}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 66}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 24},
+      {"buffer": 0, "byteOffset": 60, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"},
+      {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  {
+    FILE* f = fopen(gltfPath.c_str(), "wb");
+    ASSERT_NE(f, nullptr);
+    fwrite(json, 1, strlen(json), f);
+    fclose(f);
+  }
+
+  rd::TextureLoadPref pref;
+  pref.ktx2Target = rd::Ktx2Target::Rgba32;  // 不依赖 GPU caps,走 rgba32 路径
+  auto model = rd::loadGltf(gltfPath.c_str(), pref);
+  ASSERT_TRUE(model.valid());
+  ASSERT_EQ(model.meshes.size(), 1u);
+  const auto& bc = model.meshes[0].material.baseColor;
+  EXPECT_EQ(bc.width, 8u);
+  EXPECT_EQ(bc.height, 8u);
+  EXPECT_EQ(bc.format, rd::Format::RGBA8_UNORM);
+  EXPECT_EQ(bc.mipLevels, 2u);
+  EXPECT_FALSE(bc.pixels.empty());
 }

@@ -55,6 +55,8 @@ VkFormat toVkFormat(Format f) {
     case Format::R32G32B32_FLOAT:    return VK_FORMAT_R32G32B32_SFLOAT;
     case Format::R32G32B32A32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
     case Format::D32_FLOAT:          return VK_FORMAT_D32_SFLOAT;
+    case Format::ASTC_4x4_UNORM:     return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+    case Format::ETC2_RGBA8_UNORM:   return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
   }
   return VK_FORMAT_UNDEFINED;
 }
@@ -425,6 +427,10 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
               physFeats.samplerAnisotropy
                   ? static_cast<uint32_t>(physProps.limits.maxSamplerAnisotropy)
                   : 0);
+    caps_.set(Capability::texture_compression_astc,
+              physFeats.textureCompressionASTC_LDR ? 1 : 0);
+    caps_.set(Capability::texture_compression_etc2,
+              physFeats.textureCompressionETC2 ? 1 : 0);
   }
 
   float priority = 1.0f;
@@ -1096,6 +1102,13 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
             maxMipLevels, desc.width, desc.height);
     return {};
   }
+  if ((desc.format == Format::ASTC_4x4_UNORM &&
+       !caps_.supports(Capability::texture_compression_astc)) ||
+      (desc.format == Format::ETC2_RGBA8_UNORM &&
+       !caps_.supports(Capability::texture_compression_etc2))) {
+    RD_LOGE("rhi.vk", "createTexture: 压缩格式 %d 不受本后端支持", int(desc.format));
+    return {};
+  }
   const uint32_t faces = desc.type == TextureType::Cube ? 6 : 1;
 
   TextureRec rec;
@@ -1194,7 +1207,7 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
           c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, face, 1};
           c.imageExtent = {w, h, 1};
           copies.push_back(c);
-          offset += uint64_t(w) * h * formatSize(desc.format);
+          offset += formatMipBytes(desc.format, w, h);
           w = w > 1 ? w / 2 : 1;
           h = h > 1 ? h / 2 : 1;
         }
@@ -1301,7 +1314,7 @@ void VulkanDevice::updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t 
   uint32_t w = tr.width >> mipLevel, hgt = tr.height >> mipLevel;
   if (w == 0) w = 1;
   if (hgt == 0) hgt = 1;
-  const uint64_t need = uint64_t(w) * hgt * formatSize(tr.format);
+  const uint64_t need = formatMipBytes(tr.format, w, hgt);
   if (size < need) {
     RD_LOGE("rhi.vk", "updateTexture: 数据不足(需 %llu)", (unsigned long long)need);
     return;

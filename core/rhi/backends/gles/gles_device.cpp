@@ -148,6 +148,7 @@ GLenum toGLTopology(PrimitiveTopology t) {
 GLenum toGLAttribType(Format f) { return f == Format::RGBA8_UNORM ? GL_UNSIGNED_BYTE : GL_FLOAT; }
 
 /// 纹理格式 → (internalFormat, upload format, type) 三元组。
+/// 压缩格式 upload/type 返回 0(走 glCompressedTexImage2D 路径)。
 void toGLTexFormat(Format f, GLint& internal, GLenum& upload, GLenum& type) {
   switch (f) {
     case Format::RGBA8_UNORM:
@@ -156,6 +157,10 @@ void toGLTexFormat(Format f, GLint& internal, GLenum& upload, GLenum& type) {
       internal = GL_RG32F; upload = GL_RG; type = GL_FLOAT; break;
     case Format::R32G32B32A32_FLOAT:
       internal = GL_RGBA32F; upload = GL_RGBA; type = GL_FLOAT; break;
+    case Format::ASTC_4x4_UNORM:
+      internal = GL_COMPRESSED_RGBA_ASTC_4x4_KHR; upload = 0; type = 0; break;
+    case Format::ETC2_RGBA8_UNORM:
+      internal = GL_COMPRESSED_RGBA8_ETC2_EAC; upload = 0; type = 0; break;
     default:  // 其余格式(顶点用居多)按 RGBA8 兜底
       internal = GL_RGBA8; upload = GL_RGBA; type = GL_UNSIGNED_BYTE; break;
   }
@@ -584,6 +589,9 @@ bool GLESDevice::init(const DeviceDesc&) {
     glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
     caps_.set(Capability::anisotropy, static_cast<uint32_t>(maxAniso));
   }
+  caps_.set(Capability::texture_compression_etc2, 1);  // ES3 核心
+  caps_.set(Capability::texture_compression_astc,
+            exts && strstr(exts, "GL_KHR_texture_compression_astc_ldr") ? 1 : 0);
   return true;
 }
 
@@ -876,17 +884,25 @@ TextureHandle GLESDevice::createTexture(const TextureDesc& desc) {
   rec.format = desc.format;
   glGenTextures(1, &rec.tex);
   glBindTexture(rec.target, rec.tex);
-  const uint32_t fmtSize = formatSize(desc.format);
+  if ((desc.format == Format::ASTC_4x4_UNORM &&
+       !caps_.supports(Capability::texture_compression_astc)) ||
+      (desc.format == Format::ETC2_RGBA8_UNORM &&
+       !caps_.supports(Capability::texture_compression_etc2))) {
+    RD_LOGE("rhi.gles", "createTexture: 压缩格式 %d 不受本后端支持", int(desc.format));
+    glDeleteTextures(1, &rec.tex);
+    return {};
+  }
   GLint internal;
   GLenum uploadFmt, uploadType;
   toGLTexFormat(desc.format, internal, uploadFmt, uploadType);
+  const bool compressed = uploadFmt == 0;  // 压缩格式:glCompressedTexImage2D
   const uint8_t* src = static_cast<const uint8_t*>(desc.data);
   uint64_t offset = 0;
   const uint32_t faces = desc.type == TextureType::Cube ? 6 : 1;
   for (uint32_t face = 0; face < faces; ++face) {
     uint32_t w = desc.width, hgt = desc.height;
     for (uint32_t mip = 0; mip < desc.mipLevels; ++mip) {
-      const uint64_t bytes = uint64_t(w) * hgt * fmtSize;
+      const uint64_t bytes = formatMipBytes(desc.format, w, hgt);
       if (src && offset + bytes > desc.dataSize) {
         RD_LOGE("rhi.gles", "createTexture: 数据越界(face %u mip %u)", face, mip);
         glDeleteTextures(1, &rec.tex);
@@ -894,9 +910,15 @@ TextureHandle GLESDevice::createTexture(const TextureDesc& desc) {
       }
       GLenum faceTarget = rec.target == GL_TEXTURE_CUBE_MAP
                               ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : GL_TEXTURE_2D;
-      glTexImage2D(faceTarget, GLint(mip), internal, GLsizei(w),
-                   GLsizei(hgt), 0, uploadFmt, uploadType,
-                   src ? src + offset : nullptr);
+      if (compressed) {
+        glCompressedTexImage2D(faceTarget, GLint(mip), GLenum(internal), GLsizei(w),
+                               GLsizei(hgt), 0, GLsizei(bytes),
+                               src ? src + offset : nullptr);
+      } else {
+        glTexImage2D(faceTarget, GLint(mip), internal, GLsizei(w),
+                     GLsizei(hgt), 0, uploadFmt, uploadType,
+                     src ? src + offset : nullptr);
+      }
       offset += bytes;
       w = w > 1 ? w / 2 : 1;
       hgt = hgt > 1 ? hgt / 2 : 1;
@@ -963,7 +985,7 @@ void GLESDevice::updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t fa
   uint32_t w = tr.width >> mipLevel, hgt = tr.height >> mipLevel;
   if (w == 0) w = 1;
   if (hgt == 0) hgt = 1;
-  const uint64_t need = uint64_t(w) * hgt * formatSize(tr.format);
+  const uint64_t need = formatMipBytes(tr.format, w, hgt);
   if (size < need) {
     RD_LOGE("rhi.gles", "updateTexture: 数据不足(需 %llu)", (unsigned long long)need);
     return;
@@ -975,9 +997,13 @@ void GLESDevice::updateTexture(TextureHandle tex, uint32_t mipLevel, uint32_t fa
   GLint internal;
   GLenum uploadFmt, uploadType;
   toGLTexFormat(tr.format, internal, uploadFmt, uploadType);
-  (void)internal;
-  glTexSubImage2D(faceTarget, GLint(mipLevel), 0, 0, GLsizei(w), GLsizei(hgt), uploadFmt,
-                  uploadType, data);
+  if (uploadFmt == 0) {  // 压缩格式
+    glCompressedTexSubImage2D(faceTarget, GLint(mipLevel), 0, 0, GLsizei(w), GLsizei(hgt),
+                              GLenum(internal), GLsizei(need), data);
+  } else {
+    glTexSubImage2D(faceTarget, GLint(mipLevel), 0, 0, GLsizei(w), GLsizei(hgt), uploadFmt,
+                    uploadType, data);
+  }
   glBindTexture(tr.target, 0);
 }
 

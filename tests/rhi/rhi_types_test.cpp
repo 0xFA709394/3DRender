@@ -32,3 +32,26 @@ TEST(RhiTypes, ShaderModuleDescDefaultEntry) {
   rd::ShaderModuleDesc d;
   EXPECT_EQ(d.entryPoint, "main0"); // spirv-cross 默认入口名
 }
+
+// 压缩格式的 block 信息：ASTC/ETC2 均 4x4 block、16 字节
+TEST(RhiTypes, CompressedFormatBlockInfo) {
+  const auto astc = rd::formatBlockInfo(rd::Format::ASTC_4x4_UNORM);
+  EXPECT_EQ(astc.blockW, 4u);
+  EXPECT_EQ(astc.blockH, 4u);
+  EXPECT_EQ(astc.bytesPerBlock, 16u);
+  const auto etc2 = rd::formatBlockInfo(rd::Format::ETC2_RGBA8_UNORM);
+  EXPECT_EQ(etc2.blockW, 4u);
+  EXPECT_EQ(etc2.bytesPerBlock, 16u);
+  // 非压缩格式退化为 1x1 block
+  const auto rgba = rd::formatBlockInfo(rd::Format::RGBA8_UNORM);
+  EXPECT_EQ(rgba.blockW, 1u);
+  EXPECT_EQ(rgba.bytesPerBlock, 4u);
+}
+
+// mip 字节数：尺寸按 block 上取整（非 block 对齐尺寸合法）
+TEST(RhiTypes, CompressedMipBytes) {
+  // 8x8 ASTC = 2x2 block × 16B = 64B；9x9 → 3x3 block = 144B
+  EXPECT_EQ(rd::formatMipBytes(rd::Format::ASTC_4x4_UNORM, 8, 8), 64u);
+  EXPECT_EQ(rd::formatMipBytes(rd::Format::ASTC_4x4_UNORM, 9, 9), 144u);
+  EXPECT_EQ(rd::formatMipBytes(rd::Format::RGBA8_UNORM, 4, 4), 64u);
+}

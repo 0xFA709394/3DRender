@@ -170,6 +170,9 @@ struct TargetRec {
   bool hasDepth = false;
   TextureHandle colorHandle;   ///< 自建路径注册的可采样颜色句柄
   TextureHandle srcTexture;    ///< textureBacked 的源纹理(destroy 不释放)
+  uint32_t samples = 1;        ///< MSAA 采样数(>1 时渲染到 msaaColor,resolve 到 color)
+  id<MTLTexture> msaaColor = nil;  ///< MSAA 颜色附件(Private)
+  id<MTLTexture> msaaDepth = nil;  ///< MSAA 深度附件(Private,samples>1 且 hasDepth 时)
 };
 struct SwapChainRec {
   CAMetalLayer* layer = nil;
@@ -335,10 +338,12 @@ public:
   }
 
   PipelineHandle createPipeline(const PipelineDesc& desc) override {
-    // MSAA 尚未实现，先拒绝而非静默错误（与 Vulkan/GLES 一致）。
-    // 注意:depthTest/depthWrite 管线须配 depth=true 的渲染目标(反之亦然)。
-    if (desc.sampleCount != 1) {
-      RD_LOGE("rhi.metal", "MSAA 为 P2 预留,当前拒绝 sampleCount != 1");
+    // 注意:depthTest/depthWrite 管线须配 depth=true 的渲染目标(反之亦然);
+    // sampleCount 须与目标的 MSAA 附件一致且 ≤ caps。
+    const uint32_t maxMsaa = caps_.get(Capability::msaa);
+    if (desc.sampleCount == 0 || desc.sampleCount > maxMsaa) {
+      RD_LOGE("rhi.metal", "createPipeline: sampleCount %u 超出 caps %u", desc.sampleCount,
+              maxMsaa);
       return {};
     }
     auto vsIt = shaders_.find(desc.vertexShader);
@@ -364,6 +369,7 @@ public:
         newFunctionWithName:@(fsIt->second.entry.c_str())];
     // 颜色格式须与渲染目标一致：渲染到 swapchain 时调用方应传 swapChainColorFormat()。
     pd.colorAttachments[0].pixelFormat = toMTLPixelFormat(desc.colorFormat);
+    pd.rasterSampleCount = desc.sampleCount;
     if (!pd.vertexFunction || !pd.fragmentFunction) return {};
     // 深度:PSO 需声明附件格式(与 depth 目标匹配);状态经独立 DepthStencilState 下发
     if (desc.depthTest || desc.depthWrite)
@@ -424,8 +430,20 @@ public:
   }
 
   /// 创建离屏目标。colorFromTexture 非空时挂载该纹理的 face/mip 子资源为颜色附件;
-  /// 否则自建单张颜色纹理(Shared 存储,便于 readback 直接读取)。
+  /// 否则自建单张颜色纹理(Shared 存储,便于 readback 直接读取);
+  /// sampleCount>1 时加建 MSAA 颜色附件(Private),pass 结束 resolve 到 color。
   TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) override {
+    if (desc.sampleCount > 1) {
+      const uint32_t maxMsaa = caps_.get(Capability::msaa);
+      if (desc.sampleCount > maxMsaa) {
+        RD_LOGE("rhi.metal", "MSAA 目标 sampleCount %u 超出 caps %u", desc.sampleCount, maxMsaa);
+        return {};
+      }
+      if (desc.colorFromTexture.valid()) {
+        RD_LOGE("rhi.metal", "texture-backed 目标不支持 MSAA");
+        return {};
+      }
+    }
     if (desc.colorFromTexture.valid()) {
       auto it = textures_.find(desc.colorFromTexture);
       if (it == textures_.end()) return {};
@@ -472,16 +490,43 @@ public:
     }
     // 深度附件(Depth32Float,Private;Metal 深度状态在 encoder 侧按管线设置)
     if (desc.depth) {
-      MTLTextureDescriptor* dd =
-          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                                             width:desc.width
-                                                            height:desc.height
-                                                         mipmapped:NO];
-      dd.usage = MTLTextureUsageRenderTarget;
-      dd.storageMode = MTLStorageModePrivate;
-      rec.depth = [device_ newTextureWithDescriptor:dd];
-      if (!rec.depth) return {};
+      if (desc.sampleCount > 1) {
+        MTLTextureDescriptor* mdd = [[MTLTextureDescriptor alloc] init];
+        mdd.textureType = MTLTextureType2DMultisample;
+        mdd.pixelFormat = MTLPixelFormatDepth32Float;
+        mdd.width = desc.width;
+        mdd.height = desc.height;
+        mdd.sampleCount = desc.sampleCount;
+        mdd.usage = MTLTextureUsageRenderTarget;
+        mdd.storageMode = MTLStorageModePrivate;
+        rec.msaaDepth = [device_ newTextureWithDescriptor:mdd];
+        if (!rec.msaaDepth) return {};
+      } else {
+        MTLTextureDescriptor* dd =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                               width:desc.width
+                                                              height:desc.height
+                                                           mipmapped:NO];
+        dd.usage = MTLTextureUsageRenderTarget;
+        dd.storageMode = MTLStorageModePrivate;
+        rec.depth = [device_ newTextureWithDescriptor:dd];
+        if (!rec.depth) return {};
+      }
       rec.hasDepth = true;
+    }
+    // MSAA 颜色附件(Private;resolve 目标为 rec.color)
+    if (desc.sampleCount > 1) {
+      MTLTextureDescriptor* md = [[MTLTextureDescriptor alloc] init];
+      md.textureType = MTLTextureType2DMultisample;
+      md.pixelFormat = toMTLPixelFormat(desc.colorFormat);
+      md.width = desc.width;
+      md.height = desc.height;
+      md.sampleCount = desc.sampleCount;
+      md.usage = MTLTextureUsageRenderTarget;
+      md.storageMode = MTLStorageModePrivate;
+      rec.msaaColor = [device_ newTextureWithDescriptor:md];
+      if (!rec.msaaColor) return {};
+      rec.samples = desc.sampleCount;
     }
     targets_.emplace(h, rec);
     return h;
@@ -848,20 +893,27 @@ void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& 
   TargetRec t;
   if (!device_->target(target, t)) return;
   MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
-  rp.colorAttachments[0].texture = t.color;
+  if (t.samples > 1) {
+    // MSAA:渲染到多重采样附件,pass 结束自动 resolve 到 color
+    rp.colorAttachments[0].texture = t.msaaColor;
+    rp.colorAttachments[0].resolveTexture = t.color;
+    rp.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+  } else {
+    rp.colorAttachments[0].texture = t.color;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+  }
   if (t.textureBacked) {
     rp.colorAttachments[0].slice = t.face;  // cube 面(2D 传 0)
     rp.colorAttachments[0].level = t.mip;   // mip 级
   }
   if (t.hasDepth) {
-    rp.depthAttachment.texture = t.depth;
+    rp.depthAttachment.texture = t.msaaDepth ? t.msaaDepth : t.depth;
     rp.depthAttachment.loadAction = MTLLoadActionClear;
     rp.depthAttachment.clearDepth = clear.depth;
     rp.depthAttachment.storeAction = MTLStoreActionDontCare;
   }
   rp.colorAttachments[0].loadAction = MTLLoadActionClear;
   rp.colorAttachments[0].clearColor = MTLClearColorMake(clear.r, clear.g, clear.b, clear.a);
-  rp.colorAttachments[0].storeAction = MTLStoreActionStore;
   encoder_ = [cmd_ renderCommandEncoderWithDescriptor:rp];
   MTLViewport vp{0, 0, double(t.width), double(t.height), 0, 1};
   [encoder_ setViewport:vp];

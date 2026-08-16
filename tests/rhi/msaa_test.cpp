@@ -104,14 +104,12 @@ void runReject(rd::Backend b) {
 }
 } // namespace
 
-#if 0  // Task 5(Metal MSAA)完成后启用
 TEST(Msaa, Metal) {
 #if defined(__APPLE__)
   runMsaa(rd::Backend::Metal);
   runReject(rd::Backend::Metal);
 #endif
 }
-#endif
 
 TEST(Msaa, Vulkan) {
 #if defined(RD_WITH_VULKAN)

@@ -5,6 +5,7 @@ add_library(rd_core STATIC
   rhi/rhi_factory.cpp
   rhi/rhi_capability.cpp
   resource/image_codec.cpp
+  resource/ktx2_codec.cpp
   resource/gltf_loader.cpp
   resource/mesh_render_resource.cpp
   resource/mesh_utils.cpp
@@ -19,6 +20,8 @@ add_library(rd_core STATIC
 target_include_directories(rd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
   ${stb_SOURCE_DIR} ${cgltf_SOURCE_DIR})
 target_link_libraries(rd_core PUBLIC glm::glm)
+target_link_libraries(rd_core PRIVATE ktx)
+target_include_directories(rd_core PRIVATE ${ktx_SOURCE_DIR}/include)
 target_compile_definitions(rd_core PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 # 内嵌 shader：host 构建 build 期生成；ANDROID/IOS configure 期生成

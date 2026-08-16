@@ -13,12 +13,17 @@
 
 namespace rd {
 /**
- * @brief 返回内嵌的 cube shader 字节。
+ * @brief 按 shader 名返回内嵌字节。
  * @param backend 目标后端（决定返回 SPIR-V / metallib / GLSL ES 文本）。
+ * @param name   shader 源文件名（不含扩展名）:"cube"/"unlit"/"pbr_forward"/
+ *               "prefilter"/"blit"。
  * @param stage   顶点或片段阶段。
  * @param data/size 输出：指向静态存储的字节区间，调用方勿释放。
- * @return 该后端无内嵌产物（编译期未嵌入）时返回 false。
+ * @return 该后端无内嵌产物或名不存在时返回 false。
  * @note 入口名约定：Metal="main0"，其余="main"（由调用方按后端选择）。
  */
+bool embeddedShader(Backend backend, const char* name, ShaderStage stage,
+                    const uint8_t** data, size_t* size);
+/// 兼容包装:等价于 embeddedShader(backend, "cube", stage, ...)。
 bool embeddedCubeShader(Backend backend, ShaderStage stage, const uint8_t** data, size_t* size);
 } // namespace rd

@@ -3,8 +3,8 @@
 #   用法: cmake -DOUT=<输出cpp> -DDIR=<shaders_out> -DDIR_IOS=<shaders_out_ios>
 #               [-DDIR_IOSSIM=<shaders_out_iossim>] -P GenEmbedded.cmake
 #
-# 把 cube shader 的各后端产物以十六进制数组内嵌进 C++ 源码；
-# 不存在的产物生成占位空数组（sizeof==1），embeddedCubeShader 据此返回 false。
+# 把名表内 shader 的各后端产物以十六进制数组内嵌进 C++ 源码；
+# 不存在的产物生成占位空数组（sizeof==1），embeddedShader 据此返回 false。
 # 生成文件的接口见 core/api/embedded_shaders.h。
 # ============================================================================
 function(embed_file VAR_NAME FILE_PATH OUT_LINES)
@@ -21,47 +21,81 @@ function(embed_file VAR_NAME FILE_PATH OUT_LINES)
   endif()
 endfunction()
 
-embed_file(kCubeVertSpv ${DIR}/cube.vert.spv L1)
-embed_file(kCubeFragSpv ${DIR}/cube.frag.spv L2)
-embed_file(kCubeVertGles ${DIR}/cube.vert.gles L3)
-embed_file(kCubeFragGles ${DIR}/cube.frag.gles L4)
-embed_file(kCubeVertMetal ${DIR}/cube.vert.metallib L5)
-embed_file(kCubeFragMetal ${DIR}/cube.frag.metallib L6)
-embed_file(kCubeVertMetalIos ${DIR_IOS}/cube.vert.metallib L7)
-embed_file(kCubeFragMetalIos ${DIR_IOS}/cube.frag.metallib L8)
-embed_file(kCubeVertMetalIosSim ${DIR_IOSSIM}/cube.vert.metallib L9)
-embed_file(kCubeFragMetalIosSim ${DIR_IOSSIM}/cube.frag.metallib L10)
+set(SHADERS cube unlit pbr_forward prefilter blit)
+set(ALL_LINES "")
+foreach(S ${SHADERS})
+  embed_file(k_${S}_vert_spv     ${DIR}/${S}.vert.spv            L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_frag_spv     ${DIR}/${S}.frag.spv            L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_vert_gles    ${DIR}/${S}.vert.gles           L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_frag_gles    ${DIR}/${S}.frag.gles           L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_vert_metal   ${DIR}/${S}.vert.metallib       L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_frag_metal   ${DIR}/${S}.frag.metallib       L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_vert_metali  ${DIR_IOS}/${S}.vert.metallib   L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_frag_metali  ${DIR_IOS}/${S}.frag.metallib   L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_vert_metals  ${DIR_IOSSIM}/${S}.vert.metallib L)
+  string(APPEND ALL_LINES "${L}")
+  embed_file(k_${S}_frag_metals  ${DIR_IOSSIM}/${S}.frag.metallib L)
+  string(APPEND ALL_LINES "${L}")
+endforeach()
 
-# 生成查询函数：按后端+阶段返回字节区间；Metal 的三份 metallib 由编译宏选择
+# 查询函数:名 → 各后端数组;Metal 的三份 metallib 由编译宏选择
 # （RD_EMBED_IOS_METAL=真机，RD_EMBED_IOS_SIMULATOR=模拟器，否则=macOS host）。
+set(LOOKUP "")
+foreach(S ${SHADERS})
+  string(APPEND LOOKUP "
+  if (strcmp(name, \"${S}\") == 0) {
+    switch (backend) {
+      case Backend::Vulkan:
+        if (vs) { d = k_${S}_vert_spv; n = sizeof(k_${S}_vert_spv); }
+        else    { d = k_${S}_frag_spv; n = sizeof(k_${S}_frag_spv); }
+        break;
+      case Backend::GLES:
+        if (vs) { d = k_${S}_vert_gles; n = sizeof(k_${S}_vert_gles); }
+        else    { d = k_${S}_frag_gles; n = sizeof(k_${S}_frag_gles); }
+        break;
+      case Backend::Metal:
+#if defined(RD_EMBED_IOS_SIMULATOR)
+        if (vs) { d = k_${S}_vert_metals; n = sizeof(k_${S}_vert_metals); }
+        else    { d = k_${S}_frag_metals; n = sizeof(k_${S}_frag_metals); }
+#elif defined(RD_EMBED_IOS_METAL)
+        if (vs) { d = k_${S}_vert_metali; n = sizeof(k_${S}_vert_metali); }
+        else    { d = k_${S}_frag_metali; n = sizeof(k_${S}_frag_metali); }
+#else
+        if (vs) { d = k_${S}_vert_metal; n = sizeof(k_${S}_vert_metal); }
+        else    { d = k_${S}_frag_metal; n = sizeof(k_${S}_frag_metal); }
+#endif
+        break;
+    }
+  }
+")
+endforeach()
+
 file(WRITE ${OUT} "// GENERATED FILE - 勿手改
 #include \"api/embedded_shaders.h\"
+#include <cstring>
 namespace {
-${L1}${L2}${L3}${L4}${L5}${L6}${L7}${L8}${L9}${L10}
+${ALL_LINES}
 }
 namespace rd {
-bool embeddedCubeShader(Backend backend, ShaderStage stage, const uint8_t** data, size_t* size) {
+bool embeddedShader(Backend backend, const char* name, ShaderStage stage,
+                    const uint8_t** data, size_t* size) {
   const uint8_t* d = nullptr; size_t n = 0;
   const bool vs = (stage == ShaderStage::Vertex);
-  switch (backend) {
-    case Backend::Vulkan:
-      if (vs) { d = kCubeVertSpv; n = sizeof(kCubeVertSpv); } else { d = kCubeFragSpv; n = sizeof(kCubeFragSpv); }
-      break;
-    case Backend::GLES:
-      if (vs) { d = kCubeVertGles; n = sizeof(kCubeVertGles); } else { d = kCubeFragGles; n = sizeof(kCubeFragGles); }
-      break;
-    case Backend::Metal:
-#if defined(RD_EMBED_IOS_SIMULATOR)
-      if (vs) { d = kCubeVertMetalIosSim; n = sizeof(kCubeVertMetalIosSim); } else { d = kCubeFragMetalIosSim; n = sizeof(kCubeFragMetalIosSim); }
-#elif defined(RD_EMBED_IOS_METAL)
-      if (vs) { d = kCubeVertMetalIos; n = sizeof(kCubeVertMetalIos); } else { d = kCubeFragMetalIos; n = sizeof(kCubeFragMetalIos); }
-#else
-      if (vs) { d = kCubeVertMetal; n = sizeof(kCubeVertMetal); } else { d = kCubeFragMetal; n = sizeof(kCubeFragMetal); }
-#endif
-      break;
-  }
-  if (!d || n <= 1) return false; // 占位空数组 sizeof==1
+${LOOKUP}
+  if (!d || n <= 1) return false;  // 占位空数组 sizeof==1
   *data = d; *size = n; return true;
+}
+bool embeddedCubeShader(Backend backend, ShaderStage stage, const uint8_t** data,
+                        size_t* size) {
+  return embeddedShader(backend, \"cube\", stage, data, size);
 }
 } // namespace rd
 ")

@@ -2,6 +2,7 @@
 // 不存在文件返回空;GPU 上传(host Metal)句柄有效。
 #include <gtest/gtest.h>
 #include "common/ktx2_gen.h"
+#include "common/skinned_gen.h"
 #include "resource/gltf_loader.h"
 #include "resource/mesh_render_resource.h"
 #include "rhi/rhi_device.h"
@@ -260,4 +261,57 @@ TEST(Gltf, PunctualLights) {
   auto box = rd::loadGltf((std::string(kAssets) + "/BoxTextured.glb").c_str());
   ASSERT_TRUE(box.valid());
   EXPECT_TRUE(box.lights.empty());
+}
+
+// 蒙皮解析:nodes/skins/animations + 80B 顶点布局。
+TEST(Gltf, SkinnedQuad) {
+  const std::string dir =
+      (std::filesystem::temp_directory_path() / "rd_gltf_skin").string();
+  const std::string path = rd::test::writeSkinnedQuad(dir);
+  ASSERT_FALSE(path.empty());
+  auto model = rd::loadGltf(path.c_str());
+  ASSERT_TRUE(model.valid());
+
+  // 节点层级:3 节点(node1 parent=0,平移 y=1)
+  ASSERT_EQ(model.nodes.size(), 3u);
+  EXPECT_EQ(model.nodes[1].parent, 0);
+  EXPECT_NEAR(model.nodes[1].translation[1], 1.0f, 1e-4f);
+  EXPECT_EQ(model.nodes[2].mesh, 0);
+
+  // 蒙皮网格:80B 布局 + joints/weights 正确
+  ASSERT_EQ(model.meshes.size(), 1u);
+  const auto& mesh = model.meshes[0];
+  EXPECT_TRUE(mesh.skinned);
+  ASSERT_EQ(mesh.vertices.size(), 4u * 20u);  // 20 float/顶点(80B)
+  // 顶点 0(y=0):joints=(0,0,0,0),weights=(1,0,0,0)
+  EXPECT_FLOAT_EQ(mesh.vertices[12], 0.0f);   // joints4f@12(float 下标 48B/4)
+  EXPECT_FLOAT_EQ(mesh.vertices[16], 1.0f);   // weights4f@16
+  // 顶点 2(y=2):joints=(1,0,0,0)
+  EXPECT_FLOAT_EQ(mesh.vertices[2 * 20 + 12], 1.0f);
+  EXPECT_FLOAT_EQ(mesh.vertices[2 * 20 + 16], 1.0f);
+
+  // skins:2 关节 + IBM(joint1 平移 y=-1)
+  ASSERT_EQ(model.skins.size(), 1u);
+  ASSERT_EQ(model.skins[0].joints.size(), 2u);
+  EXPECT_EQ(model.skins[0].joints[1], 1);
+  ASSERT_EQ(model.skins[0].inverseBindMatrices.size(), 32u);
+  EXPECT_NEAR(model.skins[0].inverseBindMatrices[16 + 13], -1.0f, 1e-4f);
+
+  // animations:clip "bend",1 通道 rotation,时长 1s
+  ASSERT_EQ(model.animations.size(), 1u);
+  const auto& clip = model.animations[0];
+  EXPECT_EQ(clip.name, "bend");
+  ASSERT_EQ(clip.channels.size(), 1u);
+  EXPECT_EQ(clip.channels[0].node, 1);
+  EXPECT_EQ(clip.channels[0].path, 1);  // rotation
+  ASSERT_EQ(clip.channels[0].times.size(), 2u);
+  EXPECT_FLOAT_EQ(clip.duration, 1.0f);
+  EXPECT_NEAR(clip.channels[0].values[6], 0.70710678f, 1e-4f);
+
+  // 非蒙皮模型:节点表照常导入(统一行为),但无蒙皮/动画
+  auto box = rd::loadGltf((std::string(kAssets) + "/BoxTextured.glb").c_str());
+  ASSERT_TRUE(box.valid());
+  EXPECT_FALSE(box.meshes[0].skinned);
+  EXPECT_TRUE(box.skins.empty());
+  EXPECT_TRUE(box.animations.empty());
 }

@@ -47,19 +47,58 @@ struct MaterialData {
 /// 单个 mesh 的 CPU 数据。
 struct MeshData {
   std::string name;
-  std::vector<float> vertices;    // 交错 pos3|normal3|tangent4|uv2(12 float,stride 48)
+  /// 交错顶点:非蒙皮 pos3|normal3|tangent4|uv2(12 float,stride 48);
+  /// 蒙皮 20 float(stride 80):追加 joints4f@48|weights4f@64。
+  std::vector<float> vertices;
   std::vector<uint8_t> indices;   // 原始字节(indexType 决定位宽)
   IndexType indexType = IndexType::UInt16;
   uint32_t indexCount = 0;
   MaterialData material;
+  bool skinned = false;           // 蒙皮网格(80B 布局)
+  int32_t nodeIndex = -1;         // 所属 nodes[] 下标(无节点层级为 -1)
 };
 
-/// 模型资产:一组 mesh + 包围球(全部 mesh 的 POSITION 合并)。valid()==false 表示加载失败。
+/// 层级节点(蒙皮模型用;非蒙皮模型 nodes 为空)。
+struct AnimNodeData {
+  int32_t parent = -1;
+  float translation[3] = {0, 0, 0};
+  float rotation[4] = {0, 0, 0, 1};   // quat xyzw
+  float scale[3] = {1, 1, 1};
+  int32_t mesh = -1;                  // 首个 primitive 的 meshes[] 下标
+};
+
+/// 蒙皮:关节表 + 逆绑定矩阵(16 float 列主序 ×N)。
+struct SkinData {
+  std::vector<int32_t> joints;        // nodes[] 下标
+  std::vector<float> inverseBindMatrices;
+  int32_t skeletonRoot = -1;
+};
+
+/// 动画通道:目标节点某属性的关键帧序列。
+struct AnimChannelData {
+  int32_t node = -1;
+  int32_t path = 0;                   // 0=translation,1=rotation,2=scale
+  std::vector<float> times;
+  std::vector<float> values;          // vec3(t/s)或 quat(r)扁平序列
+};
+
+/// 动画 clip。
+struct AnimClipData {
+  std::string name;
+  std::vector<AnimChannelData> channels;
+  float duration = 0.0f;
+};
+
+/// 模型资产:一组 mesh + 包围球(全部 mesh 的 POSITION 合并)+ 层级/蒙皮/动画。
+/// valid()==false 表示加载失败。
 struct ModelAsset {
   std::vector<MeshData> meshes;
   float boundingCenter[3] = {0, 0, 0};
   float boundingRadius = 1.0f;
   std::vector<LightData> lights;    // KHR_lights_punctual(无则空;渲染层默认 1 方向光)
+  std::vector<AnimNodeData> nodes;    // 层级节点(非蒙皮为空)
+  std::vector<SkinData> skins;
+  std::vector<AnimClipData> animations;
   bool valid() const { return !meshes.empty(); }
 };
 

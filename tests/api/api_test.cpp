@@ -52,3 +52,28 @@ TEST(Api, QualityNullSafe) {
   EXPECT_EQ(rd_engine_set_quality(nullptr, RD_QUALITY_HIGH), RD_ERROR_INVALID_ARG);
   EXPECT_EQ(rd_engine_get_quality(nullptr), RD_QUALITY_LOW);  // 空引擎返回占位
 }
+
+// 输入事件 API:无 surface 也安全(相机状态更新);空引擎不崩
+TEST(Api, PointerEventsSafe) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  rd_engine_on_pointer(e, RD_POINTER_DOWN, 0, 100, 100);
+  rd_engine_on_pointer(e, RD_POINTER_MOVE, 0, 200, 150);
+  rd_engine_on_pointer(e, RD_POINTER_UP, 0, 200, 150);
+  rd_engine_on_scroll(e, 1.0f);
+  rd_engine_on_pinch(e, 1.5f);
+  rd_engine_on_double_tap(e, 0, 0);
+  rd_engine_render_frame(e, 0.016f);  // 无 surface 安全 no-op
+  rd_engine_destroy(e);
+  rd_engine_on_pointer(nullptr, RD_POINTER_DOWN, 0, 0, 0);  // 不崩
+}
+
+// 模型加载:不存在路径返回 RD_ERROR_ASSET;有效 glb 返回 OK
+TEST(Api, LoadGltf) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(rd_engine_load_gltf(e, "/nonexistent/x.glb"), RD_ERROR_ASSET);
+  EXPECT_STRNE(rd_get_last_error(e), "");
+  EXPECT_EQ(rd_engine_load_gltf(e, RD_TEST_DATA_DIR "/assets/TetraU32.glb"), RD_OK);
+  rd_engine_destroy(e);
+}

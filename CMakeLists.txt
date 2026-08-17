@@ -18,6 +18,7 @@ cmake_minimum_required(VERSION 3.22) # Android SDK 自带 cmake 为 3.22.1
 project(rdrenderer LANGUAGES C CXX)
 
 if(APPLE)
+  enable_language(OBJC)   # GLFW 的 Cocoa 源是纯 Objective-C（.m）
   enable_language(OBJCXX) # Metal 后端是 Objective-C++（.mm）
 endif()
 

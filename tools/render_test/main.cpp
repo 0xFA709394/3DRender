@@ -21,6 +21,9 @@
 #include "rhi/rhi_device.h"
 #include "scene/cube_scene.h"
 #include "rd_shader_dir.h"
+#if defined(__APPLE__)
+#include "tools/render_test/interactive.h"
+#endif
 
 int main(int argc, char** argv) {
   // ---- 参数解析（默认 metal、45°、输出 cube.png）----
@@ -29,6 +32,7 @@ int main(int argc, char** argv) {
   std::string out = "cube.png";
   std::string model;
   bool pbr = false;  // --pbr:包围球取景(任意模型自动取景);默认固定机位 (0,0,3)
+  bool interactive = false;  // --interactive:GLFW 窗口交互(Metal,macOS)
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
       backend = !strcmp(argv[++i], "vulkan") ? rd::Backend::Vulkan : rd::Backend::Metal;
@@ -40,8 +44,16 @@ int main(int argc, char** argv) {
       model = argv[++i];
     } else if (!strcmp(argv[i], "--pbr")) {
       pbr = true;
+    } else if (!strcmp(argv[i], "--interactive")) {
+      interactive = true;
     }
   }
+
+#if defined(__APPLE__)
+  if (interactive) return rd::tool::runInteractive(model.empty() ? nullptr : model.c_str());
+#else
+  (void)interactive;
+#endif
 
   // ---- 设备与离屏目标 ----
   rd::DeviceDesc desc;

@@ -41,6 +41,7 @@ MTLPixelFormat toMTLPixelFormat(Format f) {
     case Format::R32G32_FLOAT: return MTLPixelFormatRG32Float;
     case Format::D32_FLOAT:   return MTLPixelFormatDepth32Float;
     case Format::ASTC_4x4_UNORM: return MTLPixelFormatASTC_4x4_LDR;
+    case Format::R16G16B16A16_FLOAT: return MTLPixelFormatRGBA16Float;
     case Format::ETC2_RGBA8_UNORM: return MTLPixelFormatInvalid;  // Metal 不支持 ETC2
     default:                  return MTLPixelFormatInvalid;
   }
@@ -252,6 +253,7 @@ public:
                             [device_ supportsFamily:MTLGPUFamilyMac2];
     caps_.set(Capability::texture_compression_astc, isAppleGpu ? 1 : 0);
     caps_.set(Capability::texture_compression_etc2, 0);  // Metal 无 ETC2
+    caps_.set(Capability::hdr_render_target, 1);
     return true;
   }
 

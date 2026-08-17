@@ -166,6 +166,8 @@ void toGLTexFormat(Format f, GLint& internal, GLenum& upload, GLenum& type) {
     case Format::D32_FLOAT:
       internal = GL_DEPTH_COMPONENT32F; upload = GL_DEPTH_COMPONENT; type = GL_FLOAT;
       break;
+    case Format::R16G16B16A16_FLOAT:
+      internal = GL_RGBA16F; upload = GL_RGBA; type = GL_HALF_FLOAT; break;
     case Format::ASTC_4x4_UNORM:
       internal = GL_COMPRESSED_RGBA_ASTC_4x4_KHR; upload = 0; type = 0; break;
     case Format::ETC2_RGBA8_UNORM:
@@ -625,6 +627,8 @@ bool GLESDevice::init(const DeviceDesc&) {
   caps_.set(Capability::texture_compression_etc2, 1);  // ES3 核心
   caps_.set(Capability::texture_compression_astc,
             exts && strstr(exts, "GL_KHR_texture_compression_astc_ldr") ? 1 : 0);
+  caps_.set(Capability::hdr_render_target,
+            exts && strstr(exts, "GL_EXT_color_buffer_half_float") ? 1 : 0);
   return true;
 }
 

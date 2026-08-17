@@ -21,7 +21,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - P2-1 完成：单方向光阴影(depth-only 目标 + 硬件比较采样 + PCF 3x3,包围球自动取景)
   + KHR_lights_punctual 多光源(dir/point/spot×4,glTF 解析/C API 双通道)
   + 画质档 shadowMapSize(2048/1024/0)
-- 下一步：P2 余下(后处理链/骨骼动画/拾取/性能基准)
+- P2-2 完成：HDR 后处理链(High/Mid:RGBA16F SceneTarget + Bloom 3 级 tent 模糊
+  + ACES composite;Low:FXAA 兜底;R16F 格式 + hdr_render_target caps;
+  场景管线按目标格式/采样数匹配重建)
+- 下一步：P2 余下(骨骼动画/拾取/性能基准)
 
 ## 构建与测试
 ```bash
@@ -102,6 +105,14 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   手动灯(C API)非空覆盖 glTF 灯,皆空则默认 1 方向光;glTF 灯方向=节点旋转×(0,0,-1) 取反
 - 画质:`QualityPreset.shadowMapSize`(0=关);`rd_engine_set_shadow_enabled` 与画质档为与关系;
   阴影取景 `Renderer::setLightFraming(center, radius)`(包围球正交,光源方向取首盏方向光)
+- 后处理:post 开=HDR(LightUBO `lightCount.y`=hdrMode,pbr 线性输出到 R16F SceneTarget)走
+  extract(半分)→l1/l2/l3 tent 模糊→composite(w=1.0/0.6/0.4+ACES+gamma)直出;
+  post 关=LDR(Reinhard 在 pbr);FXAA 与 MSAA 互斥(仅 msaa==1 的 Low 档);
+  post pass 均复用 blit.vert 全屏三角形;composite 槽位 0=scene,1..3=bloom l1..l3;
+  参数 UBO x=vFlip,yz=texel(逐 pass 独立小 UBO,勿跨 pass 复用——录制期覆写问题)
+- 格式:`Format::R16G16B16A16_FLOAT`(8B/px);caps `hdr_render_target`(GLES 查 EXT);
+  **场景管线(pbr/unlit)按 SceneTarget 格式/采样数匹配重建**(ensureScenePipelines,
+  管线经 RenderContext 在 record 时注入,勿在构造渲染项时固化)
 
 ## 提交规范
 - 小步提交，每任务一个 commit；格式 `<type>(<scope>): 描述`

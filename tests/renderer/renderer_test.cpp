@@ -19,9 +19,10 @@ std::unique_ptr<rd::Renderer> makeRenderer(rd::Device& dev, rd::Backend b) {
   auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
   auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
   auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
+  auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
   auto r = std::make_unique<rd::Renderer>();
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
-                            pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
+                            pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
                             unlitVs.entry,
                             rd::Format::RGBA8_UNORM};
   if (!r->init(dev, sd)) return nullptr;

@@ -1,5 +1,6 @@
 // Renderer 的实现:双管线 + 环境 + 双层 UBO 帧流程。
 #include "renderer/renderer.h"
+#include "renderer/light_ubo.h"
 #include "renderer/mesh_renderable.h"
 #include "scene/camera.h"
 #include "foundation/log.h"
@@ -96,18 +97,105 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   const bool envOk = env_.build(dev, desc.prefilterVs, desc.prefilterFs, desc.entry,
                                 desc.colorFormat, iblSize_, iblMips_);
 
+  // 多光源 + 阴影资源
+  lightUbo_ = dev.createBuffer({352, BufferUsage::Uniform, true, false, nullptr});
+  auto svs = dev.createShaderModule({ShaderStage::Vertex, desc.shadowVs, desc.entry});
+  auto sfs = dev.createShaderModule({ShaderStage::Fragment, desc.shadowFs, desc.entry});
+  PipelineDesc spd;
+  spd.vertexShader = svs;
+  spd.fragmentShader = sfs;
+  fillVertexLayout(spd);
+  spd.cullMode = CullMode::None;
+  spd.depthTest = true;
+  spd.depthWrite = true;
+  spd.depthOnly = true;
+  shadowPipeline_ = dev.createPipeline(spd);
+  dev.destroyShaderModule(svs);
+  dev.destroyShaderModule(sfs);
+  SamplerDesc csd;
+  csd.compareEnable = true;
+  csd.wrapU = WrapMode::Clamp;
+  csd.wrapV = WrapMode::Clamp;
+  shadowSampler_ = dev.createSampler(csd);
+  {
+    // 1x1 D32=1.0 占位(无阴影时绑定,阴影采样恒受光)
+    const float one = 1.0f;
+    TextureDesc ftd;
+    ftd.width = 1;
+    ftd.height = 1;
+    ftd.format = Format::D32_FLOAT;
+    ftd.data = &one;
+    ftd.dataSize = 4;
+    shadowFallbackTex_ = dev.createTexture(ftd);
+  }
+
   if (!unlitPipeline_.valid() || !pbrPipeline_.valid() || !frameUbo_.valid() ||
       !itemUbo_.valid() || !blitPipeline_.valid() || !blitUbo_.valid() ||
-      !blitSampler_.valid() || !envOk) {
+      !blitSampler_.valid() || !lightUbo_.valid() || !shadowPipeline_.valid() ||
+      !shadowSampler_.valid() || !shadowFallbackTex_.valid() || !envOk) {
     shutdown();
     return false;
   }
   return true;
 }
 
+void Renderer::setLights(const std::vector<LightData>& lights) { lights_ = lights; }
+
+void Renderer::setLightFraming(const float center[3], float radius) {
+  framingCenter_[0] = center[0];
+  framingCenter_[1] = center[1];
+  framingCenter_[2] = center[2];
+  framingRadius_ = radius;
+}
+
+/// 按画质档确保阴影贴图可用;返回阴影是否激活(目标就绪)。
+bool Renderer::ensureShadowTarget() {
+  if (shadowMapSize_ == 0) {  // 关档:释放旧阴影资源
+    if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
+    if (shadowDepthTex_.valid()) dev_->destroyTexture(shadowDepthTex_);
+    shadowTarget_ = {};
+    shadowDepthTex_ = {};
+    shadowTargetSize_ = 0;
+    return false;
+  }
+  if (shadowTarget_.valid() && shadowTargetSize_ == shadowMapSize_) return true;
+  if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
+  if (shadowDepthTex_.valid()) dev_->destroyTexture(shadowDepthTex_);
+  shadowTarget_ = {};
+  shadowDepthTex_ = {};
+  shadowTargetSize_ = 0;
+  TextureDesc td;
+  td.width = shadowMapSize_;
+  td.height = shadowMapSize_;
+  td.format = Format::D32_FLOAT;
+  td.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
+  shadowDepthTex_ = dev_->createTexture(td);
+  if (!shadowDepthTex_.valid()) {
+    RD_LOGE("renderer", "阴影深度纹理创建失败(size=%u)", shadowMapSize_);
+    return false;
+  }
+  OffscreenTargetDesc od;
+  od.width = shadowMapSize_;
+  od.height = shadowMapSize_;
+  od.depthFromTexture = shadowDepthTex_;
+  shadowTarget_ = dev_->createOffscreenTarget(od);
+  if (!shadowTarget_.valid()) {
+    RD_LOGE("renderer", "阴影目标创建失败(size=%u)", shadowMapSize_);
+    return false;
+  }
+  shadowTargetSize_ = shadowMapSize_;
+  return true;
+}
+
 void Renderer::shutdown() {
   if (!dev_) return;
   env_.destroy(*dev_);
+  if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
+  if (shadowDepthTex_.valid()) dev_->destroyTexture(shadowDepthTex_);
+  if (shadowFallbackTex_.valid()) dev_->destroyTexture(shadowFallbackTex_);
+  if (shadowSampler_.valid()) dev_->destroySampler(shadowSampler_);
+  if (shadowPipeline_.valid()) dev_->destroyPipeline(shadowPipeline_);
+  if (lightUbo_.valid()) dev_->destroyBuffer(lightUbo_);
   if (sceneTarget_.valid()) dev_->destroyTarget(sceneTarget_);
   if (blitPipeline_.valid()) dev_->destroyPipeline(blitPipeline_);
   if (blitUbo_.valid()) dev_->destroyBuffer(blitUbo_);
@@ -118,6 +206,13 @@ void Renderer::shutdown() {
   if (fs_.valid()) dev_->destroyShaderModule(fs_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
+  shadowTarget_ = {};
+  shadowDepthTex_ = {};
+  shadowFallbackTex_ = {};
+  shadowSampler_ = {};
+  shadowPipeline_ = {};
+  lightUbo_ = {};
+  shadowTargetSize_ = 0;
   sceneTarget_ = {};
   blitPipeline_ = {};
   blitUbo_ = {};
@@ -136,6 +231,7 @@ void Renderer::setQuality(const QualityPreset& q) {
   renderScale_ = q.renderScale;
   msaa_ = q.msaa;
   maxTextureDim_ = q.maxTextureDim;
+  shadowMapSize_ = q.shadowMapSize;
   if (q.iblPrefilterSize != iblSize_ || q.iblPrefilterMips != iblMips_) {
     iblSize_ = q.iblPrefilterSize;
     iblMips_ = q.iblPrefilterMips;
@@ -248,6 +344,52 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(i) * kUboStride);
   }
 
+  // ---- LightUBO 填充(无灯 → 默认 1 方向光,与 2b/2c 现状一致)----
+  std::vector<LightData> effective = lights_;
+  if (effective.empty()) {
+    LightData d;
+    d.type = LightType::Directional;
+    const float n = std::sqrt(0.5f * 0.5f + 0.8f * 0.8f + 0.3f * 0.3f);
+    d.direction[0] = -0.5f / n;
+    d.direction[1] = 0.8f / n;
+    d.direction[2] = 0.3f / n;
+    d.color[0] = 0.8f;
+    d.color[1] = 0.75f;
+    d.color[2] = 0.7f;
+    effective.push_back(d);
+  }
+  const LightData* dirLight = nullptr;
+  for (const auto& l : effective)
+    if (l.type == LightType::Directional) {
+      dirLight = &l;
+      break;
+    }
+  // 阴影激活:手动开 + 画质档非 0 + 有方向光 + 目标就绪
+  const bool shadowActive = shadowManual_ && shadowMapSize_ > 0 && dirLight != nullptr &&
+                            ensureShadowTarget();
+  math::Mat4 lvp{1.0f};
+  if (dirLight) lvp = makeLightViewProj(*dirLight, framingCenter_, framingRadius_);
+  LightUBOData lu{};
+  fillLightUBO(lu, effective, lvp,
+               shadowMapSize_ ? 1.0f / float(shadowMapSize_) : 0.0f, shadowActive,
+               dev_->backend() == Backend::GLES);
+  dev_->updateBuffer(lightUbo_, &lu, sizeof(lu), 0);
+
+  // ---- ShadowPass(场景 pass 之前)----
+  if (shadowActive) {
+    cmd->beginRenderPass(shadowTarget_, {0, 0, 0, 1, 1.0f});
+    RenderContext sctx;
+    sctx.shadowPass = true;
+    sctx.lightUbo = lightUbo_;
+    sctx.itemUbo = itemUbo_;
+    sctx.shadowPipe = shadowPipeline_;
+    for (uint32_t i = 0; i < count; ++i) {
+      sctx.itemOffset = uint64_t(i) * kUboStride;
+      queue_[i]->record(cmd, sctx);
+    }
+    cmd->endRenderPass();
+  }
+
   // 上屏链:场景 → 内部 SceneTarget(分辨率缩放/MSAA 按画质档)→ blit upscale → 最终目标
   uint32_t tw = 0, th = 0;
   dev_->targetSize(target, tw, th);
@@ -260,6 +402,9 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.frameUbo = frameUbo_;
   ctx.itemUbo = itemUbo_;
   ctx.env = &env_;
+  ctx.lightUbo = lightUbo_;
+  ctx.shadowMap = shadowActive ? shadowDepthTex_ : shadowFallbackTex_;
+  ctx.shadowSampler = shadowSampler_;
   for (uint32_t i = 0; i < count; ++i) {
     queue_[i]->prepass(cmd);  // 2b 钩子(默认空)
     ctx.itemOffset = uint64_t(i) * kUboStride;

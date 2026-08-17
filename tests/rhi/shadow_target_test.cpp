@@ -70,11 +70,18 @@ void runShadowTarget(rd::Backend b) {
   auto samplePipe = dev->createPipeline(spd);
   ASSERT_TRUE(samplePipe.valid());
 
-  // mvp:覆盖左半屏的三角形(z=0.4 < 参考 0.5 → 受光;其余区域远平面 → 阴影)
+  // ShadowUBO(lightViewProj=单位)+ ItemUBO(mvp/world/normalMatrix=单位)双 UBO
   glm::mat4 mvp(1.0f);
   auto ubo = dev->createBuffer({64, rd::BufferUsage::Uniform, true, false, nullptr});
   ASSERT_TRUE(ubo.valid());
   dev->updateBuffer(ubo, &mvp, 64, 0);
+  float itemData[64] = {};
+  for (int m = 0; m < 3; ++m)
+    for (int k = 0; k < 16; ++k) itemData[m * 16 + k] = (k % 5 == 0) ? 1.0f : 0.0f;
+  itemData[48] = itemData[49] = itemData[50] = itemData[51] = 1.0f;  // baseColorFactor
+  auto itemUbo = dev->createBuffer({256, rd::BufferUsage::Uniform, true, false, nullptr});
+  ASSERT_TRUE(itemUbo.valid());
+  dev->updateBuffer(itemUbo, itemData, 256, 0);
   const float tri[3 * 3] = {-1, -1, 0.4f, 0, -1, 0.4f, -1, 1, 0.4f};  // 左下三角
   auto vbo = dev->createBuffer({sizeof(tri), rd::BufferUsage::Vertex, false, false, tri});
   const float quad[6 * 5] = {-1, -1, 0, 0, 1, 1, -1, 0, 1, 1, -1, 1, 0, 0, 0,
@@ -97,6 +104,7 @@ void runShadowTarget(rd::Backend b) {
   cmd->bindPipeline(depthPipe);
   cmd->bindVertexBuffer(0, vbo, 0);
   cmd->bindUniformBuffer(0, ubo, 0, 64);
+  cmd->bindUniformBuffer(1, itemUbo, 0, 256);
   cmd->draw(3, 0);
   cmd->endRenderPass();
   // ---- pass2:比较采样到 colorTarget ----
@@ -118,6 +126,7 @@ void runShadowTarget(rd::Backend b) {
 
   dev->destroySampler(cmpSampler);
   dev->destroyBuffer(ubo);
+  dev->destroyBuffer(itemUbo);
   dev->destroyBuffer(vbo);
   dev->destroyBuffer(quadVbo);
   dev->destroyTarget(colorTarget);

@@ -32,6 +32,7 @@ add_executable(rd_tests
   renderer/prefilter_test.cpp
   renderer/quality_test.cpp
   renderer/ktx2_render_test.cpp
+  renderer/shadow_test.cpp
   common/image.cpp
   common/image_test.cpp
   common/ktx2_gen.cpp

@@ -121,7 +121,9 @@ rd_result_t rd_engine_set_surface(rd_engine* e, void* nativeWindow, uint32_t wid
         !get("prefilter", rd::ShaderStage::Vertex, sd.prefilterVs) ||
         !get("prefilter", rd::ShaderStage::Fragment, sd.prefilterFs) ||
         !get("blit", rd::ShaderStage::Vertex, sd.blitVs) ||
-        !get("blit", rd::ShaderStage::Fragment, sd.blitFs)) {
+        !get("blit", rd::ShaderStage::Fragment, sd.blitFs) ||
+        !get("shadow_depth", rd::ShaderStage::Vertex, sd.shadowVs) ||
+        !get("shadow_depth", rd::ShaderStage::Fragment, sd.shadowFs)) {
       setError(e, "内嵌 shader 缺失");
       return RD_ERROR_SHADER;
     }

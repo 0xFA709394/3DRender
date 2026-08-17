@@ -1,6 +1,7 @@
-// pbr_forward.frag：glTF metallic-roughness + 1 方向光 + IBL（SH diffuse + prefilter specular）。
+// pbr_forward.frag：glTF metallic-roughness + 多光源(LightUBO) + 阴影(PCF) + IBL。
 // slot：0=baseColor(b4) 1=MR(b5) 2=normal(b6) 3=emissive(b7) 4=occlusion(b8)
-//       5=prefilterCube(b9) 6=brdfLut(b10)；FrameUBO(b0) ItemUBO(b1)。
+//       5=prefilterCube(b9) 6=brdfLut(b10) 7=shadowMap(b11);
+//       FrameUBO(b0) ItemUBO(b1) LightUBO(b2)。
 #version 450
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -10,8 +11,8 @@ layout(location = 3) in vec2 vUV;
 layout(binding = 0) uniform FrameUBO {
   mat4 viewProj;
   vec4 cameraPos;
-  vec4 lightDir;      // 指向光源的方向
-  vec4 lightColor;
+  vec4 lightDir;      // 占位(多光源后由 LightUBO 接管)
+  vec4 lightColor;    // 占位
   vec4 sh[9];         // xyz=SH 系数（Ã 已折叠）
 };
 layout(binding = 1) uniform ItemUBO {
@@ -23,6 +24,12 @@ layout(binding = 1) uniform ItemUBO {
   vec4 metallicRoughness;
   vec4 uvTransform;
 };
+layout(binding = 2) uniform LightUBO {
+  mat4 lightViewProj;
+  vec4 shadowParams;   // x=bias, y=1/shadowMapSize, z=shadowOn, w=vFlip
+  vec4 lightCount;     // x=count
+  vec4 lights[16];     // 4 盏 × 4 vec4(dirType|posRange|color|spot)
+};
 
 layout(binding = 4) uniform sampler2D texBaseColor;
 layout(binding = 5) uniform sampler2D texMR;
@@ -31,6 +38,7 @@ layout(binding = 7) uniform sampler2D texEmissive;
 layout(binding = 8) uniform sampler2D texOcclusion;
 layout(binding = 9) uniform samplerCube texPrefilter;
 layout(binding = 10) uniform sampler2D texBrdfLut;
+layout(binding = 11) uniform sampler2DShadow texShadow;
 
 layout(location = 0) out vec4 outColor;
 
@@ -96,11 +104,60 @@ void main() {
   vec2 brdf = texture(texBrdfLut, vec2(clamp(dot(n, v), 0.0, 1.0), roughness)).rg;
   vec3 iblSpec = prefiltered * (f0 * brdf.x + brdf.y);
 
-  // 1 方向光
-  vec3 l = normalize(lightDir.xyz);
-  float ndl = clamp(dot(n, l), 0.0, 1.0);
-  vec3 direct = lightColor.rgb * ndl *
-                (baseColor.rgb * (1.0 - metallic) / PI + ggxSpec(n, l, v, roughness, f0));
+  // 多光源 direct(首盏方向光投影阴影)
+  vec3 direct = vec3(0.0);
+  const int nLights = min(int(lightCount.x + 0.5), 4);
+  for (int i = 0; i < nLights; ++i) {
+    vec4 dirType = lights[i * 4 + 0];
+    vec4 posRange = lights[i * 4 + 1];
+    vec3 lcolor = lights[i * 4 + 2].rgb;
+    vec4 spot = lights[i * 4 + 3];
+    int type = int(dirType.w + 0.5);
+    vec3 L;
+    float att = 1.0;
+    if (type == 0) {
+      L = normalize(dirType.xyz);
+    } else {
+      vec3 toL = posRange.xyz - vWorldPos;
+      float dist = length(toL);
+      L = toL / max(dist, 1e-4);
+      if (posRange.w > 0.0) {
+        float t = clamp(1.0 - dist / posRange.w, 0.0, 1.0);
+        att = t * t;
+      }
+      if (type == 2) {
+        float cd = dot(-L, normalize(dirType.xyz));
+        float t = clamp((cd - spot.y) / max(spot.x - spot.y, 1e-4), 0.0, 1.0);
+        att *= t * t;
+      }
+    }
+    float ndl = clamp(dot(n, L), 0.0, 1.0);
+    vec3 term = lcolor * att * ndl *
+                (baseColor.rgb * (1.0 - metallic) / PI + ggxSpec(n, L, v, roughness, f0));
+    if (i == 0 && type == 0) {
+      // 阴影:PCF 3x3(bias 随坡度放大);采样坐标越界视为受光
+      float shadow = 1.0;
+      if (shadowParams.z > 0.5) {
+        vec4 lp = lightViewProj * vec4(vWorldPos, 1.0);
+        vec3 ndc = lp.xyz / lp.w;
+        vec2 suv;
+        suv.x = ndc.x * 0.5 + 0.5;
+        suv.y = shadowParams.w > 0.5 ? ndc.y * 0.5 + 0.5 : 0.5 - ndc.y * 0.5;
+        float bias = max(shadowParams.x * (1.0 - ndl), shadowParams.x * 0.2);
+        float refZ = ndc.z - bias;
+        if (suv.x >= 0.0 && suv.x <= 1.0 && suv.y >= 0.0 && suv.y <= 1.0) {
+          float sum = 0.0;
+          for (int x = -1; x <= 1; ++x)
+            for (int y = -1; y <= 1; ++y)
+              sum += texture(texShadow,
+                             vec3(suv + vec2(float(x), float(y)) * shadowParams.y, refZ));
+          shadow = sum / 9.0;
+        }
+      }
+      term *= shadow;
+    }
+    direct += term;
+  }
 
   float ao = mix(1.0, texture(texOcclusion, vUV).r, emissiveOcclusion.a);
   vec3 emissive = texture(texEmissive, vUV).rgb * emissiveOcclusion.rgb;

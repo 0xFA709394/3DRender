@@ -12,6 +12,7 @@
 #include "renderer/environment.h"
 #include "renderer/quality.h"
 #include "foundation/math.h"
+#include "resource/gltf_loader.h"  // LightData
 #include <memory>
 #include <vector>
 
@@ -29,6 +30,7 @@ struct RendererShaderDesc {
   std::vector<uint8_t> pbrVs, pbrFs;            ///< pbr uber-shader
   std::vector<uint8_t> prefilterVs, prefilterFs;  ///< 环境预滤波
   std::vector<uint8_t> blitVs, blitFs;          ///< 上屏链 upscale pass(全屏三角形)
+  std::vector<uint8_t> shadowVs, shadowFs;      ///< ShadowPass 深度写出
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
 };
@@ -51,10 +53,17 @@ public:
 
   /// 应用画质预设:renderScale/msaa 下次 endScene 重建 SceneTarget 生效;
   /// IBL 尺寸变化立即重建环境(GPU 预滤波链);maxTextureDim 仅记录,
-  /// 由加载链(rd_engine_load_gltf)读取。
+  /// 由加载链(rd_engine_load_gltf)读取;shadowMapSize 决定阴影贴图尺寸(0=关)。
   void setQuality(const QualityPreset& q);
   /// 当前生效的纹理解码尺寸上限(加载链用)。
   uint32_t maxTextureDim() const { return maxTextureDim_; }
+
+  /// 设置光源(≤4;空 → 默认 1 方向光,与 2b/2c 现状一致);下一帧生效。
+  void setLights(const std::vector<LightData>& lights);
+  /// 阴影取景(模型包围球);光源方向取首盏方向光。
+  void setLightFraming(const float center[3], float radius);
+  /// 手动阴影开关(与画质档 shadowMapSize>0 为与关系)。
+  void setShadowEnabled(bool on) { shadowManual_ = on; }
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
@@ -88,6 +97,22 @@ private:
   SamplerHandle blitSampler_;
   TargetHandle sceneTarget_;
   uint32_t sceneW_ = 0, sceneH_ = 0, sceneSamples_ = 0;
+
+  // ---- 多光源 + 阴影 ----
+  /// 按画质档确保阴影贴图可用;返回阴影是否激活(目标就绪)。
+  bool ensureShadowTarget();
+  BufferHandle lightUbo_;          // hostWrite,352B(LightUBOData)
+  PipelineHandle shadowPipeline_;  // depthOnly
+  TextureHandle shadowDepthTex_;   // D32 RT(阴影贴图)
+  TargetHandle shadowTarget_;      // depth-only 目标
+  SamplerHandle shadowSampler_;    // 比较采样器
+  TextureHandle shadowFallbackTex_;  // 1x1 D32(1.0,无阴影时的占位绑定)
+  std::vector<LightData> lights_;
+  float framingCenter_[3] = {0, 0, 0};
+  float framingRadius_ = 1.0f;
+  bool shadowManual_ = true;
+  uint32_t shadowMapSize_ = 0;     ///< 画质档设置(0=关)
+  uint32_t shadowTargetSize_ = 0;  ///< 当前阴影贴图尺寸
 };
 
 } // namespace rd

@@ -16,6 +16,7 @@ struct QualityPreset {
   uint32_t iblPrefilterSize;  ///< prefilter cube 边长
   uint32_t iblPrefilterMips;  ///< prefilter mip 级数(roughness 粒度)
   uint32_t maxTextureDim;     ///< 纹理解码尺寸上限(等比降采样)
+  uint32_t shadowMapSize;     ///< 阴影贴图边长(0=关阴影)
 };
 
 /// 三档预设表。

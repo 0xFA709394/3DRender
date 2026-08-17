@@ -11,6 +11,7 @@
 #pragma once
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 namespace rd::math {
 
@@ -21,6 +22,7 @@ using Mat4 = glm::mat4;
 using Vec2 = glm::vec2;
 using Vec3 = glm::vec3;
 using Vec4 = glm::vec4;
+using Quat = glm::quat;   ///< 四元数(动画旋转插值;构造序 w,x,y,z)
 /// @}
 
 /// 角度制转弧度制（glm 的三角/旋转接口均使用弧度）。

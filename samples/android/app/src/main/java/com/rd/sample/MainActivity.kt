@@ -2,8 +2,10 @@ package com.rd.sample
 
 import android.app.Activity
 import android.os.Bundle
+import android.util.Log
 import android.widget.FrameLayout
 import com.rd.renderer.RenderView
+import java.io.File
 
 /**
  * 示例 Activity：全屏 RenderView。
@@ -26,5 +28,15 @@ class MainActivity : Activity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+        // assets → filesDir(内核 v1 只支持文件路径);surface 就绪后 loadModel 内部投递
+        val dst = File(filesDir, "DamagedHelmet.glb")
+        try {
+            if (!dst.exists()) assets.open("DamagedHelmet.glb").use { input ->
+                dst.outputStream().use { input.copyTo(it) }
+            }
+            renderView.loadModel(dst.absolutePath)
+        } catch (t: Throwable) {
+            Log.w("RdSample", "演示模型缺失,仅显示清屏背景", t)
+        }
     }
 }

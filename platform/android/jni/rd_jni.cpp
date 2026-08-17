@@ -63,4 +63,34 @@ JNIEXPORT void JNICALL Java_com_rd_renderer_RenderView_nativeRenderFrame(JNIEnv*
   rd_engine_render_frame(reinterpret_cast<rd_engine*>(ptr), dt);
 }
 
+/// 指针事件（action: 0=DOWN,1=MOVE,2=UP,3=CANCEL;坐标为物理像素）。
+JNIEXPORT void JNICALL Java_com_rd_renderer_RenderView_nativeOnPointer(
+    JNIEnv*, jobject, jlong ptr, jint action, jint id, jfloat x, jfloat y) {
+  rd_engine_on_pointer(reinterpret_cast<rd_engine*>(ptr),
+                       static_cast<rd_pointer_action_t>(action), id, x, y);
+}
+
+/// 双指比例缩放（ratio>1 放大→拉近）。
+JNIEXPORT void JNICALL Java_com_rd_renderer_RenderView_nativeOnPinch(JNIEnv*, jobject,
+                                                                     jlong ptr, jfloat ratio) {
+  rd_engine_on_pinch(reinterpret_cast<rd_engine*>(ptr), ratio);
+}
+
+/// 双击重置取景。
+JNIEXPORT void JNICALL Java_com_rd_renderer_RenderView_nativeOnDoubleTap(JNIEnv*, jobject,
+                                                                         jlong ptr, jfloat x,
+                                                                         jfloat y) {
+  rd_engine_on_double_tap(reinterpret_cast<rd_engine*>(ptr), x, y);
+}
+
+/// 同步加载 glTF 模型（返回 rd_result_t;0=成功）。
+JNIEXPORT jint JNICALL Java_com_rd_renderer_RenderView_nativeLoadGltf(JNIEnv* env, jobject,
+                                                                      jlong ptr, jstring path) {
+  const char* p = env->GetStringUTFChars(path, nullptr);
+  const jint r = jint(rd_engine_load_gltf(reinterpret_cast<rd_engine*>(ptr), p));
+  RD_LOGI("rd_jni", "nativeLoadGltf -> %d", int(r));
+  env->ReleaseStringUTFChars(path, p);
+  return r;
+}
+
 } // extern "C"

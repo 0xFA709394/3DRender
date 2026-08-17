@@ -176,8 +176,10 @@ struct PipelineDesc {
   bool depthWrite = false;              ///< 深度写入
   DepthCompareOp depthCompare = DepthCompareOp::Less;  ///< 深度比较(Reverse-Z 用 Greater)
   BlendDesc blend;                      ///< 颜色混合(默认关闭)
-  /// MSAA 采样数(预留;>1 需 caps().msaa 支持,当前后端拒绝非 1 值)。
+  /// MSAA 采样数;>1 需 caps().msaa 支持且渲染目标为 MSAA 目标。
   uint32_t sampleCount = 1;
+  /// 纯深度管线(depth-only 渲染目标用):无颜色附件状态。
+  bool depthOnly = false;
   /// 颜色附件格式。渲染到 swapchain 时必须与 Device::swapChainColorFormat
   /// 返回的格式一致（Metal layer 限 BGRA8 系），否则后端可能创建失败。
   Format colorFormat = Format::RGBA8_UNORM;
@@ -231,6 +233,10 @@ struct OffscreenTargetDesc {
   /// pass 结束自动 resolve;须 ≤ caps().get(Capability::msaa)。
   /// texture-backed 目标不支持 MSAA。
   uint32_t sampleCount = 1;
+  /// 非空:挂载该 D32 纹理为深度附件、无颜色附件(depth-only 目标,阴影贴图用);
+  /// 与 colorFromTexture 互斥;sampleCount 须为 1。纹理须以
+  /// Format::D32_FLOAT + RenderTargetAttachment 创建。
+  TextureHandle depthFromTexture;
 };
 
 /// 设备创建参数。

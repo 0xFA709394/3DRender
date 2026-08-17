@@ -122,6 +122,7 @@ struct TargetRec {
   uint32_t samples = 1;        ///< MSAA 采样数(>1 时渲染到 msaaColorRbo,blit 到 colorTex)
   GLuint msaaColorRbo = 0;     ///< MSAA 颜色 renderbuffer(samples>1 时有效)
   GLuint resolveFbo = 0;       ///< resolve 目标 FBO(colorTex 挂在这里)
+  bool depthOnly = false;      ///< depth-only 目标(阴影贴图;FBO 只挂深度附件)
 };
 struct SwapChainRec {
   ANativeWindow* window = nullptr;      ///< 持有引用（create 时 acquire，destroy 时 release）
@@ -373,6 +374,15 @@ void GLESCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& c
     }
     glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
     glViewport(0, 0, GLsizei(t.width), GLsizei(t.height));
+    if (t.depthOnly) {  // 纯深度目标:无颜色缓冲,只清深度
+      const GLenum noDraw = GL_NONE;  // ES3 只有 glDrawBuffers(数组形式)
+      glDrawBuffers(1, &noDraw);
+      glReadBuffer(GL_NONE);
+      glDepthMask(GL_TRUE);
+      glClearDepthf(clear.depth);
+      glClear(GL_DEPTH_BUFFER_BIT);
+      return;
+    }
     glClearColor(clear.r, clear.g, clear.b, clear.a);
     if (t.hasDepth) {
       glDepthMask(GL_TRUE);  // 清深度前确保可写
@@ -782,7 +792,7 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
     const char* name;
     uint32_t slot;
   } kBlockTable[] = {
-      {"UBO", 0}, {"FrameUBO", 0}, {"ItemUBO", 1}, {"BlitUBO", 0},
+      {"UBO", 0}, {"FrameUBO", 0}, {"ItemUBO", 1}, {"BlitUBO", 0}, {"ShadowUBO", 0},
   };
   for (const auto& b : kBlockTable) {
     GLuint blockIndex = glGetUniformBlockIndex(program, b.name);
@@ -823,6 +833,34 @@ TargetHandle GLESDevice::createOffscreenTarget(const OffscreenTargetDesc& desc) 
       RD_LOGE("rhi.gles", "texture-backed 目标不支持 MSAA");
       return {};
     }
+  }
+  if (desc.depthFromTexture.valid()) {
+    if (desc.sampleCount != 1) {
+      RD_LOGE("rhi.gles", "depth-only 目标不支持 MSAA");
+      return {};
+    }
+    auto dit = textures_.find(desc.depthFromTexture);
+    if (dit == textures_.end() || dit->second.format != Format::D32_FLOAT) return {};
+    TargetRec rec;
+    rec.width = desc.width;
+    rec.height = desc.height;
+    rec.depthOnly = true;
+    rec.hasDepth = true;
+    rec.srcTexture = desc.depthFromTexture;
+    glGenFramebuffers(1, &rec.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, rec.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                           dit->second.tex, 0);
+    const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!ok) {
+      RD_LOGE("rhi.gles", "depth-only FBO 不完整");
+      glDeleteFramebuffers(1, &rec.fbo);
+      return {};
+    }
+    TargetHandle h(nextId_++);
+    targets_.emplace(h, rec);
+    return h;
   }
   if (desc.colorFromTexture.valid()) {
     auto it = textures_.find(desc.colorFromTexture);
@@ -954,6 +992,7 @@ TextureHandle GLESDevice::targetColorTexture(TargetHandle target) {
   auto it = targets_.find(target);
   if (it == targets_.end() || it->second.isSwapchain) return {};
   const TargetRec& t = it->second;
+  if (t.depthOnly) return t.srcTexture;
   return t.textureBacked ? t.srcTexture : t.colorHandle;
 }
 
@@ -1124,7 +1163,7 @@ bool GLESDevice::generateMipmaps(TextureHandle tex) {
  */
 bool GLESDevice::readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) {
   auto it = targets_.find(target);
-  if (it == targets_.end() || it->second.isSwapchain) return false;
+  if (it == targets_.end() || it->second.isSwapchain || it->second.depthOnly) return false;
   const TargetRec& t = it->second;
   const uint64_t rowBytes = uint64_t(t.width) * 4;
   if (outSize < rowBytes * t.height) return false;

@@ -173,6 +173,7 @@ struct TargetRec {
   uint32_t samples = 1;        ///< MSAA 采样数(>1 时渲染到 msaaColor,resolve 到 color)
   id<MTLTexture> msaaColor = nil;  ///< MSAA 颜色附件(Private)
   id<MTLTexture> msaaDepth = nil;  ///< MSAA 深度附件(Private,samples>1 且 hasDepth 时)
+  bool depthOnly = false;      ///< depth-only 目标(阴影贴图;只挂深度附件)
 };
 struct SwapChainRec {
   CAMetalLayer* layer = nil;
@@ -368,11 +369,12 @@ public:
     pd.fragmentFunction = [fsIt->second.library
         newFunctionWithName:@(fsIt->second.entry.c_str())];
     // 颜色格式须与渲染目标一致：渲染到 swapchain 时调用方应传 swapChainColorFormat()。
-    pd.colorAttachments[0].pixelFormat = toMTLPixelFormat(desc.colorFormat);
+    // depthOnly 管线无颜色附件
+    if (!desc.depthOnly) pd.colorAttachments[0].pixelFormat = toMTLPixelFormat(desc.colorFormat);
     pd.rasterSampleCount = desc.sampleCount;
     if (!pd.vertexFunction || !pd.fragmentFunction) return {};
     // 深度:PSO 需声明附件格式(与 depth 目标匹配);状态经独立 DepthStencilState 下发
-    if (desc.depthTest || desc.depthWrite)
+    if (desc.depthTest || desc.depthWrite || desc.depthOnly)
       pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 
     // 混合状态(默认关闭)
@@ -443,6 +445,24 @@ public:
         RD_LOGE("rhi.metal", "texture-backed 目标不支持 MSAA");
         return {};
       }
+    }
+    if (desc.depthFromTexture.valid()) {
+      if (desc.sampleCount != 1) {
+        RD_LOGE("rhi.metal", "depth-only 目标不支持 MSAA");
+        return {};
+      }
+      auto dit = textures_.find(desc.depthFromTexture);
+      if (dit == textures_.end() || dit->second.format != Format::D32_FLOAT) return {};
+      TargetHandle h(nextId_++);
+      TargetRec rec;
+      rec.width = desc.width;
+      rec.height = desc.height;
+      rec.depthOnly = true;
+      rec.hasDepth = true;
+      rec.depth = dit->second.texture;  // 共享底层纹理(ARC 强引用)
+      rec.srcTexture = desc.depthFromTexture;
+      targets_.emplace(h, rec);
+      return h;
     }
     if (desc.colorFromTexture.valid()) {
       auto it = textures_.find(desc.colorFromTexture);
@@ -551,6 +571,7 @@ public:
     auto it = targets_.find(target);
     if (it == targets_.end()) return {};
     const TargetRec& t = it->second;
+    if (t.depthOnly) return t.srcTexture;
     return t.textureBacked ? t.srcTexture : t.colorHandle;
   }
 
@@ -727,7 +748,7 @@ public:
    */
   bool readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) override {
     auto it = targets_.find(target);
-    if (it == targets_.end()) return false;
+    if (it == targets_.end() || it->second.depthOnly) return false;
     if (it->second.color.storageMode == MTLStorageModePrivate) {
       RD_LOGW("rhi.metal", "swapchain target 不支持 readback");
       return false;
@@ -896,6 +917,17 @@ void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& 
   TargetRec t;
   if (!device_->target(target, t)) return;
   MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+  if (t.depthOnly) {
+    // 纯深度目标:只挂深度附件(阴影图要保留,store)
+    rp.depthAttachment.texture = t.depth;
+    rp.depthAttachment.loadAction = MTLLoadActionClear;
+    rp.depthAttachment.clearDepth = clear.depth;
+    rp.depthAttachment.storeAction = MTLStoreActionStore;
+    encoder_ = [cmd_ renderCommandEncoderWithDescriptor:rp];
+    MTLViewport vp{0, 0, double(t.width), double(t.height), 0, 1};
+    [encoder_ setViewport:vp];
+    return;
+  }
   if (t.samples > 1) {
     // MSAA:渲染到多重采样附件,pass 结束自动 resolve 到 color
     rp.colorAttachments[0].texture = t.msaaColor;

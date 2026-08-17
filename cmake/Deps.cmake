@@ -30,8 +30,13 @@ set(KTX_FEATURE_TESTS OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_DOC OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_LOADTEST_APPS OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
-FetchContent_Declare(ktx
-  URL https://github.com/KhronosGroup/KTX-Software/archive/refs/tags/v4.3.2.tar.gz)
+# 弱网/CI 环境可用 $ENV{RD_DEPS_MIRROR}/ktx 指向本地 KTX-Software 源码副本跳过下载
+if(EXISTS "$ENV{RD_DEPS_MIRROR}/ktx/CMakeLists.txt")
+  FetchContent_Declare(ktx SOURCE_DIR $ENV{RD_DEPS_MIRROR}/ktx)
+else()
+  FetchContent_Declare(ktx
+    URL https://github.com/KhronosGroup/KTX-Software/archive/refs/tags/v4.3.2.tar.gz)
+endif()
 FetchContent_MakeAvailable(ktx)
 # astcenc 自带 -Werror 且 AppleClang 下同目标的 -ffp-model/-ffp-contract 冲突会致命,
 # 关掉该告警名(目标名随 ISA 变,逐个存在性检查)

@@ -1,10 +1,14 @@
 package com.rd.renderer
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.AttributeSet
 import android.view.Choreographer
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -101,6 +105,64 @@ class RenderView @JvmOverloads constructor(
         }
     }
 
+    // ---- 手势 → Orbit(事件在 UI 线程到达,投递到渲染线程喂给 engine)----
+    /** 物理像素换算(C API 约定像素坐标,与 surface 尺寸一致) */
+    private val pxScale: Float get() = resources.displayMetrics.density
+
+    private val scaleDetector = ScaleGestureDetector(context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(d: ScaleGestureDetector): Boolean {
+                val ratio = d.scaleFactor
+                renderHandler.post { if (enginePtr != 0L) nativeOnPinch(enginePtr, ratio) }
+                return true
+            }
+        })
+
+    private val gestureDetector = GestureDetector(context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                val x = e.x * pxScale
+                val y = e.y * pxScale
+                renderHandler.post { if (enginePtr != 0L) nativeOnDoubleTap(enginePtr, x, y) }
+                return true
+            }
+            override fun onDown(e: MotionEvent): Boolean = true
+        })
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        scaleDetector.onTouchEvent(e)
+        gestureDetector.onTouchEvent(e)
+        val action = when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> 0
+            MotionEvent.ACTION_MOVE -> 1
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> 2
+            MotionEvent.ACTION_CANCEL -> 3
+            else -> -1
+        }
+        if (action >= 0) {
+            val i = e.actionIndex
+            renderHandler.post {
+                if (enginePtr == 0L) return@post
+                if (action == 1) {
+                    // MOVE 需遍历全部指针(每个都喂 MOVE)
+                    for (k in 0 until e.pointerCount)
+                        nativeOnPointer(enginePtr, 1, e.getPointerId(k),
+                                        e.getX(k) * pxScale, e.getY(k) * pxScale)
+                } else {
+                    nativeOnPointer(enginePtr, action, e.getPointerId(i),
+                                    e.getX(i) * pxScale, e.getY(i) * pxScale)
+                }
+            }
+        }
+        return true
+    }
+
+    /** 加载 glTF 模型(渲染线程执行;surface 就绪后调用)。 */
+    fun loadModel(path: String) {
+        renderHandler.post { if (enginePtr != 0L) nativeLoadGltf(enginePtr, path) }
+    }
+
     // ---- JNI native 方法（实现在 platform/android/jni/rd_jni.cpp）----
     private external fun nativeCreate(backend: Int): Long
     private external fun nativeDestroy(ptr: Long)
@@ -108,6 +170,10 @@ class RenderView @JvmOverloads constructor(
     private external fun nativeClearSurface(ptr: Long)
     private external fun nativeResize(ptr: Long, width: Int, height: Int)
     private external fun nativeRenderFrame(ptr: Long, dt: Float)
+    private external fun nativeOnPointer(ptr: Long, action: Int, id: Int, x: Float, y: Float)
+    private external fun nativeOnPinch(ptr: Long, ratio: Float)
+    private external fun nativeOnDoubleTap(ptr: Long, x: Float, y: Float)
+    private external fun nativeLoadGltf(ptr: Long, path: String): Int
 
     companion object {
         init { System.loadLibrary("rd_jni") }

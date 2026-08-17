@@ -58,6 +58,7 @@ VkFormat toVkFormat(Format f) {
     case Format::D32_FLOAT:          return VK_FORMAT_D32_SFLOAT;
     case Format::ASTC_4x4_UNORM:     return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
     case Format::ETC2_RGBA8_UNORM:   return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    case Format::R16G16B16A16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
   }
   return VK_FORMAT_UNDEFINED;
 }
@@ -478,6 +479,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
               physFeats.textureCompressionASTC_LDR ? 1 : 0);
     caps_.set(Capability::texture_compression_etc2,
               physFeats.textureCompressionETC2 ? 1 : 0);
+    caps_.set(Capability::hdr_render_target, 1);
   }
 
   float priority = 1.0f;

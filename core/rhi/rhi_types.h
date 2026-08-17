@@ -49,6 +49,7 @@ enum class Format {
   D32_FLOAT,           ///< 32bit 深度
   ASTC_4x4_UNORM,      ///< ASTC 4x4 block 压缩(16B/block;Metal/Vulkan caps 门控)
   ETC2_RGBA8_UNORM,    ///< ETC2 RGBA 压缩(16B/block;GLES ES3 core,Vulkan 罕见)
+  R16G16B16A16_FLOAT,  ///< 4×float16(HDR 渲染目标/后处理;8B/px)
 };
 
 /// 缓冲用途位标志（可按位或组合，如 Vertex|Index 不常见，Uniform 常单用）。
@@ -261,6 +262,7 @@ inline uint32_t formatSize(Format f) {
     case Format::D32_FLOAT:
       return 4;
     case Format::R32G32_FLOAT:
+    case Format::R16G16B16A16_FLOAT:
       return 8;
     case Format::R32G32B32_FLOAT:
       return 12;

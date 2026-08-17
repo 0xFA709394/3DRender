@@ -14,4 +14,5 @@ RD_CAPABILITY(generate_mipmap)          // 运行时 mip 生成
 RD_CAPABILITY(anisotropy)               // 最大各向异性等级(0/1 = 不支持)
 RD_CAPABILITY(texture_compression_astc) // ASTC 4x4 LDR 纹理(1=支持)
 RD_CAPABILITY(texture_compression_etc2) // ETC2 RGBA 纹理(1=支持)
+RD_CAPABILITY(hdr_render_target)        // R16F 渲染目标(1=支持;GLES 查 EXT)
 #undef RD_CAPABILITY

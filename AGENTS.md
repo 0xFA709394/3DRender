@@ -14,7 +14,11 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - 阶段二 b 完成：PBR/IBL(glTF MR 全模型 + emissive/occlusion/KHR_texture_transform;
   混合路径 IBL:GPU specular 预滤波 + CPU SH9/BRDF LUT;1 方向光;
   DamagedHelmet golden 双后端像素级一致)
-- 下一步：阶段二 c(Orbit 手势 + 画质分级 + KTX2)/ P2(阴影+多光源+后处理+骨骼动画)
+- 阶段二 c 完成：Orbit 手势(旋转/pinch/平移/双击重置+惯性阻尼)+ 画质分级
+  (三档预设+caps 启发式+C API)+ KTX2(libktx,ASTC/ETC2/RGBA32 兜底)+ 上屏链
+  (SceneTarget→blit upscale)+ engine 迁移 Renderer 链 + render_test --interactive;
+  RHI 扩展:ASTC/ETC2 压缩格式 + MSAA/resolve 三后端 + Vulkan 描述符按绑定状态缓存
+- 下一步：P2(阴影+多光源+后处理链+骨骼动画)
 
 ## 构建与测试
 ```bash
@@ -24,6 +28,8 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 更新 golden image：`RD_UPDATE_GOLDENS=1 ctest --test-dir build -R Cube`，
   然后目视核对 tests/golden/*.png 再提交
 - 手动渲染：`./build/tools/render_test/render_test --backend metal|vulkan --out cube.png`
+- 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
+  （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 
 ## 移动端构建
 - 环境：`source /tmp/rd_env.sh`（JAVA_HOME/ANDROID_HOME/PATH）；JDK 须 17~22（openjdk@21）
@@ -65,6 +71,24 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - shader 内嵌：embedded_shaders.cpp 自动生成（host=build 期；Android/iOS=configure 期），勿手改；
   iOS 真机/模拟器 metallib 分别编译（RD_EMBED_IOS_METAL / RD_EMBED_IOS_SIMULATOR）
 - Metal swapchain 颜色格式为 BGRA8（layer 限制）；pipeline 格式须经 swapChainColorFormat 对齐
+- 压缩纹理：`Format::ASTC_4x4_UNORM/ETC2_RGBA8_UNORM`；caps `texture_compression_astc/etc2`
+  门控；上传/更新按 `formatMipBytes(f,w,h)`（block 上取整）计算，非压缩路径不变
+- 离屏目标可采样：`Device::targetColorTexture(target)`（MSAA 目标返回 resolve 纹理，
+  texture-backed 返回源纹理，swapchain 返回无效）；`targetSize` 查询尺寸；
+  `OffscreenTargetDesc.sampleCount>1` 创建 MSAA+resolve（texture-backed 不支持）
+- 上屏链：`Renderer::endScene` 两段（场景→内部 SceneTarget[尺寸×renderScale,MSAA 按画质档,
+  带 depth] → blit upscale pass→最终目标）；blit 纹理槽 0、UBO 块名 BlitUBO→slot0；
+  GLES 渲染到纹理的 v 方向由 BlitUBO.params.x 翻转吸收（Metal/Vulkan 传 0）
+- 画质：`rd_engine_set/get_quality(AUTO/HIGH/MID/LOW)`；AUTO=caps 启发式
+  (msaa≥4 且 max_texture_size≥8192→High;msaa≥2→Mid;否则 Low)；
+  预设表 renderer/quality.h(renderScale/msaa/IBL 尺寸/纹理上限)
+- 输入 C API：`rd_engine_on_pointer/on_scroll/on_pinch/on_double_tap`（像素坐标,左上 origin）；
+  `rd_engine_load_gltf` 同步加载并 Orbit 自动取景（v1 同步,异步归 P2）
+- KTX2：glTF `KHR_texture_basisu` + 外链 URI（相对 gltf 目录）;转码目标
+  astc>etc2>rgba32 由 caps 推导（pickTranscodeTarget）;测试资产运行时生成
+  （tests/common/ktx2_gen,勿提交二进制）;Vulkan 描述符按绑定状态缓存
+  （bind 只记状态、draw 时绑定,支持逐 draw 异构绑定）
+- 依赖弱网旁路：`$ENV{RD_DEPS_MIRROR}/ktx|glfw` 指向本地源码副本可跳过 FetchContent 下载
 
 ## 提交规范
 - 小步提交，每任务一个 commit；格式 `<type>(<scope>): 描述`

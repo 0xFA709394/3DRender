@@ -14,6 +14,14 @@ void expectEmbedded(rd::Backend b, const char* name) {
       << name << " frag 缺失";
   EXPECT_GT(size, 1u);
 }
+// frag-only shader(post 链,vert 复用 blit.vert)
+void expectEmbeddedFrag(rd::Backend b, const char* name) {
+  const uint8_t* data = nullptr;
+  size_t size = 0;
+  EXPECT_TRUE(rd::embeddedShader(b, name, rd::ShaderStage::Fragment, &data, &size))
+      << name << " frag 缺失";
+  EXPECT_GT(size, 1u);
+}
 } // namespace
 
 TEST(Embedded, MetalShaders) {
@@ -24,6 +32,10 @@ TEST(Embedded, MetalShaders) {
   expectEmbedded(rd::Backend::Metal, "prefilter");
   expectEmbedded(rd::Backend::Metal, "blit");
   expectEmbedded(rd::Backend::Metal, "shadow_depth");
+  expectEmbeddedFrag(rd::Backend::Metal, "bloom_extract");
+  expectEmbeddedFrag(rd::Backend::Metal, "bloom_blur");
+  expectEmbeddedFrag(rd::Backend::Metal, "composite");
+  expectEmbeddedFrag(rd::Backend::Metal, "fxaa");
 #endif
 }
 TEST(Embedded, VulkanShaders) {
@@ -34,6 +46,10 @@ TEST(Embedded, VulkanShaders) {
   expectEmbedded(rd::Backend::Vulkan, "prefilter");
   expectEmbedded(rd::Backend::Vulkan, "blit");
   expectEmbedded(rd::Backend::Vulkan, "shadow_depth");
+  expectEmbeddedFrag(rd::Backend::Vulkan, "bloom_extract");
+  expectEmbeddedFrag(rd::Backend::Vulkan, "bloom_blur");
+  expectEmbeddedFrag(rd::Backend::Vulkan, "composite");
+  expectEmbeddedFrag(rd::Backend::Vulkan, "fxaa");
 #endif
 }
 TEST(Embedded, UnknownNameReturnsFalse) {

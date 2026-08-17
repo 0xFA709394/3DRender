@@ -25,6 +25,12 @@ struct RenderContext {
   /// 场景 pass 管线(按 SceneTarget 格式/采样数匹配,endScene 时注入)
   PipelineHandle pbrPipeline;
   PipelineHandle unlitPipeline;
+  /// 蒙皮管线(同匹配规则)
+  PipelineHandle skinnedPipeline;
+  PipelineHandle skinnedShadowPipe;
+  /// 共享 JointUBO(slot3;per-item 偏移)
+  BufferHandle jointUbo;
+  uint64_t jointOffset = 0;               ///< 本项在 JointUBO 中的偏移(蒙皮项)
 };
 
 class Renderable {

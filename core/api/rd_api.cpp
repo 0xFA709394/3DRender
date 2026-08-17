@@ -135,7 +135,9 @@ rd_result_t rd_engine_set_surface(rd_engine* e, void* nativeWindow, uint32_t wid
         !get("bloom_extract", rd::ShaderStage::Fragment, sd.extractFs) ||
         !get("bloom_blur", rd::ShaderStage::Fragment, sd.blurFs) ||
         !get("composite", rd::ShaderStage::Fragment, sd.compositeFs) ||
-        !get("fxaa", rd::ShaderStage::Fragment, sd.fxaaFs)) {
+        !get("fxaa", rd::ShaderStage::Fragment, sd.fxaaFs) ||
+        !get("pbr_forward_skinned", rd::ShaderStage::Vertex, sd.skinnedVs) ||
+        !get("shadow_depth_skinned", rd::ShaderStage::Vertex, sd.skinnedShadowVs)) {
       setError(e, "内嵌 shader 缺失");
       return RD_ERROR_SHADER;
     }

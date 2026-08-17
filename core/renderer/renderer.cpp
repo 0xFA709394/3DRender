@@ -91,6 +91,12 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   bsd.wrapV = WrapMode::Clamp;
   blitSampler_ = dev.createSampler(bsd);
 
+  // 蒙皮 shader 模块(管线随 SceneTarget 重建时复用)
+  skvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skinnedVs, desc.entry});
+  sdsvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skinnedShadowVs, desc.entry});
+  jointUbo_ = dev.createBuffer({uint64_t(kJointItemStride) * kMaxJointItems,
+                                BufferUsage::Uniform, true, false, nullptr});
+
   // 环境(SH/LUT/GPU 预滤波,init 期一次性;尺寸/级数按画质档,默认现状 64/5)
   const bool envOk = env_.build(dev, desc.prefilterVs, desc.prefilterFs, desc.entry,
                                 desc.colorFormat, iblSize_, iblMips_);
@@ -99,6 +105,7 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   lightUbo_ = dev.createBuffer({352, BufferUsage::Uniform, true, false, nullptr});
   auto svs = dev.createShaderModule({ShaderStage::Vertex, desc.shadowVs, desc.entry});
   auto sfs = dev.createShaderModule({ShaderStage::Fragment, desc.shadowFs, desc.entry});
+  sfs_ = sfs;  // 持有(蒙皮阴影管线重建用;shutdown 释放)
   PipelineDesc spd;
   spd.vertexShader = svs;
   spd.fragmentShader = sfs;
@@ -109,7 +116,6 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   spd.depthOnly = true;
   shadowPipeline_ = dev.createPipeline(spd);
   dev.destroyShaderModule(svs);
-  dev.destroyShaderModule(sfs);
   SamplerDesc csd;
   csd.compareEnable = true;
   csd.wrapU = WrapMode::Clamp;
@@ -161,10 +167,13 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
       !shadowSampler_.valid() || !shadowFallbackTex_.valid() ||
       !extractPipeline_.valid() || !blurPipeline_.valid() ||
       !compositePipeline_.valid() || !fxaaPipeline_.valid() || !blurUbo1_.valid() ||
-      !blurUbo2_.valid() || !blurUbo3_.valid() || !fxaaUbo_.valid() || !envOk) {
+      !blurUbo2_.valid() || !blurUbo3_.valid() || !fxaaUbo_.valid() ||
+      !skvs_.valid() || !sdsvs_.valid() || !jointUbo_.valid() || !envOk) {
     shutdown();
     return false;
   }
+  // pipeSamples_ 保持 0:首帧 ensureScenePipelines 统一重建全部场景管线
+  // (含 skinned;后端管线缓存使 pbr/unlit 重建零开销)
   return true;
 }
 
@@ -207,6 +216,33 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
   pbrPipeline_ = dev_->createPipeline(ppd);
   if (!unlitPipeline_.valid() || !pbrPipeline_.valid())
     RD_LOGE("renderer", "场景管线重建失败(fmt=%d samples=%u)", int(fmt), samples);
+  // 蒙皮管线(80B 六属性;pbr frag 复用)
+  PipelineDesc skd;
+  skd.vertexShader = skvs_;
+  skd.fragmentShader = fs_;
+  skd.vertexBindings = {{0, 80}};
+  skd.attributes = {{0, Format::R32G32B32_FLOAT, 0, 0},
+                    {1, Format::R32G32B32_FLOAT, 12, 0},
+                    {2, Format::R32G32B32A32_FLOAT, 24, 0},
+                    {3, Format::R32G32_FLOAT, 40, 0},
+                    {4, Format::R32G32B32A32_FLOAT, 48, 0},
+                    {5, Format::R32G32B32A32_FLOAT, 64, 0}};
+  skd.cullMode = CullMode::None;
+  skd.depthTest = true;
+  skd.depthWrite = true;
+  skd.colorFormat = fmt;
+  skd.sampleCount = samples;
+  if (skinnedPipeline_.valid()) dev_->destroyPipeline(skinnedPipeline_);
+  skinnedPipeline_ = dev_->createPipeline(skd);
+  // 蒙皮阴影管线(depthOnly 80B)
+  PipelineDesc ssd = skd;
+  ssd.vertexShader = sdsvs_;
+  ssd.fragmentShader = sfs_;
+  ssd.depthOnly = true;
+  if (skinnedShadowPipeline_.valid()) dev_->destroyPipeline(skinnedShadowPipeline_);
+  skinnedShadowPipeline_ = dev_->createPipeline(ssd);
+  if (!skinnedPipeline_.valid() || !skinnedShadowPipeline_.valid())
+    RD_LOGE("renderer", "蒙皮管线重建失败(fmt=%d samples=%u)", int(fmt), samples);
   pipeFmt_ = fmt;
   pipeSamples_ = samples;
 }
@@ -274,6 +310,12 @@ void Renderer::shutdown() {
   if (ufs_.valid()) dev_->destroyShaderModule(ufs_);
   if (vs_.valid()) dev_->destroyShaderModule(vs_);
   if (fs_.valid()) dev_->destroyShaderModule(fs_);
+  if (sfs_.valid()) dev_->destroyShaderModule(sfs_);
+  if (skvs_.valid()) dev_->destroyShaderModule(skvs_);
+  if (sdsvs_.valid()) dev_->destroyShaderModule(sdsvs_);
+  if (skinnedPipeline_.valid()) dev_->destroyPipeline(skinnedPipeline_);
+  if (skinnedShadowPipeline_.valid()) dev_->destroyPipeline(skinnedShadowPipeline_);
+  if (jointUbo_.valid()) dev_->destroyBuffer(jointUbo_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
   fxaaTarget_ = {};
@@ -297,6 +339,12 @@ void Renderer::shutdown() {
   ufs_ = {};
   vs_ = {};
   fs_ = {};
+  sfs_ = {};
+  skvs_ = {};
+  sdsvs_ = {};
+  skinnedPipeline_ = {};
+  skinnedShadowPipeline_ = {};
+  jointUbo_ = {};
   pipeSamples_ = 0;
   frameUbo_ = {};
   itemUbo_ = {};
@@ -463,6 +511,25 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
   }
   queue_.push_back(std::make_unique<MeshRenderable>(mesh));
   worldStack_.push_back(world);
+  jointSlot_.push_back(-1);
+}
+
+void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
+                      const math::Mat4& world, const math::Mat4* jointPalette,
+                      uint32_t jointCount) {
+  const uint32_t slot = uint32_t(queue_.size());
+  if (slot >= kMaxJointItems || queue_.size() >= kMaxItems) {
+    RD_LOGW("renderer", "蒙皮项超出上限(%u),截断", kMaxJointItems);
+    return;
+  }
+  const uint32_t n = std::min(jointCount, 128u);
+  if (jointCount > 128u) RD_LOGW("renderer", "关节数 %u 超 128,截断", jointCount);
+  if (jointPalette && n > 0)
+    dev_->updateBuffer(jointUbo_, jointPalette, uint64_t(n) * 64,
+                       uint64_t(slot) * kJointItemStride);
+  queue_.push_back(std::make_unique<MeshRenderable>(mesh));
+  worldStack_.push_back(world);
+  jointSlot_.push_back(int32_t(slot));
 }
 
 void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
@@ -544,8 +611,12 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     sctx.lightUbo = lightUbo_;
     sctx.itemUbo = itemUbo_;
     sctx.shadowPipe = shadowPipeline_;
+    sctx.skinnedShadowPipe = skinnedShadowPipeline_;
+    sctx.jointUbo = jointUbo_;
     for (uint32_t i = 0; i < count; ++i) {
       sctx.itemOffset = uint64_t(i) * kUboStride;
+      sctx.jointOffset =
+          jointSlot_[i] >= 0 ? uint64_t(jointSlot_[i]) * kJointItemStride : 0;
       queue_[i]->record(cmd, sctx);
     }
     cmd->endRenderPass();
@@ -574,9 +645,14 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.shadowSampler = shadowSampler_;
   ctx.pbrPipeline = pbrPipeline_;
   ctx.unlitPipeline = unlitPipeline_;
+  ctx.skinnedPipeline = skinnedPipeline_;
+  ctx.skinnedShadowPipe = skinnedShadowPipeline_;
+  ctx.jointUbo = jointUbo_;
   for (uint32_t i = 0; i < count; ++i) {
     queue_[i]->prepass(cmd);  // 2b 钩子(默认空)
     ctx.itemOffset = uint64_t(i) * kUboStride;
+    ctx.jointOffset =
+        jointSlot_[i] >= 0 ? uint64_t(jointSlot_[i]) * kJointItemStride : 0;
     queue_[i]->record(cmd, ctx);
   }
   cmd->endRenderPass();
@@ -632,6 +708,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   }
   queue_.clear();
   worldStack_.clear();
+  jointSlot_.clear();
 }
 
 } // namespace rd

@@ -84,10 +84,12 @@ void runGolden(rd::Backend b) {
   auto bbFs = load("bloom_blur.frag");
   auto cpFs = load("composite.frag");
   auto fxFs = load("fxaa.frag");
+  auto skVs = load("pbr_forward_skinned.vert");
+  auto sdsVs = load("shadow_depth_skinned.vert");
   rd::Renderer renderer;
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
-                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,
+                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
                             unlitVs.entry, rd::Format::RGBA8_UNORM};
   ASSERT_TRUE(renderer.init(*device, sd));
   rd::OffscreenTargetDesc td;

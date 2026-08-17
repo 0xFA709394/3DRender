@@ -5,10 +5,12 @@
 namespace rd {
 
 void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
+  const bool skinned = !mesh_->meshes().empty() && mesh_->meshes()[0].skinned;
   if (ctx.shadowPass) {  // 阴影:只写深度(位置语义)
-    cmd->bindPipeline(ctx.shadowPipe);
+    cmd->bindPipeline(skinned ? ctx.skinnedShadowPipe : ctx.shadowPipe);
     cmd->bindUniformBuffer(0, ctx.lightUbo, 0, 64);  // lightViewProj(LightUBO 前 64B)
     cmd->bindUniformBuffer(1, ctx.itemUbo, ctx.itemOffset, 256);
+    if (skinned) cmd->bindUniformBuffer(3, ctx.jointUbo, ctx.jointOffset, 8192);
     for (const auto& g : mesh_->meshes()) {
       cmd->bindVertexBuffer(0, g.vbo, 0);
       cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
@@ -17,7 +19,24 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
     return;
   }
   for (const auto& g : mesh_->meshes()) {
-    if (g.material.unlit) {
+    if (g.skinned) {
+      // 蒙皮 PBR 路径(skinned 恒 PBR;unlit+蒙皮组合不支持)
+      cmd->bindPipeline(ctx.skinnedPipeline);
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);
+      cmd->bindUniformBuffer(1, ctx.itemUbo, ctx.itemOffset, 256);
+      cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 352);
+      cmd->bindUniformBuffer(3, ctx.jointUbo, ctx.jointOffset, 8192);
+      cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
+      cmd->bindTexture(1, g.mrTex, mesh_->sampler());
+      cmd->bindTexture(2, g.normalTex, mesh_->sampler());
+      cmd->bindTexture(3, g.emissiveTex, mesh_->sampler());
+      cmd->bindTexture(4, g.occlusionTex, mesh_->sampler());
+      if (ctx.env) {
+        cmd->bindTexture(5, ctx.env->prefilterCube(), ctx.env->cubeSampler());
+        cmd->bindTexture(6, ctx.env->brdfLut(), ctx.env->lutSampler());
+      }
+      if (ctx.shadowMap.valid()) cmd->bindTexture(7, ctx.shadowMap, ctx.shadowSampler);
+    } else if (g.material.unlit) {
       cmd->bindPipeline(ctx.unlitPipeline);
       cmd->bindUniformBuffer(1, ctx.itemUbo, ctx.itemOffset, 64);  // ItemUBO 前 64B=mvp
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());

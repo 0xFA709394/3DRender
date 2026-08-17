@@ -155,34 +155,87 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
   float bmin[3] = {1e30f, 1e30f, 1e30f};
   float bmax[3] = {-1e30f, -1e30f, -1e30f};
 
-  for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
-    const cgltf_mesh& mesh = data->meshes[mi];
+  // ---- 节点层级导入(mesh 挂载用;蒙皮模型必需)----
+  model.nodes.reserve(data->nodes_count);
+  for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+    const cgltf_node* node = &data->nodes[ni];
+    AnimNodeData an;
+    an.parent = node->parent ? int32_t(cgltf_node_index(data, node->parent)) : -1;
+    if (node->has_translation)
+      for (int c = 0; c < 3; ++c) an.translation[c] = float(node->translation[c]);
+    if (node->has_rotation)
+      for (int c = 0; c < 4; ++c) an.rotation[c] = float(node->rotation[c]);
+    if (node->has_scale)
+      for (int c = 0; c < 3; ++c) an.scale[c] = float(node->scale[c]);
+    if (node->has_matrix) {
+      // matrix 形式:v1 取平移 + 警告(TRS 形式为绝对主流)
+      cgltf_float wm[16];
+      cgltf_node_transform_local(node, wm);
+      an.translation[0] = float(wm[12]);
+      an.translation[1] = float(wm[13]);
+      an.translation[2] = float(wm[14]);
+      RD_LOGW("resource.gltf", "matrix 形式节点,仅取平移(TRS 退化)");
+    }
+    model.nodes.push_back(an);
+  }
+
+  // ---- mesh:节点驱动遍历(游离 mesh 不导入,与 glTF 语义一致)----
+  for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+    const cgltf_node* node = &data->nodes[ni];
+    if (!node->mesh) continue;
+    const cgltf_mesh& mesh = *node->mesh;
     for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
       const cgltf_primitive& prim = mesh.primitives[pi];
       if (prim.type != cgltf_primitive_type_triangles || !prim.indices) continue;
 
       MeshData out;
       out.name = mesh.name ? mesh.name : "mesh";
+      out.nodeIndex = int32_t(ni);
       const cgltf_accessor* pos = nullptr;
+      const cgltf_accessor* jointsAcc = nullptr;
+      const cgltf_accessor* weightsAcc = nullptr;
       for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai) {
-        if (prim.attributes[ai].type == cgltf_attribute_type_position) {
+        if (prim.attributes[ai].type == cgltf_attribute_type_position)
           pos = prim.attributes[ai].data;
-          break;
-        }
+        if (prim.attributes[ai].type == cgltf_attribute_type_joints)
+          jointsAcc = prim.attributes[ai].data;
+        if (prim.attributes[ai].type == cgltf_attribute_type_weights)
+          weightsAcc = prim.attributes[ai].data;
       }
       if (!pos) continue;
+      out.skinned = jointsAcc != nullptr;
+      const uint32_t strideFloats = out.skinned ? 20 : 12;
       const cgltf_size vertexCount = pos->count;
-      out.vertices.resize(size_t(vertexCount) * 12, 0.0f);  // 12 float/顶点,缺省 0
+      out.vertices.resize(size_t(vertexCount) * strideFloats, 0.0f);
       readFloatAttr(prim.attributes, prim.attributes_count, cgltf_attribute_type_position,
-                    vertexCount, 3, out.vertices.data(), 12);
+                    vertexCount, 3, out.vertices.data(), strideFloats);
       readFloatAttr(prim.attributes, prim.attributes_count, cgltf_attribute_type_normal,
-                    vertexCount, 3, out.vertices.data() + 3, 12);
+                    vertexCount, 3, out.vertices.data() + 3, strideFloats);
       readFloatAttr(prim.attributes, prim.attributes_count, cgltf_attribute_type_texcoord,
-                    vertexCount, 2, out.vertices.data() + 10, 12);
+                    vertexCount, 2, out.vertices.data() + 10, strideFloats);
+
+      // 蒙皮属性:joints(u8/u16 → float)/weights(归一化自动转 float)
+      if (out.skinned) {
+        for (cgltf_size v = 0; v < vertexCount; ++v) {
+          float* dst = out.vertices.data() + size_t(v) * strideFloats;
+          if (jointsAcc) {
+            cgltf_uint j4[4] = {};
+            cgltf_accessor_read_uint(jointsAcc, v, j4, 4);
+            for (int c = 0; c < 4; ++c) dst[12 + c] = float(j4[c]);
+          }
+          if (weightsAcc) {
+            float w4[4] = {};
+            cgltf_accessor_read_float(weightsAcc, v, w4, 4);
+            for (int c = 0; c < 4; ++c) dst[16 + c] = w4[c];
+          } else {
+            dst[16] = 1.0f;  // 缺省:全权重根骨
+          }
+        }
+      }
 
       // 包围球累积(POSITION min/max)
       for (cgltf_size v = 0; v < vertexCount; ++v) {
-        const float* p = out.vertices.data() + size_t(v) * 12;
+        const float* p = out.vertices.data() + size_t(v) * strideFloats;
         for (int c = 0; c < 3; ++c) {
           if (p[c] < bmin[c]) bmin[c] = p[c];
           if (p[c] > bmax[c]) bmax[c] = p[c];
@@ -209,14 +262,67 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
 
       // 切线(uv 缺失/退化时降级,法线贴图近似)
       if (!computeTangents(out.vertices.data(), uint32_t(vertexCount), out.indices.data(),
-                           out.indexCount, out.indexType, 12)) {
+                           out.indexCount, out.indexType, strideFloats)) {
         RD_LOGW("resource.gltf", "mesh %s 切线计算失败(uv 缺失/退化),法线贴图降级",
                 out.name.c_str());
       }
 
       out.material = readMaterial(prim, gltfDir.c_str(), pref);
+      if (model.nodes[ni].mesh < 0)
+        model.nodes[ni].mesh = int32_t(model.meshes.size());
       model.meshes.push_back(std::move(out));
     }
+  }
+
+  // ---- skins ----
+  for (cgltf_size si = 0; si < data->skins_count; ++si) {
+    const cgltf_skin& skin = data->skins[si];
+    SkinData sd;
+    sd.joints.reserve(skin.joints_count);
+    for (cgltf_size j = 0; j < skin.joints_count; ++j)
+      sd.joints.push_back(int32_t(cgltf_node_index(data, skin.joints[j])));
+    sd.inverseBindMatrices.resize(skin.joints_count * 16);
+    if (skin.inverse_bind_matrices) {
+      for (cgltf_size j = 0; j < skin.joints_count; ++j)
+        cgltf_accessor_read_float(skin.inverse_bind_matrices, j,
+                                  &sd.inverseBindMatrices[j * 16], 16);
+    } else {  // 缺省单位
+      for (cgltf_size j = 0; j < skin.joints_count; ++j)
+        for (int k = 0; k < 16; ++k)
+          sd.inverseBindMatrices[j * 16 + k] = (k % 5 == 0) ? 1.0f : 0.0f;
+    }
+    sd.skeletonRoot = skin.skeleton ? int32_t(cgltf_node_index(data, skin.skeleton)) : -1;
+    model.skins.push_back(std::move(sd));
+  }
+
+  // ---- animations ----
+  for (cgltf_size ai = 0; ai < data->animations_count; ++ai) {
+    const cgltf_animation& anim = data->animations[ai];
+    AnimClipData clip;
+    clip.name = anim.name ? anim.name : "clip";
+    for (cgltf_size ci = 0; ci < anim.channels_count; ++ci) {
+      const cgltf_animation_channel& ch = anim.channels[ci];
+      if (!ch.target_node || !ch.sampler) continue;
+      AnimChannelData chd;
+      chd.node = int32_t(cgltf_node_index(data, ch.target_node));
+      chd.path = ch.target_path == cgltf_animation_path_type_translation ? 0
+                 : ch.target_path == cgltf_animation_path_type_rotation ? 1
+                 : ch.target_path == cgltf_animation_path_type_scale    ? 2
+                                                                        : -1;
+      if (chd.path < 0) continue;  // weights(morph)跳过
+      const cgltf_accessor* in = ch.sampler->input;
+      const cgltf_accessor* out = ch.sampler->output;
+      chd.times.resize(in->count);
+      for (cgltf_size k = 0; k < in->count; ++k)
+        cgltf_accessor_read_float(in, k, &chd.times[k], 1);
+      const uint32_t comps = chd.path == 1 ? 4 : 3;
+      chd.values.resize(out->count * comps);
+      for (cgltf_size k = 0; k < out->count; ++k)
+        cgltf_accessor_read_float(out, k, &chd.values[k * comps], comps);
+      if (in->count > 0) clip.duration = std::max(clip.duration, chd.times[in->count - 1]);
+      clip.channels.push_back(std::move(chd));
+    }
+    model.animations.push_back(std::move(clip));
   }
 
   // KHR_lights_punctual:遍历节点取世界变换(方向=旋转×(0,0,-1) 取反=+Z 列)

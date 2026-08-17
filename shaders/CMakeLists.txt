@@ -25,6 +25,10 @@ rd_compile_shader(shadow_depth.frag)
 rd_compile_shader(shadow_sample.vert)
 rd_compile_shader(shadow_sample.frag)
 rd_compile_shader(hdr_view.frag)
+rd_compile_shader(bloom_extract.frag)
+rd_compile_shader(bloom_blur.frag)
+rd_compile_shader(composite.frag)
+rd_compile_shader(fxaa.frag)
 
 # 生成路径头，供测试定位 shader 产物
 file(WRITE ${CMAKE_BINARY_DIR}/generated/rd_shader_dir.h

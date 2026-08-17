@@ -163,6 +163,10 @@ void main() {
   vec3 emissive = texture(texEmissive, vUV).rgb * emissiveOcclusion.rgb;
 
   vec3 color = (iblDiffuse + iblSpec + direct) * ao + emissive;
-  color = color / (color + vec3(1.0));          // Reinhard
-  outColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+  if (lightCount.y > 0.5) {
+    outColor = vec4(color, 1.0);  // hdrMode:线性输出,tone mapping 在 composite
+  } else {
+    color = color / (color + vec3(1.0));          // LDR:Reinhard(现状)
+    outColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+  }
 }

@@ -218,6 +218,53 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
       model.meshes.push_back(std::move(out));
     }
   }
+
+  // KHR_lights_punctual:遍历节点取世界变换(方向=旋转×(0,0,-1) 取反=+Z 列)
+  for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+    const cgltf_node* node = &data->nodes[ni];
+    if (!node->light) continue;
+    if (model.lights.size() >= 4) {
+      RD_LOGW("resource.gltf", "灯光超过 4 盏,截断");
+      break;
+    }
+    const cgltf_light* l = node->light;
+    cgltf_float m[16];
+    cgltf_node_transform_world(node, m);  // 列主序世界矩阵
+    LightData out;
+    out.direction[0] = float(m[8]);   // +Z 列 = glTF 灯向(0,0,-1) 的反向 = 指向光源
+    out.direction[1] = float(m[9]);
+    out.direction[2] = float(m[10]);
+    // 归一化(节点可能带缩放;零向量回退默认)
+    {
+      const float len = std::sqrt(out.direction[0] * out.direction[0] +
+                                  out.direction[1] * out.direction[1] +
+                                  out.direction[2] * out.direction[2]);
+      if (len > 1e-6f) {
+        out.direction[0] /= len;
+        out.direction[1] /= len;
+        out.direction[2] /= len;
+      } else {
+        out.direction[0] = 0;
+        out.direction[1] = 1;
+        out.direction[2] = 0;
+      }
+    }
+    out.position[0] = float(m[12]);
+    out.position[1] = float(m[13]);
+    out.position[2] = float(m[14]);
+    out.color[0] = l->color[0] * l->intensity;
+    out.color[1] = l->color[1] * l->intensity;
+    out.color[2] = l->color[2] * l->intensity;
+    out.range = l->range;
+    switch (l->type) {
+      case cgltf_light_type_directional: out.type = LightType::Directional; break;
+      case cgltf_light_type_point: out.type = LightType::Point; break;
+      default: out.type = LightType::Spot; break;
+    }
+    out.innerCone = l->spot_inner_cone_angle;
+    out.outerCone = l->spot_outer_cone_angle;
+    model.lights.push_back(out);
+  }
   cgltf_free(data);
   if (!model.valid()) {
     RD_LOGE("resource.gltf", "无有效 mesh: %s", path);

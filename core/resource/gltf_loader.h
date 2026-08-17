@@ -17,6 +17,21 @@
 
 namespace rd {
 
+/// 光源类型(KHR_lights_punctual 全类型)。
+enum class LightType : uint32_t { Directional = 0, Point = 1, Spot = 2 };
+
+/// 光源数据(渲染语义):direction 为"指向光源的方向"(shader 内 dot(N,L) 直接用);
+/// color 已乘 intensity。
+struct LightData {
+  LightType type = LightType::Directional;
+  float direction[3] = {0, 1, 0};   ///< 指向光源(dir/spot 用)
+  float position[3] = {0, 0, 0};    ///< point/spot 用
+  float color[3] = {1, 1, 1};       ///< rgb × intensity
+  float range = 0.0f;               ///< 0=无限
+  float innerCone = 0.0f;           ///< spot 内锥角(弧度)
+  float outerCone = 0.0f;           ///< spot 外锥角(弧度)
+};
+
 /// 材质数据(glTF metallic-roughness + 本框架支持的 KHR 扩展)。
 struct MaterialData {
   ImageData baseColor;            float baseColorFactor[4] = {1, 1, 1, 1};
@@ -44,6 +59,7 @@ struct ModelAsset {
   std::vector<MeshData> meshes;
   float boundingCenter[3] = {0, 0, 0};
   float boundingRadius = 1.0f;
+  std::vector<LightData> lights;    // KHR_lights_punctual(无则空;渲染层默认 1 方向光)
   bool valid() const { return !meshes.empty(); }
 };
 

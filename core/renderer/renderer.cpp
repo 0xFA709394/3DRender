@@ -40,20 +40,18 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   pfVsCode_ = desc.prefilterVs;
   pfFsCode_ = desc.prefilterFs;
 
-  // unlit 管线(shader 模块用完即销毁)
-  auto uvs = dev.createShaderModule({ShaderStage::Vertex, desc.unlitVs, desc.entry});
-  auto ufs = dev.createShaderModule({ShaderStage::Fragment, desc.unlitFs, desc.entry});
+  // unlit 管线(shader 模块持有,场景管线随 SceneTarget 重建用)
+  uvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.unlitVs, desc.entry});
+  ufs_ = dev.createShaderModule({ShaderStage::Fragment, desc.unlitFs, desc.entry});
   PipelineDesc upd;
-  upd.vertexShader = uvs;
-  upd.fragmentShader = ufs;
+  upd.vertexShader = uvs_;
+  upd.fragmentShader = ufs_;
   fillVertexLayout(upd);
   upd.cullMode = CullMode::None;
   upd.depthTest = true;
   upd.depthWrite = true;
   upd.colorFormat = desc.colorFormat;
   unlitPipeline_ = dev.createPipeline(upd);
-  dev.destroyShaderModule(uvs);
-  dev.destroyShaderModule(ufs);
 
   // pbr 管线(模块持有到 shutdown,供缓存 key 复用语义一致)
   vs_ = dev.createShaderModule({ShaderStage::Vertex, desc.pbrVs, desc.entry});
@@ -129,10 +127,41 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
     shadowFallbackTex_ = dev.createTexture(ftd);
   }
 
+  // PostChain 管线(vert 复用 blit;extract/blur 输出 R16F,composite/fxaa 输出目标格式)
+  auto mkPostPipe = [&](const std::vector<uint8_t>& fsCode, Format fmt) {
+    auto vs = dev.createShaderModule({ShaderStage::Vertex, desc.blitVs, desc.entry});
+    auto fs = dev.createShaderModule({ShaderStage::Fragment, fsCode, desc.entry});
+    PipelineDesc pd;
+    pd.vertexShader = vs;
+    pd.fragmentShader = fs;
+    pd.cullMode = CullMode::None;
+    pd.colorFormat = fmt;
+    auto p = dev.createPipeline(pd);
+    dev.destroyShaderModule(vs);
+    dev.destroyShaderModule(fs);
+    return p;
+  };
+  extractPipeline_ = mkPostPipe(desc.extractFs, Format::R16G16B16A16_FLOAT);
+  blurPipeline_ = mkPostPipe(desc.blurFs, Format::R16G16B16A16_FLOAT);
+  compositePipeline_ = mkPostPipe(desc.compositeFs, desc.colorFormat);
+  fxaaPipeline_ = mkPostPipe(desc.fxaaFs, desc.colorFormat);
+  // 参数 UBO(各 16B;x=vFlip,texel 在 ensurePostTargets/ensureFxaaTarget 更新)
+  const float vf = dev.backend() == Backend::GLES ? 1.0f : 0.0f;
+  const float zp[4] = {vf, 0.0f, 0.0f, 0.0f};
+  blurUbo1_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
+  blurUbo2_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
+  blurUbo3_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
+  fxaaUbo_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
+  for (auto u : {blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_})
+    if (u.valid()) dev.updateBuffer(u, zp, sizeof(zp), 0);
+
   if (!unlitPipeline_.valid() || !pbrPipeline_.valid() || !frameUbo_.valid() ||
       !itemUbo_.valid() || !blitPipeline_.valid() || !blitUbo_.valid() ||
       !blitSampler_.valid() || !lightUbo_.valid() || !shadowPipeline_.valid() ||
-      !shadowSampler_.valid() || !shadowFallbackTex_.valid() || !envOk) {
+      !shadowSampler_.valid() || !shadowFallbackTex_.valid() ||
+      !extractPipeline_.valid() || !blurPipeline_.valid() ||
+      !compositePipeline_.valid() || !fxaaPipeline_.valid() || !blurUbo1_.valid() ||
+      !blurUbo2_.valid() || !blurUbo3_.valid() || !fxaaUbo_.valid() || !envOk) {
     shutdown();
     return false;
   }
@@ -149,6 +178,39 @@ void Renderer::setLightFraming(const float center[3], float radius) {
 }
 
 /// 按画质档确保阴影贴图可用;返回阴影是否激活(目标就绪)。
+/// 场景管线按 (格式,采样数) 匹配 SceneTarget;key 变化时重建(后端管线缓存兜底复用)。
+void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
+  if (pipeSamples_ == samples && pipeFmt_ == fmt && pbrPipeline_.valid() &&
+      unlitPipeline_.valid())
+    return;
+  if (pbrPipeline_.valid()) dev_->destroyPipeline(pbrPipeline_);
+  if (unlitPipeline_.valid()) dev_->destroyPipeline(unlitPipeline_);
+  PipelineDesc upd;
+  upd.vertexShader = uvs_;
+  upd.fragmentShader = ufs_;
+  fillVertexLayout(upd);
+  upd.cullMode = CullMode::None;
+  upd.depthTest = true;
+  upd.depthWrite = true;
+  upd.colorFormat = fmt;
+  upd.sampleCount = samples;
+  unlitPipeline_ = dev_->createPipeline(upd);
+  PipelineDesc ppd;
+  ppd.vertexShader = vs_;
+  ppd.fragmentShader = fs_;
+  fillVertexLayout(ppd);
+  ppd.cullMode = CullMode::None;
+  ppd.depthTest = true;
+  ppd.depthWrite = true;
+  ppd.colorFormat = fmt;
+  ppd.sampleCount = samples;
+  pbrPipeline_ = dev_->createPipeline(ppd);
+  if (!unlitPipeline_.valid() || !pbrPipeline_.valid())
+    RD_LOGE("renderer", "场景管线重建失败(fmt=%d samples=%u)", int(fmt), samples);
+  pipeFmt_ = fmt;
+  pipeSamples_ = samples;
+}
+
 bool Renderer::ensureShadowTarget() {
   if (shadowMapSize_ == 0) {  // 关档:释放旧阴影资源
     if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
@@ -190,6 +252,12 @@ bool Renderer::ensureShadowTarget() {
 void Renderer::shutdown() {
   if (!dev_) return;
   env_.destroy(*dev_);
+  destroyPostTargets();
+  if (fxaaTarget_.valid()) dev_->destroyTarget(fxaaTarget_);
+  for (BufferHandle u : {blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_})
+    if (u.valid()) dev_->destroyBuffer(u);
+  for (PipelineHandle p : {extractPipeline_, blurPipeline_, compositePipeline_, fxaaPipeline_})
+    if (p.valid()) dev_->destroyPipeline(p);
   if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
   if (shadowDepthTex_.valid()) dev_->destroyTexture(shadowDepthTex_);
   if (shadowFallbackTex_.valid()) dev_->destroyTexture(shadowFallbackTex_);
@@ -202,10 +270,16 @@ void Renderer::shutdown() {
   if (blitSampler_.valid()) dev_->destroySampler(blitSampler_);
   if (unlitPipeline_.valid()) dev_->destroyPipeline(unlitPipeline_);
   if (pbrPipeline_.valid()) dev_->destroyPipeline(pbrPipeline_);
+  if (uvs_.valid()) dev_->destroyShaderModule(uvs_);
+  if (ufs_.valid()) dev_->destroyShaderModule(ufs_);
   if (vs_.valid()) dev_->destroyShaderModule(vs_);
   if (fs_.valid()) dev_->destroyShaderModule(fs_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
+  fxaaTarget_ = {};
+  blurUbo1_ = blurUbo2_ = blurUbo3_ = fxaaUbo_ = {};
+  extractPipeline_ = blurPipeline_ = compositePipeline_ = fxaaPipeline_ = {};
+  fxaaW_ = fxaaH_ = 0;
   shadowTarget_ = {};
   shadowDepthTex_ = {};
   shadowFallbackTex_ = {};
@@ -219,8 +293,11 @@ void Renderer::shutdown() {
   blitSampler_ = {};
   unlitPipeline_ = {};
   pbrPipeline_ = {};
+  uvs_ = {};
+  ufs_ = {};
   vs_ = {};
   fs_ = {};
+  pipeSamples_ = 0;
   frameUbo_ = {};
   itemUbo_ = {};
   sceneW_ = sceneH_ = sceneSamples_ = 0;
@@ -232,6 +309,11 @@ void Renderer::setQuality(const QualityPreset& q) {
   msaa_ = q.msaa;
   maxTextureDim_ = q.maxTextureDim;
   shadowMapSize_ = q.shadowMapSize;
+  const bool wantPost = q.postEnabled != 0;
+  if (wantPost && !dev_->caps().supports(Capability::hdr_render_target))
+    RD_LOGW("renderer", "后端无 HDR 渲染目标 caps,后处理自动关闭");
+  postEnabled_ = wantPost && dev_->caps().supports(Capability::hdr_render_target);
+  fxaaEnabled_ = q.fxaaEnabled != 0;
   if (q.iblPrefilterSize != iblSize_ || q.iblPrefilterMips != iblMips_) {
     iblSize_ = q.iblPrefilterSize;
     iblMips_ = q.iblPrefilterMips;
@@ -246,7 +328,9 @@ TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
   const uint32_t h = std::max(1u, uint32_t(float(targetH) * renderScale_));
   const uint32_t capMsaa = dev_->caps().get(Capability::msaa);
   const uint32_t samples = std::max(1u, std::min(msaa_, capMsaa));
-  if (sceneTarget_.valid() && w == sceneW_ && h == sceneH_ && samples == sceneSamples_)
+  const Format fmt = postEnabled_ ? Format::R16G16B16A16_FLOAT : colorFormat_;
+  if (sceneTarget_.valid() && w == sceneW_ && h == sceneH_ && samples == sceneSamples_ &&
+      fmt == sceneFormat_)
     return sceneTarget_;
   if (sceneTarget_.valid()) dev_->destroyTarget(sceneTarget_);
   OffscreenTargetDesc td;
@@ -254,15 +338,92 @@ TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
   td.height = h;
   td.depth = true;
   td.sampleCount = samples;
-  td.colorFormat = colorFormat_;
+  td.colorFormat = fmt;
   sceneTarget_ = dev_->createOffscreenTarget(td);
   if (!sceneTarget_.valid()) {
-    RD_LOGE("renderer", "SceneTarget 创建失败(%ux%u samples=%u)", w, h, samples);
+    RD_LOGE("renderer", "SceneTarget 创建失败(%ux%u samples=%u fmt=%d)", w, h, samples,
+            int(fmt));
   }
   sceneW_ = w;
   sceneH_ = h;
   sceneSamples_ = samples;
+  sceneFormat_ = fmt;
   return sceneTarget_;
+}
+
+void Renderer::destroyPostTargets() {
+  for (TargetHandle t : {bloomExtract_, bloomL1_, bloomL2_, bloomL3_})
+    if (t.valid()) dev_->destroyTarget(t);
+  for (TextureHandle t : {bloomExtractTex_, bloomL1Tex_, bloomL2Tex_, bloomL3Tex_})
+    if (t.valid()) dev_->destroyTexture(t);
+  bloomExtract_ = bloomL1_ = bloomL2_ = bloomL3_ = {};
+  bloomExtractTex_ = bloomL1Tex_ = bloomL2Tex_ = bloomL3Tex_ = {};
+  postW_ = postH_ = 0;
+}
+
+bool Renderer::ensurePostTargets(uint32_t sw, uint32_t sh) {
+  if (postW_ == sw && postH_ == sh && bloomExtract_.valid()) return true;
+  destroyPostTargets();
+  postW_ = sw;
+  postH_ = sh;
+  auto mkTex = [&](uint32_t w, uint32_t h) {
+    TextureDesc td;
+    td.width = std::max(1u, w);
+    td.height = std::max(1u, h);
+    td.format = Format::R16G16B16A16_FLOAT;
+    td.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
+    return dev_->createTexture(td);
+  };
+  auto mkTarget = [&](TextureHandle t, uint32_t w, uint32_t h) {
+    OffscreenTargetDesc od;
+    od.width = std::max(1u, w);
+    od.height = std::max(1u, h);
+    od.colorFromTexture = t;
+    return dev_->createOffscreenTarget(od);
+  };
+  bloomExtractTex_ = mkTex(sw / 2, sh / 2);
+  bloomL1Tex_ = mkTex(sw / 4, sh / 4);
+  bloomL2Tex_ = mkTex(sw / 8, sh / 8);
+  bloomL3Tex_ = mkTex(sw / 16, sh / 16);
+  bloomExtract_ = mkTarget(bloomExtractTex_, sw / 2, sh / 2);
+  bloomL1_ = mkTarget(bloomL1Tex_, sw / 4, sh / 4);
+  bloomL2_ = mkTarget(bloomL2Tex_, sw / 8, sh / 8);
+  bloomL3_ = mkTarget(bloomL3Tex_, sw / 16, sh / 16);
+  if (!bloomExtract_.valid() || !bloomL1_.valid() || !bloomL2_.valid() || !bloomL3_.valid()) {
+    RD_LOGE("renderer", "post 目标链创建失败");
+    destroyPostTargets();
+    return false;
+  }
+  // blur 参数 UBO(x=vFlip 已写;yz=texel 随尺寸更新)
+  const float vf = dev_->backend() == Backend::GLES ? 1.0f : 0.0f;
+  auto writeUbo = [&](BufferHandle u, float tx, float ty) {
+    const float p[4] = {vf, tx, ty, 0.0f};
+    dev_->updateBuffer(u, p, sizeof(p), 0);
+  };
+  writeUbo(blurUbo1_, 1.0f / float(std::max(1u, sw / 2)), 1.0f / float(std::max(1u, sh / 2)));
+  writeUbo(blurUbo2_, 1.0f / float(std::max(1u, sw / 4)), 1.0f / float(std::max(1u, sh / 4)));
+  writeUbo(blurUbo3_, 1.0f / float(std::max(1u, sw / 8)), 1.0f / float(std::max(1u, sh / 8)));
+  return true;
+}
+
+bool Renderer::ensureFxaaTarget(uint32_t w, uint32_t h) {
+  if (fxaaTarget_.valid() && fxaaW_ == w && fxaaH_ == h) return true;
+  if (fxaaTarget_.valid()) dev_->destroyTarget(fxaaTarget_);
+  OffscreenTargetDesc od;
+  od.width = w;
+  od.height = h;
+  fxaaTarget_ = dev_->createOffscreenTarget(od);
+  if (!fxaaTarget_.valid()) {
+    RD_LOGE("renderer", "fxaa 目标创建失败(%ux%u)", w, h);
+    fxaaW_ = fxaaH_ = 0;
+    return false;
+  }
+  fxaaW_ = w;
+  fxaaH_ = h;
+  const float vf = dev_->backend() == Backend::GLES ? 1.0f : 0.0f;
+  const float p[4] = {vf, 1.0f / float(w), 1.0f / float(h), 0.0f};
+  dev_->updateBuffer(fxaaUbo_, p, sizeof(p), 0);
+  return true;
 }
 
 void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) {
@@ -300,8 +461,7 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
     RD_LOGW("renderer", "渲染项超出 %u,截断", kMaxItems);
     return;
   }
-  queue_.push_back(
-      std::make_unique<MeshRenderable>(mesh, pbrPipeline_, unlitPipeline_));
+  queue_.push_back(std::make_unique<MeshRenderable>(mesh));
   worldStack_.push_back(world);
 }
 
@@ -373,6 +533,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   fillLightUBO(lu, effective, lvp,
                shadowMapSize_ ? 1.0f / float(shadowMapSize_) : 0.0f, shadowActive,
                dev_->backend() == Backend::GLES);
+  lu.lightCount[1] = postEnabled_ ? 1.0f : 0.0f;  // hdrMode(post 开输出线性 HDR)
   dev_->updateBuffer(lightUbo_, &lu, sizeof(lu), 0);
 
   // ---- ShadowPass(场景 pass 之前)----
@@ -390,12 +551,18 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     cmd->endRenderPass();
   }
 
-  // 上屏链:场景 → 内部 SceneTarget(分辨率缩放/MSAA 按画质档)→ blit upscale → 最终目标
+  // 上屏链:场景 → 内部 SceneTarget(分辨率缩放/MSAA 按画质档;post 开=R16F)
   uint32_t tw = 0, th = 0;
   dev_->targetSize(target, tw, th);
   TargetHandle scene = ensureSceneTarget(tw, th);
   if (!scene.valid()) {  // 场景目标失败:退化为直接渲染到最终目标
     scene = target;
+  }
+  // 场景管线按目标格式/采样数匹配(direct 回落时取最终目标格式)
+  if (scene != target) {
+    ensureScenePipelines(sceneFormat_, sceneSamples_);
+  } else {
+    ensureScenePipelines(colorFormat_, 1);
   }
   cmd->beginRenderPass(scene, clear_);
   RenderContext ctx;
@@ -405,19 +572,63 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.lightUbo = lightUbo_;
   ctx.shadowMap = shadowActive ? shadowDepthTex_ : shadowFallbackTex_;
   ctx.shadowSampler = shadowSampler_;
+  ctx.pbrPipeline = pbrPipeline_;
+  ctx.unlitPipeline = unlitPipeline_;
   for (uint32_t i = 0; i < count; ++i) {
     queue_[i]->prepass(cmd);  // 2b 钩子(默认空)
     ctx.itemOffset = uint64_t(i) * kUboStride;
     queue_[i]->record(cmd, ctx);
   }
   cmd->endRenderPass();
-  if (scene != target) {  // upscale pass(P2 后处理链挂载点)
-    cmd->beginRenderPass(target, clear_);
-    cmd->bindPipeline(blitPipeline_);
-    cmd->bindUniformBuffer(0, blitUbo_, 0, 16);
-    cmd->bindTexture(0, dev_->targetColorTexture(scene), blitSampler_);
-    cmd->draw(3, 0);
-    cmd->endRenderPass();
+  if (scene != target) {
+    const bool postActive = postEnabled_ && ensurePostTargets(sceneW_, sceneH_);
+    if (postActive) {
+      // HDR 后处理:extract → 3 级 blur → composite(ACES+gamma)直出
+      const TextureHandle sceneTex = dev_->targetColorTexture(scene);
+      auto fsPass = [&](TargetHandle tg, PipelineHandle p, BufferHandle u,
+                        TextureHandle src) {
+        cmd->beginRenderPass(tg, clear_);
+        cmd->bindPipeline(p);
+        cmd->bindUniformBuffer(0, u, 0, 16);
+        cmd->bindTexture(0, src, blitSampler_);
+        cmd->draw(3, 0);
+        cmd->endRenderPass();
+      };
+      fsPass(bloomExtract_, extractPipeline_, blitUbo_, sceneTex);
+      fsPass(bloomL1_, blurPipeline_, blurUbo1_, bloomExtractTex_);
+      fsPass(bloomL2_, blurPipeline_, blurUbo2_, bloomL1Tex_);
+      fsPass(bloomL3_, blurPipeline_, blurUbo3_, bloomL2Tex_);
+      cmd->beginRenderPass(target, clear_);
+      cmd->bindPipeline(compositePipeline_);
+      cmd->bindUniformBuffer(0, blitUbo_, 0, 16);
+      cmd->bindTexture(0, sceneTex, blitSampler_);
+      cmd->bindTexture(1, bloomL1Tex_, blitSampler_);
+      cmd->bindTexture(2, bloomL2Tex_, blitSampler_);
+      cmd->bindTexture(3, bloomL3Tex_, blitSampler_);
+      cmd->draw(3, 0);
+      cmd->endRenderPass();
+    } else if (fxaaEnabled_ && sceneSamples_ <= 1 && ensureFxaaTarget(tw, th)) {
+      // LDR + FXAA:blit → fxaaTarget → fxaa → 最终目标
+      cmd->beginRenderPass(fxaaTarget_, clear_);
+      cmd->bindPipeline(blitPipeline_);
+      cmd->bindUniformBuffer(0, blitUbo_, 0, 16);
+      cmd->bindTexture(0, dev_->targetColorTexture(scene), blitSampler_);
+      cmd->draw(3, 0);
+      cmd->endRenderPass();
+      cmd->beginRenderPass(target, clear_);
+      cmd->bindPipeline(fxaaPipeline_);
+      cmd->bindUniformBuffer(0, fxaaUbo_, 0, 16);
+      cmd->bindTexture(0, dev_->targetColorTexture(fxaaTarget_), blitSampler_);
+      cmd->draw(3, 0);
+      cmd->endRenderPass();
+    } else {  // upscale pass(P2 后处理链挂载点)
+      cmd->beginRenderPass(target, clear_);
+      cmd->bindPipeline(blitPipeline_);
+      cmd->bindUniformBuffer(0, blitUbo_, 0, 16);
+      cmd->bindTexture(0, dev_->targetColorTexture(scene), blitSampler_);
+      cmd->draw(3, 0);
+      cmd->endRenderPass();
+    }
   }
   queue_.clear();
   worldStack_.clear();

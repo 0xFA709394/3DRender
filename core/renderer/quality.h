@@ -17,6 +17,8 @@ struct QualityPreset {
   uint32_t iblPrefilterMips;  ///< prefilter mip 级数(roughness 粒度)
   uint32_t maxTextureDim;     ///< 纹理解码尺寸上限(等比降采样)
   uint32_t shadowMapSize;     ///< 阴影贴图边长(0=关阴影)
+  uint32_t postEnabled;       ///< HDR 后处理链(Bloom+ACES);caps 缺失自动回落
+  uint32_t fxaaEnabled;       ///< FXAA(与 MSAA 互斥,仅 msaa==1 时生效)
 };
 
 /// 三档预设表。

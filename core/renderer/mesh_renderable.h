@@ -12,9 +12,9 @@ namespace rd {
 
 class MeshRenderable : public Renderable {
 public:
-  MeshRenderable(std::shared_ptr<MeshRenderResource> mesh, PipelineHandle pbr,
-                 PipelineHandle unlit)
-      : mesh_(std::move(mesh)), pbrPipeline_(pbr), unlitPipeline_(unlit) {}
+  /// 管线在 record 时从 RenderContext 取(按 SceneTarget 格式/采样数匹配)。
+  explicit MeshRenderable(std::shared_ptr<MeshRenderResource> mesh)
+      : mesh_(std::move(mesh)) {}
 
   void record(CommandBuffer* cmd, const RenderContext& ctx) override;
 
@@ -23,8 +23,6 @@ public:
 
 private:
   std::shared_ptr<MeshRenderResource> mesh_;
-  PipelineHandle pbrPipeline_;
-  PipelineHandle unlitPipeline_;
 };
 
 } // namespace rd

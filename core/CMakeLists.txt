@@ -15,6 +15,7 @@ add_library(rd_core STATIC
   renderer/quality.cpp
   scene/cube_scene.cpp
   scene/node.cpp
+  scene/orbit_controller.cpp
   scene/scene.cpp
   api/rd_api.cpp
 )

@@ -20,18 +20,21 @@ TEST(Quality, PresetTable) {
   EXPECT_EQ(hi.iblPrefilterSize, 256u);
   EXPECT_EQ(hi.iblPrefilterMips, 6u);
   EXPECT_EQ(hi.maxTextureDim, 4096u);
+  EXPECT_EQ(hi.shadowMapSize, 2048u);
   const auto mid = rd::qualityPreset(rd::QualityTier::Mid);
   EXPECT_FLOAT_EQ(mid.renderScale, 0.75f);
   EXPECT_EQ(mid.msaa, 2u);
   EXPECT_EQ(mid.iblPrefilterSize, 128u);
   EXPECT_EQ(mid.iblPrefilterMips, 5u);
   EXPECT_EQ(mid.maxTextureDim, 2048u);
+  EXPECT_EQ(mid.shadowMapSize, 1024u);
   const auto low = rd::qualityPreset(rd::QualityTier::Low);
   EXPECT_FLOAT_EQ(low.renderScale, 0.5f);
   EXPECT_EQ(low.msaa, 1u);
   EXPECT_EQ(low.iblPrefilterSize, 64u);
   EXPECT_EQ(low.iblPrefilterMips, 4u);
   EXPECT_EQ(low.maxTextureDim, 1024u);
+  EXPECT_EQ(low.shadowMapSize, 0u);
 }
 
 TEST(Quality, CapsHeuristic) {
@@ -57,9 +60,10 @@ void runLowGolden(rd::Backend b) {
   auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
   auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
   auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
+  auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
   rd::Renderer renderer;
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
-                            pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
+                            pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
                             unlitVs.entry, rd::Format::RGBA8_UNORM};
   rd::OffscreenTargetDesc td;
   td.width = kW;

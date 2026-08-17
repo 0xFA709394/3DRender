@@ -327,8 +327,10 @@ void runShadowTarget(rd::Backend b) {
   dev->updateBuffer(ubo, &mvp, 64, 0);
   const float tri[3 * 3] = {-1, -1, 0.4f, 0, -1, 0.4f, -1, 1, 0.4f};  // 左下三角
   auto vbo = dev->createBuffer({sizeof(tri), rd::BufferUsage::Vertex, false, false, tri});
-  const float quad[6 * 5] = {-1, -1, 0, 0, 0, 1, -1, 0, 1, 0, -1, 1, 0, 0, 1,
-                             1,  -1, 0, 1, 0, 1, 1,  0, 1, 1, -1, 1, 0, 0, 1};
+  // 采样 quad 的 UV:v=(1-ndcY)/2(Metal/Vulkan 纹理行0=屏幕顶;GLES 由
+  // readback 翻转对齐——与 blit vFlip 同一约定)
+  const float quad[6 * 5] = {-1, -1, 0, 0, 1, 1, -1, 0, 1, 1, -1, 1, 0, 0, 0,
+                             1,  -1, 0, 1, 1, 1, 1,  0, 1, 0, -1, 1, 0, 0, 0};
   auto quadVbo = dev->createBuffer({sizeof(quad), rd::BufferUsage::Vertex, false, false, quad});
   ASSERT_TRUE(vbo.valid() && quadVbo.valid());
   rd::SamplerDesc csd;
@@ -361,12 +363,13 @@ void runShadowTarget(rd::Backend b) {
 
   std::vector<uint8_t> px(size_t(kW) * kH * 4);
   ASSERT_TRUE(dev->readbackTarget(colorTarget, px.data(), px.size()));
-  // 三角形覆盖区(左下):深度 0.4 < 0.5 → 受光(≈255);右上(未覆盖,远平面 1.0)→ 阴影(0)
+  // 比较语义(LESS):result = refZ < stored ? 1 : 0。
+  // 三角形覆盖区:stored=0.4 < refZ=0.5 → 遮挡 → 阴影(dark);未覆盖:stored=1.0 → 受光(lit)
   const auto at = [&](uint32_t x, uint32_t y) {
     return px[(size_t(y) * kW + x) * 4];
   };
-  EXPECT_GT(at(kW / 8, kH * 7 / 8), 200u) << "三角形内应受光";  // 左下区域(顶向下坐标)
-  EXPECT_LT(at(kW * 7 / 8, kH / 8), 60u) << "未覆盖区应阴影";
+  EXPECT_LT(at(kW / 8, kH * 7 / 8), 60u) << "三角形覆盖区应阴影(0.4<0.5 遮挡)";
+  EXPECT_GT(at(kW * 7 / 8, kH / 8), 200u) << "未覆盖区应受光";
 
   dev->destroySampler(cmpSampler);
   dev->destroyBuffer(ubo);

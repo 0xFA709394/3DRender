@@ -138,6 +138,7 @@ struct TargetRec {
   VkDeviceMemory depthMem = VK_NULL_HANDLE;
   VkImageView depthView = VK_NULL_HANDLE;
   bool hasDepth = false;
+  bool depthOnly = false;                       ///< depth-only 目标(阴影贴图;无颜色附件)
   TextureHandle colorTex;                       ///< 自建路径注册的可采样颜色句柄
   Format format = Format::RGBA8_UNORM;          ///< 颜色附件格式(beginRenderPass 选 pass 用)
   uint32_t samples = 1;                         ///< MSAA 采样数(>1 时颜色为 MSAA 附件)
@@ -311,6 +312,12 @@ public:
                                uint32_t mip, VkImageLayout from, VkImageLayout to,
                                VkAccessFlags srcAccess, VkAccessFlags dstAccess,
                                VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage);
+  /// 直接改写 subLayouts 追踪(render pass 隐式转换后用,零 GPU 开销)。
+  void markTextureLayout(TextureHandle tex, VkImageLayout layout) {
+    auto it = textures_.find(tex);
+    if (it != textures_.end())
+      for (auto& l : it->second.subLayouts) l = layout;
+  }
 
 
 private:
@@ -626,6 +633,49 @@ VkRenderPass VulkanDevice::findOrCreateRenderPass(VkFormat format, bool withDept
   const RenderPassKey key{format, withDepth, samples};
   auto it = renderPasses_.find(key);
   if (it != renderPasses_.end()) return it->second;
+
+  // depth-only 变体(阴影贴图):单深度附件,storeOp=STORE(内容要采样),
+  // finalLayout=SHADER_READ_ONLY;format 以 VK_FORMAT_UNDEFINED 标记。
+  if (format == VK_FORMAT_UNDEFINED) {
+    VkAttachmentDescription depth{};
+    depth.format = VK_FORMAT_D32_SFLOAT;
+    depth.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentReference depthRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 0;
+    subpass.pDepthStencilAttachment = &depthRef;
+    VkSubpassDependency deps[2]{};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[1].srcSubpass = 0;
+    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    rpci.attachmentCount = 1;
+    rpci.pAttachments = &depth;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &subpass;
+    rpci.dependencyCount = 2;
+    rpci.pDependencies = deps;
+    VkRenderPass rp = VK_NULL_HANDLE;
+    if (vkCreateRenderPass(device_, &rpci, nullptr, &rp) != VK_SUCCESS)
+      return VK_NULL_HANDLE;
+    renderPasses_.emplace(key, rp);
+    return rp;
+  }
 
   const VkSampleCountFlagBits vkSamples = VkSampleCountFlagBits(samples);
   VkAttachmentDescription color{};
@@ -1019,7 +1069,7 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   blendAttachment.dstAlphaBlendFactor = toVkBlendFactor(desc.blend.dstAlpha);
   blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
   VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-  cb.attachmentCount = 1;
+  cb.attachmentCount = desc.depthOnly ? 0u : 1u;
   cb.pAttachments = &blendAttachment;
 
   VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -1039,10 +1089,13 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   gpci.pColorBlendState = &cb;
   gpci.pDynamicState = &dyn;
   gpci.layout = pipelineLayout_;  // 全局唯一管线布局
-  // 深度性/采样数须与 render pass 匹配:按 (格式,深度,采样数) 取缓存 pass
-  const bool useDepth = desc.depthTest || desc.depthWrite;
-  gpci.renderPass =
-      findOrCreateRenderPass(toVkFormat(desc.colorFormat), useDepth, desc.sampleCount);
+  // 深度性/采样数须与 render pass 匹配:按 (格式,深度,采样数) 取缓存 pass;
+  // depthOnly 管线用 depth-only pass(UNDEFINED 键)
+  const bool useDepth = desc.depthTest || desc.depthWrite || desc.depthOnly;
+  gpci.renderPass = desc.depthOnly
+                        ? findOrCreateRenderPass(VK_FORMAT_UNDEFINED, true, 1)
+                        : findOrCreateRenderPass(toVkFormat(desc.colorFormat), useDepth,
+                                                 desc.sampleCount);
   VkPipeline pipeline;
   VkResult pipelineResult =
       vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline);
@@ -1079,6 +1132,34 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
       RD_LOGE("rhi.vk", "texture-backed 目标不支持 MSAA");
       return {};
     }
+  }
+  // depth-only:挂载 D32 纹理为深度附件、无颜色附件(阴影贴图;无 staging/readback)
+  if (desc.depthFromTexture.valid()) {
+    if (desc.sampleCount != 1) {
+      RD_LOGE("rhi.vk", "depth-only 目标不支持 MSAA");
+      return {};
+    }
+    auto it = textures_.find(desc.depthFromTexture);
+    if (it == textures_.end() || it->second.format != Format::D32_FLOAT) return {};
+    TargetRec rec{};
+    rec.width = desc.width;
+    rec.height = desc.height;
+    rec.textureBacked = true;
+    rec.depthOnly = true;
+    rec.srcTexture = desc.depthFromTexture;
+    rec.format = Format::D32_FLOAT;
+    rec.hasDepth = true;
+    VkFramebufferCreateInfo fbci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbci.renderPass = findOrCreateRenderPass(VK_FORMAT_UNDEFINED, true, 1);
+    fbci.attachmentCount = 1;
+    fbci.pAttachments = &it->second.view;
+    fbci.width = desc.width;
+    fbci.height = desc.height;
+    fbci.layers = 1;
+    if (vkCreateFramebuffer(device_, &fbci, nullptr, &rec.fb) != VK_SUCCESS) return {};
+    TargetHandle h(nextId_++);
+    targets_.emplace(h, rec);
+    return h;
   }
   // texture-backed:挂载已有纹理的 face/mip 子资源为颜色附件(无 staging,不支持 readback)
   if (desc.colorFromTexture.valid()) {
@@ -1746,10 +1827,16 @@ void VulkanCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor&
   clears[0].color = {{clear.r, clear.g, clear.b, clear.a}};
   clears[1].depthStencil = {clear.depth, 0};
   VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-  rp.renderPass = device_->renderPassAt(toVkFormat(t.format), t.hasDepth, t.samples);
+  if (t.depthOnly) {
+    clears[0].depthStencil = {clear.depth, 0};
+    rp.renderPass = device_->renderPassAt(VK_FORMAT_UNDEFINED, true, 1);
+    rp.clearValueCount = 1;
+  } else {
+    rp.renderPass = device_->renderPassAt(toVkFormat(t.format), t.hasDepth, t.samples);
+    rp.clearValueCount = t.samples > 1 ? (t.hasDepth ? 3u : 2u) : (t.hasDepth ? 2u : 1u);
+  }
   rp.framebuffer = t.fb;
   rp.renderArea = {{0, 0}, {t.width, t.height}};
-  rp.clearValueCount = t.samples > 1 ? (t.hasDepth ? 3u : 2u) : (t.hasDepth ? 2u : 1u);
   rp.pClearValues = clears;
   vkCmdBeginRenderPass(cmd_, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -1841,6 +1928,11 @@ void VulkanCommandBuffer::endRenderPass() {
 
   TargetRec t;
   if (!device_->target(currentTarget_, t)) return;
+  // depth-only:render pass finalLayout 已是 SHADER_READ,只需同步追踪表
+  if (t.depthOnly) {
+    device_->markTextureLayout(t.srcTexture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return;
+  }
   // texture-backed:无 staging,改为把渲染完的子资源转回 SHADER_READ 供后续采样
   if (t.textureBacked) {
     device_->recordTextureTransition(

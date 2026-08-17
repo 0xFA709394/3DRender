@@ -23,6 +23,7 @@ struct MeshGpuData {
   TextureHandle normalTex;      // 缺省绑 1x1 平面法线(128,128,255)
   TextureHandle emissiveTex;    // 缺省绑 1x1 黑
   TextureHandle occlusionTex;   // 缺省绑 1x1 白
+  bool skinned = false;         // 蒙皮网格(80B 顶点布局)
 };
 
 class MeshRenderResource {

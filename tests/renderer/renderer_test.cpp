@@ -24,10 +24,12 @@ std::unique_ptr<rd::Renderer> makeRenderer(rd::Device& dev, rd::Backend b) {
   auto bbFs = load("bloom_blur.frag");
   auto cpFs = load("composite.frag");
   auto fxFs = load("fxaa.frag");
+  auto skVs = load("pbr_forward_skinned.vert");
+  auto sdsVs = load("shadow_depth_skinned.vert");
   auto r = std::make_unique<rd::Renderer>();
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
-                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,
+                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
                             unlitVs.entry,
                             rd::Format::RGBA8_UNORM};
   if (!r->init(dev, sd)) return nullptr;

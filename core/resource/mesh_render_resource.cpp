@@ -59,6 +59,7 @@ std::shared_ptr<MeshRenderResource> MeshRenderResource::upload(Device& dev,
                               m.indices.data()});
     g.indexType = m.indexType;
     g.indexCount = m.indexCount;
+    g.skinned = m.skinned;
     g.baseColorTex = uploadOr(dev, m.material.baseColor, res->fallbackWhite_);
     g.mrTex = uploadOr(dev, m.material.metallicRoughness, res->fallbackWhite_);
     g.normalTex = uploadOr(dev, m.material.normal, res->fallbackNormal_);

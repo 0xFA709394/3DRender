@@ -32,6 +32,8 @@ struct RendererShaderDesc {
   std::vector<uint8_t> blitVs, blitFs;          ///< 上屏链 upscale pass(全屏三角形)
   std::vector<uint8_t> shadowVs, shadowFs;      ///< ShadowPass 深度写出
   std::vector<uint8_t> extractFs, blurFs, compositeFs, fxaaFs;  ///< post 链(vert 复用 blitVs)
+  std::vector<uint8_t> skinnedVs;        ///< pbr_forward_skinned.vert(蒙皮管线)
+  std::vector<uint8_t> skinnedShadowVs;  ///< shadow_depth_skinned.vert(蒙皮阴影)
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
 };
@@ -48,6 +50,10 @@ public:
   void beginScene(const scene::Camera& camera, const ClearColor& clear);
   /// 提交一个网格渲染项(资源 shared_ptr 持久持有,本帧引用)。
   void submit(const std::shared_ptr<MeshRenderResource>& mesh, const math::Mat4& world);
+  /// 提交蒙皮渲染项(jointPalette 为关节矩阵数组,本帧拷贝入 JointUBO;
+  /// jointCount ≤128,蒙皮项每帧 ≤8)。
+  void submit(const std::shared_ptr<MeshRenderResource>& mesh, const math::Mat4& world,
+              const math::Mat4* jointPalette, uint32_t jointCount);
   /// pass 序列执行:prepass 钩子 → MainPass(depth,SceneTarget) → blit upscale;
   /// 帧末队列清空。
   void endScene(CommandBuffer* cmd, TargetHandle target);
@@ -80,7 +86,7 @@ private:
   PipelineHandle pbrPipeline_;
   Format pipeFmt_ = Format::RGBA8_UNORM;        ///< 当前场景管线格式
   uint32_t pipeSamples_ = 0;                    ///< 当前场景管线采样数(0=未初始化)
-  /// 场景管线(pbr/unlit)按 SceneTarget 格式/采样数匹配;key 变化时重建。
+  /// 场景管线(pbr/unlit/skinned)按 SceneTarget 格式/采样数匹配;key 变化时重建。
   void ensureScenePipelines(Format fmt, uint32_t samples);
   BufferHandle frameUbo_;       // hostWrite,256B
   BufferHandle itemUbo_;        // hostWrite,kUboStride*kMaxItems
@@ -113,6 +119,16 @@ private:
   TargetHandle shadowTarget_;      // depth-only 目标
   SamplerHandle shadowSampler_;    // 比较采样器
   TextureHandle shadowFallbackTex_;  // 1x1 D32(1.0,无阴影时的占位绑定)
+  // ---- 蒙皮 ----
+  ShaderModuleHandle skvs_, sdsvs_;   // skinned pbr/shadow 顶点模块(管线重建用)
+  ShaderModuleHandle sfs_;            // shadow_depth.frag(蒙皮阴影管线重建用)
+  PipelineHandle skinnedPipeline_;
+  PipelineHandle skinnedShadowPipeline_;
+  BufferHandle jointUbo_;             // 64KB 共享 JointUBO(8 项 × 8192B)
+  std::vector<int32_t> jointSlot_;    // 与 queue_ 平行:JointUBO 槽位(-1=非蒙皮)
+  static constexpr uint32_t kJointItemStride = 8192;  // 128 骨 × 64B
+  static constexpr uint32_t kMaxJointItems = 8;
+
   std::vector<LightData> lights_;
   float framingCenter_[3] = {0, 0, 0};
   float framingRadius_ = 1.0f;

@@ -108,6 +108,22 @@ void rd_engine_on_double_tap(rd_engine* engine, float x, float y);
  */
 rd_result_t rd_engine_load_gltf(rd_engine* engine, const char* path);
 
+/// 清空全部手动灯光（清空后回落 glTF 灯/默认灯）。
+void rd_engine_clear_lights(rd_engine* engine);
+/// 加方向光（dir=指向光源方向，无需归一化；color×intensity）。
+void rd_engine_add_dir_light(rd_engine* engine, float dx, float dy, float dz,
+                             float r, float g, float b, float intensity);
+/// 加点光（range≤0 视为无限）。
+void rd_engine_add_point_light(rd_engine* engine, float px, float py, float pz,
+                               float range, float r, float g, float b, float intensity);
+/// 加聚光灯（内外锥角单位：度）。
+void rd_engine_add_spot_light(rd_engine* engine, float px, float py, float pz,
+                              float dx, float dy, float dz, float innerDeg,
+                              float outerDeg, float range, float r, float g, float b,
+                              float intensity);
+/// 阴影总开关（默认 1；Low 画质档自动关，与本开关为与关系）。
+void rd_engine_set_shadow_enabled(rd_engine* engine, int enabled);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

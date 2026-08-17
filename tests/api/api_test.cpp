@@ -77,3 +77,20 @@ TEST(Api, LoadGltf) {
   EXPECT_EQ(rd_engine_load_gltf(e, RD_TEST_DATA_DIR "/assets/TetraU32.glb"), RD_OK);
   rd_engine_destroy(e);
 }
+
+// 灯光/阴影 API:增删与开关安全;空引擎不崩
+TEST(Api, LightsAndShadowSafe) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  rd_engine_clear_lights(e);
+  rd_engine_add_dir_light(e, 0.5f, 0.8f, 0.3f, 1, 1, 1, 2.0f);
+  rd_engine_add_point_light(e, 1, 2, 3, 10.0f, 1, 0.5f, 0.25f, 4.0f);
+  rd_engine_add_spot_light(e, 0, 1, 0, 0, -1, 0, 20.0f, 40.0f, 5.0f, 1, 1, 1, 1.0f);
+  rd_engine_set_shadow_enabled(e, 1);
+  rd_engine_render_frame(e, 0.016f);  // 无 surface 安全
+  rd_engine_clear_lights(e);
+  rd_engine_set_shadow_enabled(e, 0);
+  rd_engine_destroy(e);
+  rd_engine_add_dir_light(nullptr, 0, 1, 0, 1, 1, 1, 1);  // 不崩
+  rd_engine_set_shadow_enabled(nullptr, 1);
+}

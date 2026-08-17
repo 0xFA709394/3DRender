@@ -32,6 +32,10 @@ struct rd_engine {
   bool rendererReady = false;           ///< renderer 是否已初始化
   uint32_t width = 0, height = 0;       ///< 表面尺寸
   rd_quality_t quality = RD_QUALITY_AUTO;  ///< 配置档(AUTO 时按 caps 解析)
+  std::vector<rd::LightData> manualLights;  ///< C API 灯(非空则覆盖 glTF 灯)
+  std::vector<rd::LightData> gltfLights;    ///< glTF 解析灯(load_gltf 时存)
+  bool shadowEnabled = true;
+  bool lightsDirty = false;
   char lastError[256] = {};             ///< 最近错误描述（rd_get_last_error 返回）
 };
 
@@ -55,6 +59,10 @@ rd::QualityTier resolveTier(rd_engine* e) {
 /// 应用解析后的画质档到 renderer。
 void applyQuality(rd_engine* e) {
   if (e->rendererReady) e->renderer.setQuality(rd::qualityPreset(resolveTier(e)));
+}
+/// 生效灯表:手动灯非空覆盖 glTF 灯;皆空 → 空(Renderer 默认灯兜底)。
+const std::vector<rd::LightData>& activeLights(rd_engine* e) {
+  return !e->manualLights.empty() ? e->manualLights : e->gltfLights;
 }
 } // namespace
 
@@ -133,6 +141,7 @@ rd_result_t rd_engine_set_surface(rd_engine* e, void* nativeWindow, uint32_t wid
     }
     e->rendererReady = true;
     applyQuality(e);  // 初始画质:AUTO → caps 启发式
+    e->renderer.setShadowEnabled(e->shadowEnabled);  // 同步(可能早于 surface 设置)
   }
   return RD_OK;
 }
@@ -167,6 +176,10 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
     if (acqLog++ % 300 == 0) RD_LOGW("api", "acquireSwapChainTarget 失败");
     e->device->endFrame();
     return; // 表面重建中，跳过本帧
+  }
+  if (e->lightsDirty) {  // 灯表变更(手动/glTF)下发
+    e->renderer.setLights(activeLights(e));
+    e->lightsDirty = false;
   }
   e->orbit.update(dt);  // 惯性积分(无指针按下时生效)
   e->orbit.applyTo(e->camera);
@@ -246,7 +259,76 @@ rd_result_t rd_engine_load_gltf(rd_engine* e, const char* path) {
   scene->root().addChild(std::move(node));
   e->scene = std::move(scene);
   e->orbit.frameModel(model.boundingCenter, model.boundingRadius);
+  // 灯光 + 阴影取景(setLights/setLightFraming 只存 CPU 状态,随时可调)
+  e->gltfLights = model.lights;
+  e->lightsDirty = true;
+  e->renderer.setLightFraming(model.boundingCenter, model.boundingRadius);
   return RD_OK;
+}
+
+void rd_engine_clear_lights(rd_engine* e) {
+  if (!e) return;
+  e->manualLights.clear();
+  e->lightsDirty = true;
+}
+
+void rd_engine_add_dir_light(rd_engine* e, float dx, float dy, float dz, float r,
+                             float g, float b, float intensity) {
+  if (!e) return;
+  rd::LightData l;
+  l.type = rd::LightType::Directional;
+  l.direction[0] = dx;
+  l.direction[1] = dy;
+  l.direction[2] = dz;
+  l.color[0] = r * intensity;
+  l.color[1] = g * intensity;
+  l.color[2] = b * intensity;
+  e->manualLights.push_back(l);
+  e->lightsDirty = true;
+}
+
+void rd_engine_add_point_light(rd_engine* e, float px, float py, float pz, float range,
+                               float r, float g, float b, float intensity) {
+  if (!e) return;
+  rd::LightData l;
+  l.type = rd::LightType::Point;
+  l.position[0] = px;
+  l.position[1] = py;
+  l.position[2] = pz;
+  l.range = range;
+  l.color[0] = r * intensity;
+  l.color[1] = g * intensity;
+  l.color[2] = b * intensity;
+  e->manualLights.push_back(l);
+  e->lightsDirty = true;
+}
+
+void rd_engine_add_spot_light(rd_engine* e, float px, float py, float pz, float dx,
+                              float dy, float dz, float innerDeg, float outerDeg,
+                              float range, float r, float g, float b, float intensity) {
+  if (!e) return;
+  rd::LightData l;
+  l.type = rd::LightType::Spot;
+  l.position[0] = px;
+  l.position[1] = py;
+  l.position[2] = pz;
+  l.direction[0] = dx;
+  l.direction[1] = dy;
+  l.direction[2] = dz;
+  l.innerCone = innerDeg * 0.0174532925f;
+  l.outerCone = outerDeg * 0.0174532925f;
+  l.range = range;
+  l.color[0] = r * intensity;
+  l.color[1] = g * intensity;
+  l.color[2] = b * intensity;
+  e->manualLights.push_back(l);
+  e->lightsDirty = true;
+}
+
+void rd_engine_set_shadow_enabled(rd_engine* e, int en) {
+  if (!e) return;
+  e->shadowEnabled = en != 0;
+  if (e->rendererReady) e->renderer.setShadowEnabled(e->shadowEnabled);
 }
 
 const char* rd_get_last_error(rd_engine* e) { return e ? e->lastError : ""; }

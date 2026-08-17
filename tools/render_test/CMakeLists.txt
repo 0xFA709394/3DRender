@@ -10,3 +10,10 @@ target_include_directories(render_test PRIVATE
   ${stb_SOURCE_DIR})
 set_target_properties(render_test PROPERTIES
   BUILD_RPATH "/opt/homebrew/lib;/usr/local/lib;$ENV{VULKAN_SDK}/lib")
+
+# --interactive:GLFW 窗口 + Metal swapchain(macOS host)
+if(APPLE)
+  target_sources(render_test PRIVATE interactive.mm)
+  target_include_directories(render_test PRIVATE ${CMAKE_SOURCE_DIR})
+  target_link_libraries(render_test PRIVATE glfw "-framework Cocoa" "-framework QuartzCore")
+endif()

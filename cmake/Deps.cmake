@@ -83,6 +83,18 @@ if(NOT ANDROID AND NOT IOS)
     URL https://github.com/KhronosGroup/SPIRV-Cross/archive/refs/tags/vulkan-sdk-1.3.296.0.tar.gz)
   FetchContent_MakeAvailable(spirv-cross)
 
+  # GLFW:render_test --interactive 的窗口/事件(host only,NO_API 模式;镜像旁路同 ktx)
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  if(EXISTS "$ENV{RD_DEPS_MIRROR}/glfw/CMakeLists.txt")
+    FetchContent_Declare(glfw SOURCE_DIR $ENV{RD_DEPS_MIRROR}/glfw)
+  else()
+    FetchContent_Declare(glfw
+      URL https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz)
+  endif()
+  FetchContent_MakeAvailable(glfw)
+
   FetchContent_Declare(VulkanHeaders
     URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.3.296.0.tar.gz)
   FetchContent_MakeAvailable(VulkanHeaders)

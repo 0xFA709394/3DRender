@@ -162,6 +162,9 @@ void toGLTexFormat(Format f, GLint& internal, GLenum& upload, GLenum& type) {
       internal = GL_RG32F; upload = GL_RG; type = GL_FLOAT; break;
     case Format::R32G32B32A32_FLOAT:
       internal = GL_RGBA32F; upload = GL_RGBA; type = GL_FLOAT; break;
+    case Format::D32_FLOAT:
+      internal = GL_DEPTH_COMPONENT32F; upload = GL_DEPTH_COMPONENT; type = GL_FLOAT;
+      break;
     case Format::ASTC_4x4_UNORM:
       internal = GL_COMPRESSED_RGBA_ASTC_4x4_KHR; upload = 0; type = 0; break;
     case Format::ETC2_RGBA8_UNORM:
@@ -1054,6 +1057,10 @@ SamplerHandle GLESDevice::createSampler(const SamplerDesc& desc) {
   if (desc.maxAnisotropy > 1 && caps_.supports(Capability::anisotropy)) {
     GLfloat a = GLfloat(std::min(desc.maxAnisotropy, caps_.get(Capability::anisotropy)));
     glSamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY_EXT, a);
+  }
+  if (desc.compareEnable) {  // 深度比较(阴影采样)
+    glSamplerParameteri(s, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glSamplerParameteri(s, GL_TEXTURE_COMPARE_FUNC, GL_LESS);
   }
   SamplerHandle h(nextId_++);
   samplers_.emplace(h, SamplerRec{s});

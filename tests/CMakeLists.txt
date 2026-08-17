@@ -18,6 +18,7 @@ add_executable(rd_tests
   rhi/compressed_texture_test.cpp
   rhi/target_texture_test.cpp
   rhi/msaa_test.cpp
+  rhi/depth_texture_test.cpp
   resource/gltf_test.cpp
   resource/ktx2_test.cpp
   resource/mesh_utils_test.cpp

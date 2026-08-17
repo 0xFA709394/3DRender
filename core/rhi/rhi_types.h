@@ -209,6 +209,10 @@ struct SamplerDesc {
   WrapMode wrapW = WrapMode::Repeat;    ///< W 向寻址（cube 用）
   /// 各向异性等级;>1 且 caps().anisotropy 支持时启用(取两者较小值)。
   uint32_t maxAnisotropy = 1;
+  /// 深度比较模式(阴影采样):开启后采样返回比较结果(硬件 PCF 基元);
+  /// 仅对 D32 等深度纹理有意义。Vulkan=compareEnable+LESS,Metal=compareFunction,
+  /// GLES=TEXTURE_COMPARE_MODE/COMPARE_REF_TO_TEXTURE。
+  bool compareEnable = false;
 };
 
 /// 离屏渲染目标创建参数。

@@ -1280,6 +1280,7 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
     return {};
   }
   const uint32_t faces = desc.type == TextureType::Cube ? 6 : 1;
+  const bool isDepth = desc.format == Format::D32_FLOAT;
 
   TextureRec rec;
   rec.isCube = desc.type == TextureType::Cube;
@@ -1302,7 +1303,8 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
   ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
               VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   if (hasFlag(desc.usage, TextureUsage::RenderTargetAttachment))
-    ici.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    ici.usage |= isDepth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                         : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   if (rec.isCube) ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   if (vkCreateImage(device_, &ici, nullptr, &rec.image) != VK_SUCCESS) return {};
@@ -1425,7 +1427,8 @@ TextureHandle VulkanDevice::createTexture(const TextureDesc& desc) {
   vci.image = rec.image;
   vci.viewType = rec.isCube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
   vci.format = toVkFormat(desc.format);
-  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, desc.mipLevels, 0, faces};
+  vci.subresourceRange = {isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                          0, desc.mipLevels, 0, faces};
   if (vkCreateImageView(device_, &vci, nullptr, &rec.view) != VK_SUCCESS) {
     vkFreeMemory(device_, rec.memory, nullptr);
     vkDestroyImage(device_, rec.image, nullptr);
@@ -1644,6 +1647,11 @@ SamplerHandle VulkanDevice::createSampler(const SamplerDesc& desc) {
     sci.anisotropyEnable = VK_TRUE;
     sci.maxAnisotropy = std::min<float>(float(desc.maxAnisotropy),
                                         float(caps_.get(Capability::anisotropy)));
+  }
+  // 深度比较(阴影采样)
+  if (desc.compareEnable) {
+    sci.compareEnable = VK_TRUE;
+    sci.compareOp = VK_COMPARE_OP_LESS;
   }
   VkSampler sampler;
   if (vkCreateSampler(device_, &sci, nullptr, &sampler) != VK_SUCCESS) return {};

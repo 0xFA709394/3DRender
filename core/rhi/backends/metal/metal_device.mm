@@ -594,7 +594,9 @@ public:
     td.usage = MTLTextureUsageShaderRead;
     if (hasFlag(desc.usage, TextureUsage::RenderTargetAttachment))
       td.usage |= MTLTextureUsageRenderTarget;
-    td.storageMode = MTLStorageModeShared;
+    // 深度渲染目标用 Private(可采样);其余维持 Shared 便于 readback
+    td.storageMode = desc.format == Format::D32_FLOAT ? MTLStorageModePrivate
+                                                      : MTLStorageModeShared;
     id<MTLTexture> tex = [device_ newTextureWithDescriptor:td];
     if (!tex) return {};
 
@@ -698,6 +700,7 @@ public:
     sd.sAddressMode = toWrap(desc.wrapU);
     sd.tAddressMode = toWrap(desc.wrapV);
     sd.rAddressMode = toWrap(desc.wrapW);
+    if (desc.compareEnable) sd.compareFunction = MTLCompareFunctionLess;  // 阴影比较
     // 各向异性:>1 且设备支持时启用,等级取请求与上限的较小值
     if (desc.maxAnisotropy > 1 && caps_.supports(Capability::anisotropy)) {
       sd.maxAnisotropy = NSUInteger(std::min(desc.maxAnisotropy,

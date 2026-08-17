@@ -75,9 +75,14 @@ int main(int argc, char** argv) {
     auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
     auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
   auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
+  auto exFs = load("bloom_extract.frag");
+  auto bbFs = load("bloom_blur.frag");
+  auto cpFs = load("composite.frag");
+  auto fxFs = load("fxaa.frag");
     rd::Renderer renderer;
     rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                               pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
+                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,
                               unlitVs.entry, rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;

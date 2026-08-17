@@ -18,11 +18,11 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
   }
   for (const auto& g : mesh_->meshes()) {
     if (g.material.unlit) {
-      cmd->bindPipeline(unlitPipeline_);
+      cmd->bindPipeline(ctx.unlitPipeline);
       cmd->bindUniformBuffer(1, ctx.itemUbo, ctx.itemOffset, 64);  // ItemUBO 前 64B=mvp
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
     } else {
-      cmd->bindPipeline(pbrPipeline_);
+      cmd->bindPipeline(ctx.pbrPipeline);
       cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);  // FrameUBO
       cmd->bindUniformBuffer(1, ctx.itemUbo, ctx.itemOffset, 256);  // ItemUBO
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 352);  // LightUBO(多光源+阴影)

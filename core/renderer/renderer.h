@@ -31,6 +31,7 @@ struct RendererShaderDesc {
   std::vector<uint8_t> prefilterVs, prefilterFs;  ///< 环境预滤波
   std::vector<uint8_t> blitVs, blitFs;          ///< 上屏链 upscale pass(全屏三角形)
   std::vector<uint8_t> shadowVs, shadowFs;      ///< ShadowPass 深度写出
+  std::vector<uint8_t> extractFs, blurFs, compositeFs, fxaaFs;  ///< post 链(vert 复用 blitVs)
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
 };
@@ -73,9 +74,14 @@ private:
   TargetHandle ensureSceneTarget(uint32_t targetW, uint32_t targetH);
 
   Device* dev_ = nullptr;
-  ShaderModuleHandle vs_, fs_;                  // pbr shader(unlit 模块创建后即销毁)
+  ShaderModuleHandle vs_, fs_;                  // pbr shader
+  ShaderModuleHandle uvs_, ufs_;                // unlit shader(场景管线重建用)
   PipelineHandle unlitPipeline_;
   PipelineHandle pbrPipeline_;
+  Format pipeFmt_ = Format::RGBA8_UNORM;        ///< 当前场景管线格式
+  uint32_t pipeSamples_ = 0;                    ///< 当前场景管线采样数(0=未初始化)
+  /// 场景管线(pbr/unlit)按 SceneTarget 格式/采样数匹配;key 变化时重建。
+  void ensureScenePipelines(Format fmt, uint32_t samples);
   BufferHandle frameUbo_;       // hostWrite,256B
   BufferHandle itemUbo_;        // hostWrite,kUboStride*kMaxItems
   renderer::Environment env_;
@@ -113,6 +119,23 @@ private:
   bool shadowManual_ = true;
   uint32_t shadowMapSize_ = 0;     ///< 画质档设置(0=关)
   uint32_t shadowTargetSize_ = 0;  ///< 当前阴影贴图尺寸
+
+  // ---- PostChain(Bloom+ACES+FXAA)----
+  bool postEnabled_ = false, fxaaEnabled_ = false;
+  PipelineHandle extractPipeline_, blurPipeline_, compositePipeline_, fxaaPipeline_;
+  TextureHandle bloomExtractTex_, bloomL1Tex_, bloomL2Tex_, bloomL3Tex_;
+  TargetHandle bloomExtract_, bloomL1_, bloomL2_, bloomL3_;
+  TargetHandle fxaaTarget_;      // RGBA8 自建(fxaa 中间目标,final 尺寸)
+  BufferHandle blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_;  // 各 16B:x=vFlip,yz=texel
+  uint32_t postW_ = 0, postH_ = 0;   // PostChain 目标链当前尺寸(scene 尺寸)
+  Format sceneFormat_ = Format::RGBA8_UNORM;  ///< SceneTarget 当前格式(post=R16F)
+  uint32_t fxaaW_ = 0, fxaaH_ = 0;
+  /// 按 scene 尺寸确保 post 目标链;尺寸变化重建。失败返回 false。
+  bool ensurePostTargets(uint32_t sw, uint32_t sh);
+  /// 销毁全部 post 目标(shutdown/重建用)。
+  void destroyPostTargets();
+  /// 按最终目标尺寸确保 fxaa 中间目标。
+  bool ensureFxaaTarget(uint32_t w, uint32_t h);
 };
 
 } // namespace rd

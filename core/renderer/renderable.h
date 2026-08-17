@@ -22,6 +22,9 @@ struct RenderContext {
   SamplerHandle shadowSampler;              ///< 比较采样器
   PipelineHandle shadowPipe;                ///< shadowPass 时使用的深度管线
   bool shadowPass = false;                  ///< true=只写深度(shadow_depth.vert)
+  /// 场景 pass 管线(按 SceneTarget 格式/采样数匹配,endScene 时注入)
+  PipelineHandle pbrPipeline;
+  PipelineHandle unlitPipeline;
 };
 
 class Renderable {

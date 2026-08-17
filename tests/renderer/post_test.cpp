@@ -1,5 +1,4 @@
-// 阴影 golden:helmet + 程序化地面 quad + 方向光(包围球取景)。
-// LightUBO 布局 static_assert 也在此。
+// 后处理 golden:helmet + 程序化地面 quad,High 档 Bloom+ACES。
 #include <gtest/gtest.h>
 #include "common/image.h"
 #include "common/shader_code.h"
@@ -15,7 +14,7 @@
 #include <cstring>
 #include <glm/glm.hpp>
 
-static_assert(sizeof(rd::LightUBOData) == 352, "LightUBO 必须 352B");
+
 
 namespace {
 constexpr uint32_t kW = 512, kH = 512;
@@ -49,7 +48,7 @@ rd::ModelAsset makeGround(float y, float half) {
   return m;
 }
 
-void runShadowGolden(rd::Backend b) {
+void runPostGolden(rd::Backend b) {
   rd::DeviceDesc d;
   d.backend = b;
   auto device = rd::createDevice(d);
@@ -91,17 +90,8 @@ void runShadowGolden(rd::Backend b) {
   n2->mesh = groundRes;
   scene.root().addChild(std::move(n2));
 
-  // 方向光(斜上方)+ 阴影开(High 档 2048)
-  rd::LightData light;
-  light.type = rd::LightType::Directional;
-  float dl = std::sqrt(0.5f * 0.5f + 0.8f * 0.8f + 0.3f * 0.3f);
-  light.direction[0] = 0.5f / dl;
-  light.direction[1] = 0.8f / dl;
-  light.direction[2] = 0.3f / dl;
-  light.color[0] = light.color[1] = light.color[2] = 3.0f;
-  renderer.setLights({light});
+  // High 档:HDR Bloom + ACES(默认灯)
   renderer.setQuality(rd::qualityPreset(rd::QualityTier::High));
-  renderer.setLightFraming(helmet.boundingCenter, helmet.boundingRadius);
 
   rd::scene::Camera cam;
   const float dist = helmet.boundingRadius * 2.5f;
@@ -126,7 +116,7 @@ void runShadowGolden(rd::Backend b) {
   groundRes->destroy(*device);
   renderer.shutdown();
   const std::string name =
-      b == rd::Backend::Metal ? "helmet_shadow_metal.png" : "helmet_shadow_vulkan.png";
+      b == rd::Backend::Metal ? "helmet_post_metal.png" : "helmet_post_vulkan.png";
   const std::string path = std::string(RD_TEST_DATA_DIR) + "/golden/" + name;
   if (std::getenv("RD_UPDATE_GOLDENS")) {
     ASSERT_TRUE(rd::test::savePNG(path, kW, kH, px.data()));
@@ -139,13 +129,13 @@ void runShadowGolden(rd::Backend b) {
 }
 } // namespace
 
-TEST(Shadow, MetalGolden) {
+TEST(Post, MetalGolden) {
 #if defined(__APPLE__)
-  runShadowGolden(rd::Backend::Metal);
+  runPostGolden(rd::Backend::Metal);
 #endif
 }
-TEST(Shadow, VulkanGolden) {
+TEST(Post, VulkanGolden) {
 #if defined(RD_WITH_VULKAN)
-  runShadowGolden(rd::Backend::Vulkan);
+  runPostGolden(rd::Backend::Vulkan);
 #endif
 }

@@ -12,8 +12,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = UIViewController()
         // RenderView 的 surface/渲染生命周期由其自身 didMoveToWindow 驱动
-        window.rootViewController?.view = RenderView(frame: UIScreen.main.bounds)
+        let renderView = RenderView(frame: UIScreen.main.bounds)
+        window.rootViewController?.view = renderView
         window.makeKeyAndVisible()
+        // surface 就绪(loadModel 内部等 engine 创建)后加载演示模型
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if let path = Bundle.main.path(forResource: "DamagedHelmet", ofType: "glb") {
+                renderView.loadModel(path)
+            } else {
+                print("RD: bundle 内无 DamagedHelmet.glb")
+            }
+        }
         self.window = window
         return true
     }

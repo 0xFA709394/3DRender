@@ -20,11 +20,13 @@ import UIKit
         super.init(frame: frame)
         // 按屏幕物理像素渲染（@2x/@3x），否则 drawableSize 偏小导致模糊
         contentScaleFactor = UIScreen.main.nativeScale
+        isMultipleTouchEnabled = true
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         contentScaleFactor = UIScreen.main.nativeScale
+        isMultipleTouchEnabled = true
     }
 
     override public func didMoveToWindow() {
@@ -67,11 +69,56 @@ import UIKit
             return
         }
         engine = created
+        // 双击重置取景
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(onDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        addGestureRecognizer(doubleTap)
         // common mode：滚动/追踪期间也不断帧
         let displayLink = CADisplayLink(target: self, selector: #selector(tick(_:)))
         displayLink.add(to: .main, forMode: .common)
         link = displayLink
         print("RD: render loop started")
+    }
+
+    /// 加载 glTF 模型（主线程；启动后调用一次即可）。成功返回 true。
+    @discardableResult
+    public func loadModel(_ path: String) -> Bool {
+        guard let engine else { return false }
+        let r = rd_engine_load_gltf(engine, path)
+        print("RD: load_gltf -> \(r)")
+        return r == RD_OK
+    }
+
+    // ---- 触摸 → Orbit（rd_engine 主线程约定，直接调用）----
+    /// UITouch → 稳定指针 id（按 touch 对象标识散列，跟踪期内稳定）
+    private func touchId(_ touch: UITouch) -> Int32 {
+        Int32(truncatingIfNeeded: ObjectIdentifier(touch).hashValue)
+    }
+    private func forwardTouches(_ touches: Set<UITouch>, action: rd_pointer_action_t) {
+        guard let engine else { return }
+        let scale = contentScaleFactor  // 逻辑点 → 物理像素
+        for t in touches {
+            let p = t.location(in: self)
+            rd_engine_on_pointer(engine, action, touchId(t),
+                                 Float(p.x * scale), Float(p.y * scale))
+        }
+    }
+    override public func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        forwardTouches(touches, action: RD_POINTER_DOWN)
+    }
+    override public func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        forwardTouches(touches, action: RD_POINTER_MOVE)
+    }
+    override public func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        forwardTouches(touches, action: RD_POINTER_UP)
+    }
+    override public func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        forwardTouches(touches, action: RD_POINTER_CANCEL)
+    }
+    @objc private func onDoubleTap(_ g: UITapGestureRecognizer) {
+        guard let engine else { return }
+        let p = g.location(in: self)
+        rd_engine_on_double_tap(engine, Float(p.x), Float(p.y))
     }
 
     /// 垂直同步回调：计算 dt 并渲染一帧。

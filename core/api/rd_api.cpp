@@ -14,6 +14,7 @@
 #include "resource/mesh_render_resource.h"
 #include "rhi/rhi_device.h"
 #include "scene/camera.h"
+#include "scene/orbit_controller.h"
 #include "scene/scene.h"
 #include <cstring>
 #include <memory>
@@ -25,7 +26,8 @@ struct rd_engine {
   rd::SwapChainHandle swapChain;        ///< 当前交换链（无表面时无效）
   rd::Renderer renderer;                ///< 渲染器（首次 set_surface 时 init）
   std::unique_ptr<rd::scene::Scene> scene;  ///< 场景(load_gltf 后挂模型节点)
-  rd::scene::Camera camera;             ///< 相机(Task 15 起由 OrbitController 驱动)
+  rd::scene::Camera camera;             ///< 相机(每帧由 OrbitController 驱动)
+  rd::scene::OrbitController orbit;     ///< Orbit 相机控制器(输入事件喂入)
   std::shared_ptr<rd::MeshRenderResource> model;  ///< 当前模型(无模型仅清屏)
   bool rendererReady = false;           ///< renderer 是否已初始化
   uint32_t width = 0, height = 0;       ///< 表面尺寸
@@ -64,8 +66,8 @@ rd_engine* rd_engine_create(rd_backend_t backend) {
   auto* e = new rd_engine();
   e->device = std::move(device);
   e->scene = std::make_unique<rd::scene::Scene>();
-  // 默认相机(模型加载后由 frameModel 重取景;Task 15 接 Orbit)
-  e->camera.lookAt({0, 0, 3}, {0, 0, 0}, {0, 1, 0});
+  // 初始取景(模型加载后由 frameModel 重取景)
+  e->orbit.frameModel((const float[]){0, 0, 0}, 1.2f);
   return e;
 }
 
@@ -164,7 +166,11 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
     e->device->endFrame();
     return; // 表面重建中，跳过本帧
   }
-  e->camera.setPerspective(0.78539816f, float(e->width) / float(e->height), 0.1f, 100.0f);
+  e->orbit.update(dt);  // 惯性积分(无指针按下时生效)
+  e->orbit.applyTo(e->camera);
+  e->camera.setPerspective(0.78539816f, float(e->width) / float(e->height),
+                          std::max(0.01f, e->orbit.distance() * 0.02f),
+                          e->orbit.distance() * 20.0f);
   e->renderer.beginScene(e->camera, {0.05f, 0.05f, 0.06f, 1.0f});
   e->scene->collect(e->renderer);
   auto* cmd = e->device->acquireCommandBuffer();
@@ -172,7 +178,6 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
   e->device->submit(cmd);
   e->device->present(e->swapChain);
   e->device->endFrame();
-  (void)dt;  // Task 15 起驱动 Orbit 惯性
 }
 
 rd_result_t rd_engine_set_quality(rd_engine* e, rd_quality_t q) {
@@ -193,6 +198,53 @@ rd_quality_t rd_engine_get_quality(rd_engine* e) {
     case rd::QualityTier::Low: return RD_QUALITY_LOW;
   }
   return RD_QUALITY_LOW;
+}
+
+void rd_engine_on_pointer(rd_engine* e, rd_pointer_action_t a, int32_t id, float x,
+                          float y) {
+  if (!e) return;
+  switch (a) {
+    case RD_POINTER_DOWN: e->orbit.onPointerDown(int(id), x, y); break;
+    case RD_POINTER_MOVE: e->orbit.onPointerMove(int(id), x, y); break;
+    case RD_POINTER_UP:
+    case RD_POINTER_CANCEL: e->orbit.onPointerUp(int(id), x, y); break;
+  }
+}
+void rd_engine_on_scroll(rd_engine* e, float dy) { if (e) e->orbit.onScroll(dy); }
+void rd_engine_on_pinch(rd_engine* e, float r) { if (e) e->orbit.onPinch(r); }
+void rd_engine_on_double_tap(rd_engine* e, float, float) {
+  if (e) e->orbit.onDoubleTap();
+}
+
+rd_result_t rd_engine_load_gltf(rd_engine* e, const char* path) {
+  if (!e || !path) return RD_ERROR_INVALID_ARG;
+  // 纹理偏好:压缩目标按 caps,尺寸上限按当前画质档
+  rd::TextureLoadPref pref;
+  pref.ktx2Target = rd::pickTranscodeTarget(
+      e->device->caps().supports(rd::Capability::texture_compression_astc),
+      e->device->caps().supports(rd::Capability::texture_compression_etc2));
+  pref.maxDim = e->rendererReady ? e->renderer.maxTextureDim() : 4096;
+  auto model = rd::loadGltf(path, pref);
+  if (!model.valid()) {
+    setError(e, (std::string("glTF 加载失败: ") + path).c_str());
+    return RD_ERROR_ASSET;
+  }
+  e->device->waitIdle();  // 防旧模型在飞引用
+  auto res = rd::MeshRenderResource::upload(*e->device, model);
+  if (!res) {
+    setError(e, "模型 GPU 上传失败");
+    return RD_ERROR_ASSET;
+  }
+  if (e->model) e->model->destroy(*e->device);
+  e->model = res;
+  // 重建场景:单 MeshNode
+  auto scene = std::make_unique<rd::scene::Scene>();
+  auto node = std::make_unique<rd::scene::MeshNode>();
+  node->mesh = res;
+  scene->root().addChild(std::move(node));
+  e->scene = std::move(scene);
+  e->orbit.frameModel(model.boundingCenter, model.boundingRadius);
+  return RD_OK;
 }
 
 const char* rd_get_last_error(rd_engine* e) { return e ? e->lastError : ""; }

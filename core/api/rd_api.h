@@ -79,6 +79,35 @@ rd_result_t rd_engine_set_quality(rd_engine* engine, rd_quality_t quality);
 /// 当前生效档（AUTO 时返回启发式解析结果，不会返回 AUTO）；空引擎返回 RD_QUALITY_LOW。
 rd_quality_t rd_engine_get_quality(rd_engine* engine);
 
+/// 指针动作（触摸/鼠标）。
+typedef enum rd_pointer_action {
+  RD_POINTER_DOWN = 0,
+  RD_POINTER_MOVE = 1,
+  RD_POINTER_UP = 2,
+  RD_POINTER_CANCEL = 3,
+} rd_pointer_action_t;
+
+/**
+ * @brief 指针事件（像素坐标，origin 左上；id 区分多指，引擎跟踪前 2 个）。
+ * 单指=旋转；双指=pinch 缩放+平移。空引擎安全忽略。
+ */
+void rd_engine_on_pointer(rd_engine* engine, rd_pointer_action_t action,
+                          int32_t pointer_id, float x, float y);
+/// host 滚轮缩放（deltaY>0 拉近）。
+void rd_engine_on_scroll(rd_engine* engine, float delta_y);
+/// 双指比例缩放（Android 探测器路径；ratio>1 放大→拉近）。
+void rd_engine_on_pinch(rd_engine* engine, float ratio);
+/// 双击重置取景。
+void rd_engine_on_double_tap(rd_engine* engine, float x, float y);
+
+/**
+ * @brief 同步加载 glb/gltf 模型并替换场景内容（成功后 Orbit 自动取景）。
+ * 纹理解码按当前画质档的尺寸上限与设备压缩格式 caps 自动选择。
+ * @return RD_OK / RD_ERROR_INVALID_ARG（空参）/ RD_ERROR_ASSET（解析/上传失败，
+ *         细节见 rd_get_last_error）。v1 为同步加载（异步留 P2）。
+ */
+rd_result_t rd_engine_load_gltf(rd_engine* engine, const char* path);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

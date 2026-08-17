@@ -26,6 +26,7 @@ add_executable(rd_tests
   resource/mesh_utils_test.cpp
   scene/scene_test.cpp
   scene/orbit_test.cpp
+  scene/animator_test.cpp
   renderer/renderer_test.cpp
   renderer/box_render_test.cpp
   renderer/pbr_test.cpp

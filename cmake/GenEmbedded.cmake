@@ -21,7 +21,7 @@ function(embed_file VAR_NAME FILE_PATH OUT_LINES)
   endif()
 endfunction()
 
-set(SHADERS cube unlit pbr_forward prefilter blit)
+set(SHADERS cube unlit pbr_forward prefilter blit shadow_depth)
 set(ALL_LINES "")
 foreach(S ${SHADERS})
   embed_file(k_${S}_vert_spv     ${DIR}/${S}.vert.spv            L)

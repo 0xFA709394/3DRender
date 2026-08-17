@@ -22,6 +22,8 @@ TEST(Embedded, MetalShaders) {
   expectEmbedded(rd::Backend::Metal, "unlit");
   expectEmbedded(rd::Backend::Metal, "pbr_forward");
   expectEmbedded(rd::Backend::Metal, "prefilter");
+  expectEmbedded(rd::Backend::Metal, "blit");
+  expectEmbedded(rd::Backend::Metal, "shadow_depth");
 #endif
 }
 TEST(Embedded, VulkanShaders) {
@@ -30,6 +32,8 @@ TEST(Embedded, VulkanShaders) {
   expectEmbedded(rd::Backend::Vulkan, "unlit");
   expectEmbedded(rd::Backend::Vulkan, "pbr_forward");
   expectEmbedded(rd::Backend::Vulkan, "prefilter");
+  expectEmbedded(rd::Backend::Vulkan, "blit");
+  expectEmbedded(rd::Backend::Vulkan, "shadow_depth");
 #endif
 }
 TEST(Embedded, UnknownNameReturnsFalse) {

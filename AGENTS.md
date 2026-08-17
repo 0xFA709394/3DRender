@@ -18,7 +18,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   (三档预设+caps 启发式+C API)+ KTX2(libktx,ASTC/ETC2/RGBA32 兜底)+ 上屏链
   (SceneTarget→blit upscale)+ engine 迁移 Renderer 链 + render_test --interactive;
   RHI 扩展:ASTC/ETC2 压缩格式 + MSAA/resolve 三后端 + Vulkan 描述符按绑定状态缓存
-- 下一步：P2(阴影+多光源+后处理链+骨骼动画)
+- P2-1 完成：单方向光阴影(depth-only 目标 + 硬件比较采样 + PCF 3x3,包围球自动取景)
+  + KHR_lights_punctual 多光源(dir/point/spot×4,glTF 解析/C API 双通道)
+  + 画质档 shadowMapSize(2048/1024/0)
+- 下一步：P2 余下(后处理链/骨骼动画/拾取/性能基准)
 
 ## 构建与测试
 ```bash
@@ -89,6 +92,16 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   （tests/common/ktx2_gen,勿提交二进制）;Vulkan 描述符按绑定状态缓存
   （bind 只记状态、draw 时绑定,支持逐 draw 异构绑定）
 - 依赖弱网旁路：`$ENV{RD_DEPS_MIRROR}/ktx|glfw` 指向本地源码副本可跳过 FetchContent 下载
+- LightUBO=slot2(352B:lightViewProj|shadowParams|lightCount|lights[4×64B]);
+  GLES 块名 LightUBO→2、ShadowUBO→0;阴影纹理=slot 7(比较采样器 sampler2DShadow)
+- 阴影:ShadowPass 在场景 pass 前(endScene 内);depth-only 目标
+  (`OffscreenTargetDesc.depthFromTexture` + `PipelineDesc.depthOnly`);
+  bias 走 shader(常量+slope);GLES 阴影 UV 的 v 翻转由 shadowParams.w 吸收;
+  采样器 `SamplerDesc.compareEnable`(三后端硬件比较)
+- 灯光约定:direction=指向光源(dot(N,L) 直接用);color 已乘 intensity;
+  手动灯(C API)非空覆盖 glTF 灯,皆空则默认 1 方向光;glTF 灯方向=节点旋转×(0,0,-1) 取反
+- 画质:`QualityPreset.shadowMapSize`(0=关);`rd_engine_set_shadow_enabled` 与画质档为与关系;
+  阴影取景 `Renderer::setLightFraming(center, radius)`(包围球正交,光源方向取首盏方向光)
 
 ## 提交规范
 - 小步提交，每任务一个 commit；格式 `<type>(<scope>): 描述`

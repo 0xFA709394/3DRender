@@ -1,0 +1,6 @@
+{
+  "helmet_high": {"metal": 1.8338, "vulkan": 1.0253},
+  "helmet_low": {"metal": 0.7730, "vulkan": 0.7628},
+  "skinned_anim": {"metal": 0.4173, "vulkan": 0.5497},
+  "items_64": {"metal": 0.8300, "vulkan": 0.9636}
+}

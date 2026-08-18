@@ -16,6 +16,7 @@
 #include "scene/animator.h"
 #include "scene/camera.h"
 #include "scene/orbit_controller.h"
+#include "scene/picking.h"
 #include "scene/scene.h"
 #include <cstring>
 #include <memory>
@@ -67,6 +68,13 @@ void applyQuality(rd_engine* e) {
 /// 生效灯表:手动灯非空覆盖 glTF 灯;皆空 → 空(Renderer 默认灯兜底)。
 const std::vector<rd::LightData>& activeLights(rd_engine* e) {
   return !e->manualLights.empty() ? e->manualLights : e->gltfLights;
+}
+/// 当前生效相机(无 surface 时用 512×512 默认投影,pick/测试可用)。
+void applyCamera(rd_engine* e, float vw, float vh) {
+  e->orbit.applyTo(e->camera);
+  e->camera.setPerspective(0.78539816f, vw / vh,
+                          std::max(0.01f, e->orbit.distance() * 0.02f),
+                          e->orbit.distance() * 20.0f);
 }
 } // namespace
 
@@ -192,10 +200,7 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
     e->lightsDirty = false;
   }
   e->orbit.update(dt);  // 惯性积分(无指针按下时生效)
-  e->orbit.applyTo(e->camera);
-  e->camera.setPerspective(0.78539816f, float(e->width) / float(e->height),
-                          std::max(0.01f, e->orbit.distance() * 0.02f),
-                          e->orbit.distance() * 20.0f);
+  applyCamera(e, float(e->width), float(e->height));
   e->renderer.beginScene(e->camera, {0.05f, 0.05f, 0.06f, 1.0f});
   if (e->hasAnimation && e->model) {  // 蒙皮路径:Animator 驱动 + 关节调色板
     e->animator.update(dt);
@@ -223,6 +228,30 @@ void rd_engine_crossfade_animation(rd_engine* e, int32_t clip, float fade) {
 void rd_engine_pause_animation(rd_engine* e, int32_t paused) {
   if (!e || !e->hasAnimation) return;
   e->animator.pause(paused != 0);
+}
+
+rd_pick_result_t rd_engine_pick(rd_engine* e, float x, float y) {
+  rd_pick_result_t out = {};
+  out.mesh_index = -1;
+  if (!e || !e->model) return out;
+  const float vw = e->width ? float(e->width) : 512.0f;
+  const float vh = e->height ? float(e->height) : 512.0f;
+  applyCamera(e, vw, vh);
+  float o[3], d[3];
+  rd::scene::screenRay(e->camera, x, y, vw, vh, o, d);
+  auto r = rd::scene::pickModel(e->modelAsset, rd::math::Mat4(1.0f), o, d);
+  if (!r.hit) return out;
+  out.hit = 1;
+  out.mesh_index = r.meshIndex;
+  out.distance = r.distance;
+  out.px = r.point[0];
+  out.py = r.point[1];
+  out.pz = r.point[2];
+  if (r.meshIndex >= 0 && size_t(r.meshIndex) < e->modelAsset.meshes.size()) {
+    std::strncpy(out.mesh_name, e->modelAsset.meshes[size_t(r.meshIndex)].name.c_str(),
+                 sizeof(out.mesh_name) - 1);
+  }
+  return out;
 }
 
 rd_result_t rd_engine_set_quality(rd_engine* e, rd_quality_t q) {

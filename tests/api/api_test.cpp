@@ -94,3 +94,18 @@ TEST(Api, LightsAndShadowSafe) {
   rd_engine_add_dir_light(nullptr, 0, 1, 0, 1, 1, 1, 1);  // 不崩
   rd_engine_set_shadow_enabled(nullptr, 1);
 }
+
+// 动画 API:无动画模型安全;空引擎不崩
+TEST(Api, AnimationSafe) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  rd_engine_play_animation(e, 0);
+  rd_engine_crossfade_animation(e, 0, 0.2f);
+  rd_engine_pause_animation(e, 1);
+  rd_engine_pause_animation(e, 0);
+  EXPECT_EQ(rd_engine_load_gltf(e, RD_TEST_DATA_DIR "/assets/TetraU32.glb"), RD_OK);
+  rd_engine_play_animation(e, 0);  // 模型无动画:警告 no-op
+  rd_engine_render_frame(e, 0.016f);
+  rd_engine_destroy(e);
+  rd_engine_play_animation(nullptr, 0);  // 不崩
+}

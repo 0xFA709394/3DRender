@@ -124,6 +124,14 @@ void rd_engine_add_spot_light(rd_engine* engine, float px, float py, float pz,
 /// 阴影总开关（默认 1；Low 画质档自动关，与本开关为与关系）。
 void rd_engine_set_shadow_enabled(rd_engine* engine, int enabled);
 
+/// 播放动画 clip（立即切换，loop）。越界/无动画记警告 no-op。
+void rd_engine_play_animation(rd_engine* engine, int32_t clip_index);
+/// 交叉淡入到目标 clip（fade_seconds 秒过渡）。
+void rd_engine_crossfade_animation(rd_engine* engine, int32_t clip_index,
+                                   float fade_seconds);
+/// 暂停/继续动画。
+void rd_engine_pause_animation(rd_engine* engine, int32_t paused);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

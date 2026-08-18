@@ -93,4 +93,10 @@ JNIEXPORT jint JNICALL Java_com_rd_renderer_RenderView_nativeLoadGltf(JNIEnv* en
   return r;
 }
 
+/// 设置画质档(0=AUTO,1=HIGH,2=MID,3=LOW)。
+JNIEXPORT void JNICALL Java_com_rd_renderer_RenderView_nativeSetQuality(JNIEnv*, jobject,
+                                                                        jlong ptr, jint q) {
+  rd_engine_set_quality(reinterpret_cast<rd_engine*>(ptr), static_cast<rd_quality_t>(q));
+}
+
 } // extern "C"

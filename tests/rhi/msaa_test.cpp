@@ -117,3 +117,31 @@ TEST(Msaa, Vulkan) {
   runReject(rd::Backend::Vulkan);
 #endif
 }
+
+// MSAA 采样数设备对齐:snapSampleCount 返回 ≤请求且恒 ≥1(iOS Sim 只支持 4x 的
+// 真实案例——MTLSimDriver 拒绝 2x;host 两端支持 {1,2,4} 时恒等)
+TEST(Msaa, SnapSampleCount) {
+#if defined(__APPLE__)
+  rd::DeviceDesc d;
+  d.backend = rd::Backend::Metal;
+  auto dev = rd::createDevice(d);
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->snapSampleCount(0), 1u);
+  EXPECT_EQ(dev->snapSampleCount(1), 1u);
+  const uint32_t s2 = dev->snapSampleCount(2);
+  EXPECT_TRUE(s2 == 1u || s2 == 2u);
+  const uint32_t s4 = dev->snapSampleCount(4);
+  EXPECT_TRUE(s4 >= 1u && s4 <= 4u);
+  const uint32_t s8 = dev->snapSampleCount(8);
+  EXPECT_LE(s8, 4u);
+#endif
+#if defined(RD_WITH_VULKAN)
+  rd::DeviceDesc dv;
+  dv.backend = rd::Backend::Vulkan;
+  auto devv = rd::createDevice(dv);
+  ASSERT_NE(devv, nullptr);
+  EXPECT_EQ(devv->snapSampleCount(1), 1u);
+  EXPECT_TRUE(devv->snapSampleCount(2) <= 2u);
+  EXPECT_TRUE(devv->snapSampleCount(4) <= 4u);
+#endif
+}

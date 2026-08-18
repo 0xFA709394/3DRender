@@ -122,7 +122,12 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 灯光约定:direction=指向光源(dot(N,L) 直接用);color 已乘 intensity;
   手动灯(C API)非空覆盖 glTF 灯,皆空则默认 1 方向光;glTF 灯方向=节点旋转×(0,0,-1) 取反
 - 画质:`QualityPreset.shadowMapSize`(0=关);`rd_engine_set_shadow_enabled` 与画质档为与关系;
-  阴影取景 `Renderer::setLightFraming(center, radius)`(包围球正交,光源方向取首盏方向光)
+  阴影取景 `Renderer::setLightFraming(center, radius)`(包围球正交,光源方向取首盏方向光);
+  **MSAA 采样数须经 `Device::snapSampleCount` 对齐**(MTLSimDriver 只支持 4x,拒绝 2x;
+  Vulkan 按 framebufferColorSampleCounts 位掩码;目标与管线须用同一对齐值)
+- 纹理存储:Metal D32 一律 Private(iOS 禁 Shared,CPU 不可写)→ D32 占位图用
+  "清屏初始化"(depth-only 目标 clear),勿带初始数据创建;
+  Environment 预滤波管线格式恒 RGBA8(与渲染目标格式无关)
 - 后处理:post 开=HDR(LightUBO `lightCount.y`=hdrMode,pbr 线性输出到 R16F SceneTarget)走
   extract(半分)→l1/l2/l3 tent 模糊→composite(w=1.0/0.6/0.4+ACES+gamma)直出;
   post 关=LDR(Reinhard 在 pbr);FXAA 与 MSAA 互斥(仅 msaa==1 的 Low 档);

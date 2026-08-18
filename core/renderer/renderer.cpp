@@ -122,15 +122,27 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   csd.wrapV = WrapMode::Clamp;
   shadowSampler_ = dev.createSampler(csd);
   {
-    // 1x1 D32=1.0 占位(无阴影时绑定,阴影采样恒受光)
-    const float one = 1.0f;
+    // 1x1 D32=1.0 占位(无阴影时绑定,阴影采样恒受光);
+    // 经"清屏初始化"(D32 不允许带初始数据上传:Metal iOS 禁 Shared/CPU 写 Private)
     TextureDesc ftd;
     ftd.width = 1;
     ftd.height = 1;
     ftd.format = Format::D32_FLOAT;
-    ftd.data = &one;
-    ftd.dataSize = 4;
+    ftd.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
     shadowFallbackTex_ = dev.createTexture(ftd);
+    OffscreenTargetDesc fod;
+    fod.width = 1;
+    fod.height = 1;
+    fod.depthFromTexture = shadowFallbackTex_;
+    auto ft = dev.createOffscreenTarget(fod);
+    if (shadowFallbackTex_.valid() && ft.valid()) {
+      auto* c = dev.acquireCommandBuffer();
+      c->beginRenderPass(ft, {0, 0, 0, 1, 1.0f});  // clear.depth=1 → 恒受光
+      c->endRenderPass();
+      dev.submit(c);
+      dev.waitIdle();
+      dev.destroyTarget(ft);
+    }
   }
 
   // PostChain 管线(vert 复用 blit;extract/blur 输出 R16F,composite/fxaa 输出目标格式)
@@ -374,8 +386,8 @@ void Renderer::setQuality(const QualityPreset& q) {
 TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
   const uint32_t w = std::max(1u, uint32_t(float(targetW) * renderScale_));
   const uint32_t h = std::max(1u, uint32_t(float(targetH) * renderScale_));
-  const uint32_t capMsaa = dev_->caps().get(Capability::msaa);
-  const uint32_t samples = std::max(1u, std::min(msaa_, capMsaa));
+  // 设备对齐(MTLSim 只支持 4x 等):目标与管线统一用对齐后的值
+  const uint32_t samples = dev_->snapSampleCount(std::max(1u, msaa_));
   const Format fmt = postEnabled_ ? Format::R16G16B16A16_FLOAT : colorFormat_;
   if (sceneTarget_.valid() && w == sceneW_ && h == sceneH_ && samples == sceneSamples_ &&
       fmt == sceneFormat_)
@@ -460,6 +472,7 @@ bool Renderer::ensureFxaaTarget(uint32_t w, uint32_t h) {
   OffscreenTargetDesc od;
   od.width = w;
   od.height = h;
+  od.colorFormat = colorFormat_;  // 与最终目标格式一致(blit 管线格式匹配)
   fxaaTarget_ = dev_->createOffscreenTarget(od);
   if (!fxaaTarget_.valid()) {
     RD_LOGE("renderer", "fxaa 目标创建失败(%ux%u)", w, h);

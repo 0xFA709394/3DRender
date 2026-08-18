@@ -205,6 +205,10 @@ int rd::tool::runInteractive(const char* modelPath, const char* sceneName) {
 
   const char* framesEnv = getenv("RD_INTERACTIVE_FRAMES");
   const long maxFrames = framesEnv ? atol(framesEnv) : 0;  // 0 = 不限
+  // RD_DEMO_CYCLE=N:每 N 帧轮换画质档+模型(切换路径复现用)
+  const char* cycleEnv = getenv("RD_DEMO_CYCLE");
+  const long cycleFrames = cycleEnv ? atol(cycleEnv) : 0;
+  const rd_quality_t tiers[3] = {RD_QUALITY_HIGH, RD_QUALITY_MID, RD_QUALITY_LOW};
   auto last = std::chrono::steady_clock::now();
   long frame = 0;
   while (!glfwWindowShouldClose(win)) {
@@ -214,6 +218,15 @@ int rd::tool::runInteractive(const char* modelPath, const char* sceneName) {
     if (int(cur.width) != fbw || int(cur.height) != fbh) {
       layer.drawableSize = CGSizeMake(fbw, fbh);
       rd_engine_resize(engine, uint32_t(fbw), uint32_t(fbh));
+    }
+    if (cycleFrames > 0 && frame > 0 && frame % cycleFrames == 0) {
+      const long step = frame / cycleFrames;
+      rd_engine_set_quality(engine, tiers[step % 3]);
+      if (modelPath && step % 2 == 1) {  // 隔轮重载模型
+        if (rd_engine_load_gltf(engine, modelPath) != RD_OK)
+          fprintf(stderr, "cycle load_gltf 失败: %s\n", rd_get_last_error(engine));
+      }
+      fprintf(stderr, "[cycle] frame=%ld tier=%d\n", frame, int(step % 3));
     }
     const auto now = std::chrono::steady_clock::now();
     const float dt = std::chrono::duration<float>(now - last).count();

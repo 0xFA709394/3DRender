@@ -132,6 +132,22 @@ void rd_engine_crossfade_animation(rd_engine* engine, int32_t clip_index,
 /// 暂停/继续动画。
 void rd_engine_pause_animation(rd_engine* engine, int32_t paused);
 
+/// 拾取结果（C 结构；mesh_name 截断 63B）。
+typedef struct rd_pick_result {
+  int32_t hit;          ///< 0/1
+  int32_t mesh_index;   ///< meshes[] 下标(-1=未中)
+  float distance;       ///< 命中距离
+  float px, py, pz;     ///< 命中点(世界)
+  char mesh_name[64];   ///< mesh 名
+} rd_pick_result_t;
+
+/**
+ * @brief 射线拾取（像素坐标，与输入事件同一坐标系）。
+ * 无模型/未命中/空引擎返回 hit=0；蒙皮模型按绑定姿态（已知限制）。
+ * @note 线程约定同 render_frame。
+ */
+rd_pick_result_t rd_engine_pick(rd_engine* engine, float x, float y);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

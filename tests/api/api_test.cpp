@@ -109,3 +109,19 @@ TEST(Api, AnimationSafe) {
   rd_engine_destroy(e);
   rd_engine_play_animation(nullptr, 0);  // 不崩
 }
+
+// 拾取 API:加载模型后中心像素命中;空引擎/无模型安全
+TEST(Api, Pick) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  auto r0 = rd_engine_pick(e, 256, 256);
+  EXPECT_EQ(r0.hit, 0);
+  ASSERT_EQ(rd_engine_load_gltf(e, RD_TEST_DATA_DIR "/assets/TetraU32.glb"), RD_OK);
+  auto r1 = rd_engine_pick(e, 256, 256);
+  EXPECT_EQ(r1.hit, 1);
+  EXPECT_GE(r1.mesh_index, 0);
+  EXPECT_GT(r1.distance, 0.0f);
+  rd_engine_destroy(e);
+  auto rz = rd_engine_pick(nullptr, 0, 0);  // 不崩
+  EXPECT_EQ(rz.hit, 0);
+}

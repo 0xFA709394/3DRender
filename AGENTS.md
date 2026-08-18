@@ -32,6 +32,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - P2-5 完成：性能基准套件(perf_test 4 场景×双后端,avg/p50/p95/p99/FPS,
   基线 JSON + p50 超 2× 软门槛,--update-baseline 更新;ctest 冒烟注册)
 - P2 全部完成(阴影+多光源/后处理链/骨骼动画/拾取/性能基准)
+- 场景示例集合完成:primitives 几何生成器(球/平面/盒)+ 5 程序场景
+  (material_balls/cornell_box/light_playground/skinned_demo/instanced_field)
+  + 知名场景(sponza/cesium_man,scripts/fetch_assets.sh 下载,assets/ 不入库)
+  + render_test --scene + interactive --scene 直驱 + 移动 demo 画质/模型切换
 - 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
 
 ## 构建与测试
@@ -45,6 +49,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 性能基准：`./build/tools/perf_test/perf_test --backend all`(软门槛 p50>2× 判败);
   更新基线 `--update-baseline`(核对数值合理后提交 tests/perf/baseline.json);
   CI 噪声大用 `--no-gate` 只采集
+- 场景示例：`./build/tools/render_test/render_test --scene <name> --out x.png`
+  (5 程序场景 + sponza/cesium_man);交互 `--interactive --scene <name>`;
+  知名资产 `./scripts/fetch_assets.sh` 下载(assets/ gitignore 不入库)
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 

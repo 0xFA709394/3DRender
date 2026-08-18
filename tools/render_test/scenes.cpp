@@ -175,8 +175,8 @@ void buildInstancedField(Device& dev, DemoScene& out) {
 }
 
 bool buildFamousGlb(Device& dev, DemoScene& out, ModelAsset& storage,
-                    const char* file, bool anim) {
-  const std::string path = std::string("assets/") + file;
+                    const char* relPath, bool anim) {
+  const std::string path = std::string("assets/") + relPath;
   if (!std::filesystem::exists(path)) {
     RD_LOGW("demo.scene", "资产缺失(scripts/fetch_assets.sh 下载): %s", path.c_str());
     return false;
@@ -229,7 +229,7 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
   } else if (n == "instanced_field") {
     buildInstancedField(dev, out);
   } else if (n == "sponza") {
-    if (!buildFamousGlb(dev, out, modelStorage, "Sponza.glb", false)) return false;
+    if (!buildFamousGlb(dev, out, modelStorage, "sponza/Sponza.gltf", false)) return false;
   } else if (n == "cesium_man") {
     if (!buildFamousGlb(dev, out, modelStorage, "CesiumMan.glb", true)) return false;
   } else {

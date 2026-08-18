@@ -168,13 +168,13 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
     if (node->has_scale)
       for (int c = 0; c < 3; ++c) an.scale[c] = float(node->scale[c]);
     if (node->has_matrix) {
-      // matrix 形式:v1 取平移 + 警告(TRS 形式为绝对主流)
+      // matrix 形式:v1 取平移(TRS 形式为绝对主流;静态模型节点变换本就忽略)
       cgltf_float wm[16];
       cgltf_node_transform_local(node, wm);
       an.translation[0] = float(wm[12]);
       an.translation[1] = float(wm[13]);
       an.translation[2] = float(wm[14]);
-      RD_LOGW("resource.gltf", "matrix 形式节点,仅取平移(TRS 退化)");
+      RD_LOGD("resource.gltf", "matrix 形式节点,仅取平移(TRS 退化)");
     }
     model.nodes.push_back(an);
   }

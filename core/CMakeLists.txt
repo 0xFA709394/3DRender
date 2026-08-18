@@ -72,6 +72,7 @@ if(RD_MOLTENVK_LIB AND NOT ANDROID AND NOT IOS)
   target_sources(rd_core PRIVATE rhi/backends/vulkan/vulkan_device.cpp)
   target_compile_definitions(rd_core PUBLIC RD_WITH_VULKAN=1)
   target_link_libraries(rd_core PRIVATE Vulkan::Headers ${RD_MOLTENVK_LIB})
+  set(RD_HAVE_VULKAN ON CACHE INTERNAL "vulkan 后端已编译(host MoltenVK)")
 endif()
 
 if(ANDROID)

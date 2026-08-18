@@ -24,6 +24,7 @@ add_executable(rd_tests
   resource/gltf_test.cpp
   resource/ktx2_test.cpp
   resource/mesh_utils_test.cpp
+  resource/primitives_test.cpp
   scene/scene_test.cpp
   scene/orbit_test.cpp
   scene/animator_test.cpp

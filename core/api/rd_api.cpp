@@ -13,6 +13,7 @@
 #include "resource/gltf_loader.h"
 #include "resource/mesh_render_resource.h"
 #include "rhi/rhi_device.h"
+#include "scene/animator.h"
 #include "scene/camera.h"
 #include "scene/orbit_controller.h"
 #include "scene/scene.h"
@@ -36,6 +37,9 @@ struct rd_engine {
   std::vector<rd::LightData> gltfLights;    ///< glTF 解析灯(load_gltf 时存)
   bool shadowEnabled = true;
   bool lightsDirty = false;
+  rd::ModelAsset modelAsset;            ///< 当前模型 CPU 资产(Animator 绑定源)
+  rd::scene::Animator animator;
+  bool hasAnimation = false;
   char lastError[256] = {};             ///< 最近错误描述（rd_get_last_error 返回）
 };
 
@@ -193,12 +197,32 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
                           std::max(0.01f, e->orbit.distance() * 0.02f),
                           e->orbit.distance() * 20.0f);
   e->renderer.beginScene(e->camera, {0.05f, 0.05f, 0.06f, 1.0f});
-  e->scene->collect(e->renderer);
+  if (e->hasAnimation && e->model) {  // 蒙皮路径:Animator 驱动 + 关节调色板
+    e->animator.update(dt);
+    e->renderer.submit(e->model, rd::math::Mat4(1.0f),
+                       e->animator.jointMatrices().data(),
+                       uint32_t(e->animator.jointMatrices().size()));
+  } else {
+    e->scene->collect(e->renderer);
+  }
   auto* cmd = e->device->acquireCommandBuffer();
   e->renderer.endScene(cmd, target);
   e->device->submit(cmd);
   e->device->present(e->swapChain);
   e->device->endFrame();
+}
+
+void rd_engine_play_animation(rd_engine* e, int32_t clip) {
+  if (!e || !e->hasAnimation || clip < 0) return;
+  e->animator.play(uint32_t(clip));
+}
+void rd_engine_crossfade_animation(rd_engine* e, int32_t clip, float fade) {
+  if (!e || !e->hasAnimation || clip < 0) return;
+  e->animator.playWithFade(uint32_t(clip), fade);
+}
+void rd_engine_pause_animation(rd_engine* e, int32_t paused) {
+  if (!e || !e->hasAnimation) return;
+  e->animator.pause(paused != 0);
 }
 
 rd_result_t rd_engine_set_quality(rd_engine* e, rd_quality_t q) {
@@ -269,6 +293,13 @@ rd_result_t rd_engine_load_gltf(rd_engine* e, const char* path) {
   e->gltfLights = model.lights;
   e->lightsDirty = true;
   e->renderer.setLightFraming(model.boundingCenter, model.boundingRadius);
+  // 动画:CPU 资产持久持有(Animator 绑定源),自动播放 clip 0
+  e->modelAsset = std::move(model);
+  e->hasAnimation = !e->modelAsset.animations.empty() && !e->modelAsset.skins.empty();
+  if (e->hasAnimation) {
+    e->animator.bind(e->modelAsset);
+    e->animator.play(0);
+  }
   return RD_OK;
 }
 

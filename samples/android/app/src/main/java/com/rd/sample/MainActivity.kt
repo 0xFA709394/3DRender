@@ -3,6 +3,8 @@ package com.rd.sample
 import android.app.Activity
 import android.os.Bundle
 import android.util.Log
+import android.view.Gravity
+import android.widget.Button
 import android.widget.FrameLayout
 import com.rd.renderer.RenderView
 import java.io.File
@@ -38,5 +40,41 @@ class MainActivity : Activity() {
         } catch (t: Throwable) {
             Log.w("RdSample", "演示模型缺失,仅显示清屏背景", t)
         }
+        // cesium_man 资产存在时(开发者经 fetch_assets.sh 下载并拷贝)一并入队
+        val cesium = File(filesDir, "CesiumMan.glb")
+        val hasCesium = try {
+            if (!cesium.exists()) assets.open("CesiumMan.glb").use { input ->
+                cesium.outputStream().use { input.copyTo(it) }
+            }
+            true
+        } catch (_: Throwable) { cesium.exists() }
+
+        // 「切换」按钮:画质档轮换(High→Mid→Low)+ 模型轮换(cesium_man 存在时)
+        data class DemoState(val quality: Int, val model: File, val label: String)
+        val states = mutableListOf(
+            DemoState(1, dst, "High"),
+            DemoState(2, dst, "Mid"),
+            DemoState(3, dst, "Low"),
+        )
+        if (hasCesium) states.add(DemoState(1, cesium, "High+骨骼动画"))
+        var index = 0
+        val button = Button(this).apply {
+            text = "切换"
+            setOnClickListener {
+                index = (index + 1) % states.size
+                val st = states[index]
+                renderView.setQuality(st.quality)
+                renderView.loadModel(st.model.absolutePath)
+                Log.i("RdSample", "demo 状态 -> ${st.label}")
+            }
+        }
+        addContentView(
+            button,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END,
+            ).apply { setMargins(0, 0, 48, 48) },
+        )
     }
 }

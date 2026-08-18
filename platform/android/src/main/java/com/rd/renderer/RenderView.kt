@@ -163,6 +163,11 @@ class RenderView @JvmOverloads constructor(
         renderHandler.post { if (enginePtr != 0L) nativeLoadGltf(enginePtr, path) }
     }
 
+    /** 设置画质档(1=HIGH,2=MID,3=LOW,0=AUTO;渲染线程执行)。 */
+    fun setQuality(tier: Int) {
+        renderHandler.post { if (enginePtr != 0L) nativeSetQuality(enginePtr, tier) }
+    }
+
     // ---- JNI native 方法（实现在 platform/android/jni/rd_jni.cpp）----
     private external fun nativeCreate(backend: Int): Long
     private external fun nativeDestroy(ptr: Long)
@@ -174,6 +179,7 @@ class RenderView @JvmOverloads constructor(
     private external fun nativeOnPinch(ptr: Long, ratio: Float)
     private external fun nativeOnDoubleTap(ptr: Long, x: Float, y: Float)
     private external fun nativeLoadGltf(ptr: Long, path: String): Int
+    private external fun nativeSetQuality(ptr: Long, tier: Int)
 
     companion object {
         init { System.loadLibrary("rd_jni") }

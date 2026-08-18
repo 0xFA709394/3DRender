@@ -89,6 +89,20 @@ import UIKit
         return r == RD_OK
     }
 
+    /// 设置画质档（0=AUTO,1=HIGH,2=MID,3=LOW;主线程）。
+    public func setQuality(_ tier: Int) {
+        guard let engine else { return }
+        let q: rd_quality_t
+        switch tier {
+        case 1: q = RD_QUALITY_HIGH
+        case 2: q = RD_QUALITY_MID
+        case 3: q = RD_QUALITY_LOW
+        default: q = RD_QUALITY_AUTO
+        }
+        rd_engine_set_quality(engine, q)
+        print("RD: set_quality -> \(tier)")
+    }
+
     // ---- 触摸 → Orbit（rd_engine 主线程约定，直接调用）----
     /// UITouch → 稳定指针 id（按 touch 对象标识散列，跟踪期内稳定）
     private func touchId(_ touch: UITouch) -> Int32 {

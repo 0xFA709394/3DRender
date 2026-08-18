@@ -2,6 +2,7 @@ enable_language(Swift)
 
 # 演示模型资产(bundle Resources;源码树内复用 tests 资产,勿重复存储)
 set(DEMO_ASSET ${CMAKE_SOURCE_DIR}/tests/assets/DamagedHelmet.glb)
+set(DEMO_EXTRA ${CMAKE_SOURCE_DIR}/assets/CesiumMan.glb)  # 下载存在时一并入包
 add_executable(RdDemo MACOSX_BUNDLE
   RdDemo/AppDelegate.swift
   RdDemo/dummy.cpp
@@ -10,6 +11,11 @@ add_executable(RdDemo MACOSX_BUNDLE
 )
 set_source_files_properties(${DEMO_ASSET} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources)
+if(EXISTS ${DEMO_EXTRA})
+  target_sources(RdDemo PRIVATE ${DEMO_EXTRA})
+  set_source_files_properties(${DEMO_EXTRA} PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources)
+endif()
 target_link_libraries(RdDemo PRIVATE rd_core "-framework UIKit" "-framework QuartzCore")
 set_target_properties(RdDemo PROPERTIES
   MACOSX_BUNDLE_BUNDLE_NAME RdDemo

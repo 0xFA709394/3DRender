@@ -229,6 +229,12 @@ public:
   bool init(const DeviceDesc& desc);
   Backend backend() const override { return Backend::Vulkan; }
   const DeviceCaps& caps() const override { return caps_; }
+  /// MSAA 采样数对齐(位掩码向下取最近支持值)。
+  uint32_t snapSampleCount(uint32_t requested) const override {
+    for (uint32_t n = requested; n > 1; --n)
+      if (sampleCountsMask_ & (1u << n)) return n;  // VK_SAMPLE_COUNT_n_BIT == 1<<n
+    return 1;
+  }
 
   BufferHandle createBuffer(const BufferDesc& desc) override;
   void updateBuffer(BufferHandle buffer, const void* data, uint64_t size, uint64_t offset) override;
@@ -345,6 +351,7 @@ private:
 
   VkInstance instance_ = VK_NULL_HANDLE;
   VkPhysicalDevice phys_ = VK_NULL_HANDLE;
+  VkSampleCountFlags sampleCountsMask_ = 0;      ///< framebufferColorSampleCounts(snap 用)
   VkDevice device_ = VK_NULL_HANDLE;
   uint32_t queueFamily_ = 0;
   VkQueue queue_ = VK_NULL_HANDLE;
@@ -466,6 +473,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
     caps_.set(Capability::instancing, 1);  // Vulkan 核心能力
     // framebufferColorSampleCounts 是位掩码,取不超过 4 的最高档
     VkSampleCountFlags counts = physProps.limits.framebufferColorSampleCounts;
+    sampleCountsMask_ = counts;  // snapSampleCount 用
     caps_.set(Capability::msaa,
               counts & VK_SAMPLE_COUNT_4_BIT ? 4 : counts & VK_SAMPLE_COUNT_2_BIT ? 2 : 1);
     caps_.set(Capability::depth_texture, 1);

@@ -258,6 +258,10 @@ public:
   bool init(const DeviceDesc&);
   Backend backend() const override { return Backend::GLES; }
   const DeviceCaps& caps() const override { return caps_; }
+  /// ES3 对颜色附件保证 1..GL_MAX_SAMPLES 内的计数;按 caps 截断。
+  uint32_t snapSampleCount(uint32_t requested) const override {
+    return std::min(requested, caps_.get(Capability::msaa));
+  }
 
   BufferHandle createBuffer(const BufferDesc& desc) override;
   void updateBuffer(BufferHandle buffer, const void* data, uint64_t size, uint64_t offset) override;

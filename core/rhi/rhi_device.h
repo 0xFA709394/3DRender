@@ -93,6 +93,9 @@ public:
   virtual Backend backend() const = 0;
   /// 返回本设备能力表(init 时上报,之后只读;缺省 0 = 不支持)。
   virtual const DeviceCaps& caps() const = 0;
+  /// 将请求的 MSAA 采样数对齐到设备实际支持值(向下取最近支持值,最小 1)。
+  /// 背景:iOS 模拟器(MTLSimDriver)只支持 4x,拒绝 2x;真机支持 {2,4}。
+  virtual uint32_t snapSampleCount(uint32_t requested) const = 0;
 
   /// @name 缓冲
   /// @{

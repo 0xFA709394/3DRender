@@ -268,7 +268,9 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
   PipelineDesc pd;
   pd.vertexShader = vsm;
   pd.fragmentShader = fsm;
-  pd.colorFormat = colorFormat;
+  // 预滤波目标是 RGBA8 环境纹理(与渲染目标格式无关;BGRA8 swapchain 场景下
+  // 若误用 colorFormat 会撞 Metal 管线/帧缓冲格式校验)
+  pd.colorFormat = Format::RGBA8_UNORM;
   prefilterPipeline_ = dev.createPipeline(pd);
   prefilterUbo_ = dev.createBuffer({256, BufferUsage::Uniform, true, false, nullptr});
   dev.destroyShaderModule(vsm);

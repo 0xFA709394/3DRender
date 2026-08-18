@@ -259,6 +259,12 @@ public:
 
   Backend backend() const override { return Backend::Metal; }
   const DeviceCaps& caps() const override { return caps_; }
+  /// MSAA 采样数对齐(MTLSimDriver 只支持 4x;真机 {2,4})。
+  uint32_t snapSampleCount(uint32_t requested) const override {
+    for (uint32_t n = requested; n > 1; --n)
+      if ([device_ supportsTextureSampleCount:(NSUInteger)n]) return n;
+    return 1;
+  }
 
   /// 创建缓冲。hostWrite/hostRead → Shared(CPU/GPU 共享,可直写直读);
   /// 否则 Private(GPU 独占,渲染最快),初始数据经临时 Shared 缓冲 blit 上传。
@@ -617,9 +623,17 @@ public:
     td.usage = MTLTextureUsageShaderRead;
     if (hasFlag(desc.usage, TextureUsage::RenderTargetAttachment))
       td.usage |= MTLTextureUsageRenderTarget;
-    // 深度渲染目标用 Private(可采样);其余维持 Shared 便于 readback
-    td.storageMode = desc.format == Format::D32_FLOAT ? MTLStorageModePrivate
-                                                      : MTLStorageModeShared;
+    // 深度纹理:iOS 禁止 Shared → 一律 Private;D32 带初始数据不支持
+    // (replaceRegion 禁 CPU 写 Private;占位深度图走"清屏初始化",见 renderer 层)
+    if (desc.format == Format::D32_FLOAT) {
+      td.storageMode = MTLStorageModePrivate;
+      if (desc.data) {
+        RD_LOGE("rhi.metal", "createTexture: D32 初始数据不支持(iOS 禁 Shared)");
+        return {};
+      }
+    } else {
+      td.storageMode = MTLStorageModeShared;
+    }
     id<MTLTexture> tex = [device_ newTextureWithDescriptor:td];
     if (!tex) return {};
 

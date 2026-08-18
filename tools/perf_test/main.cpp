@@ -40,7 +40,7 @@ struct SceneCtx {
 struct BenchResult {
   std::string scene;
   std::string backend;
-  float avgMs = 0, p95Ms = 0, p99Ms = 0, fps = 0;
+  float avgMs = 0, p50Ms = 0, p95Ms = 0, p99Ms = 0, fps = 0;
   int frames = 0;
 };
 
@@ -156,10 +156,58 @@ BenchResult bench(rd::Device& dev, rd::Renderer& renderer, rd::TargetHandle targ
   float sum = 0;
   for (float t : times) sum += t;
   r.avgMs = sum / float(times.size());
+  r.p50Ms = times[size_t(times.size() * 0.50f)];
   r.p95Ms = times[size_t(times.size() * 0.95f)];
   r.p99Ms = times[size_t(times.size() * 0.99f)];
   r.fps = r.avgMs > 0 ? 1000.0f / r.avgMs : 0;
   return r;
+}
+
+/// 基线读取:手写最小解析(固定结构),scene/backend 名逐字匹配。
+/// 返回 avg 基线;文件缺失/条目缺失返回 0(调用方按 SKIP 处理)。
+float baselineRead(const std::string& path, const char* scene, const char* backend) {
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) return 0.0f;
+  fseek(f, 0, SEEK_END);
+  const long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  std::string s(size_t(n), '\0');
+  if (fread(s.data(), 1, s.size(), f) != s.size()) {
+    fclose(f);
+    return 0.0f;
+  }
+  fclose(f);
+  // 定位 "scene" 段,再在其中找 "backend": number
+  const std::string sceneKey = std::string("\"") + scene + "\"";
+  const size_t sp = s.find(sceneKey);
+  if (sp == std::string::npos) return 0.0f;
+  const size_t segEnd = s.find('\n', sp);  // 场景条目单行结构
+  const std::string seg = s.substr(sp, segEnd == std::string::npos ? std::string::npos
+                                                                   : segEnd - sp);
+  const std::string bk = std::string("\"") + backend + "\":";
+  const size_t bp = seg.find(bk);
+  if (bp == std::string::npos) return 0.0f;
+  return float(atof(seg.c_str() + bp + bk.size()));
+}
+
+/// 基线重写(按本次结果;两空格缩进)。
+bool baselineWrite(const std::string& path, const std::vector<BenchResult>& results) {
+  FILE* f = fopen(path.c_str(), "wb");
+  if (!f) return false;
+  fprintf(f, "{\n");
+  for (size_t si = 0; si < 4; ++si) {
+    fprintf(f, "  \"%s\": {", kScenes[si]);
+    bool first = true;
+    for (const auto& r : results) {
+      if (r.scene != kScenes[si]) continue;
+      fprintf(f, "%s\"%s\": %.4f", first ? "" : ", ", r.backend.c_str(), r.p50Ms);
+      first = false;
+    }
+    fprintf(f, "}%s\n", si + 1 < 4 ? "," : "");
+  }
+  fprintf(f, "}\n");
+  fclose(f);
+  return true;
 }
 
 /// 初始化设备/渲染器/离屏目标。
@@ -200,7 +248,7 @@ int main(int argc, char** argv) {
   std::string sceneFilter;
   std::string jsonPath;
   int frames = 120;
-  bool noGate = true;  // Task 2 才接门槛;当前恒 report-only
+  bool noGate = false;
   bool updateBaseline = false;
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
@@ -217,9 +265,6 @@ int main(int argc, char** argv) {
       updateBaseline = true;
     }
   }
-  (void)noGate;
-  (void)updateBaseline;
-  (void)jsonPath;
 
   std::vector<rd::Backend> backends;
   if (backendArg == "all" || backendArg == "metal") backends.push_back(rd::Backend::Metal);
@@ -249,14 +294,63 @@ int main(int argc, char** argv) {
         return 1;
       }
       auto r = bench(*device, renderer, target, sceneName, ctx, frames, bname);
-      printf("[bench] %-13s %-6s avg=%.2fms p95=%.2fms p99=%.2fms fps=%.0f\n",
-             r.scene.c_str(), r.backend.c_str(), r.avgMs, r.p95Ms, r.p99Ms, r.fps);
+      printf("[bench] %-13s %-6s avg=%.2fms p50=%.2fms p95=%.2fms p99=%.2fms fps=%.0f\n",
+             r.scene.c_str(), r.backend.c_str(), r.avgMs, r.p50Ms, r.p95Ms, r.p99Ms,
+             r.fps);
       results.push_back(r);
       if (ctx.model) ctx.model->destroy(*device);
       for (auto& m : ctx.items) m->destroy(*device);
       renderer.shutdown();
       device->destroyTarget(target);
     }
+  }
+
+  // JSON 落盘(可选)
+  if (!jsonPath.empty()) {
+    FILE* f = fopen(jsonPath.c_str(), "wb");
+    if (f) {
+      fprintf(f, "[\n");
+      for (size_t i = 0; i < results.size(); ++i) {
+        const auto& r = results[i];
+        fprintf(f,
+                "  {\"scene\": \"%s\", \"backend\": \"%s\", \"avgMs\": %.4f, "
+                "\"p95Ms\": %.4f, \"p99Ms\": %.4f, \"fps\": %.1f, \"frames\": %d}%s\n",
+                r.scene.c_str(), r.backend.c_str(), r.avgMs, r.p95Ms, r.p99Ms, r.fps,
+                r.frames, i + 1 < results.size() ? "," : "");
+      }
+      fprintf(f, "]\n");
+      fclose(f);
+    }
+  }
+
+  // 基线更新
+  const char* baselinePath = getenv("RD_PERF_BASELINE");
+  const std::string bp = baselinePath ? baselinePath : RD_PERF_BASELINE_PATH;
+  if (updateBaseline) {
+    if (!baselineWrite(bp, results)) {
+      fprintf(stderr, "基线写入失败: %s\n", bp.c_str());
+      return 1;
+    }
+    printf("[gate] 基线已更新: %s\n", bp.c_str());
+  }
+
+  // 软门槛:avg > 1.5× baseline → FAIL
+  if (!noGate && !updateBaseline) {
+    int fails = 0;
+    for (const auto& r : results) {
+      const float base = baselineRead(bp, r.scene.c_str(), r.backend.c_str());
+      if (base <= 0.0f) {
+        printf("[gate] SKIP %s/%s(基线无此条目)\n", r.scene.c_str(), r.backend.c_str());
+        continue;
+      }
+      if (r.p50Ms > base * 2.0f) {
+        printf("[gate] FAIL %s/%s p50=%.2fms baseline(p50)=%.2fms\n", r.scene.c_str(),
+               r.backend.c_str(), r.p50Ms, base);
+        ++fails;
+      }
+    }
+    if (fails > 0) return 1;
+    printf("[gate] PASS\n");
   }
   return 0;
 }

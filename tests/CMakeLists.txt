@@ -60,3 +60,16 @@ target_compile_definitions(rd_tests PRIVATE RD_TEST_DATA_DIR="${CMAKE_CURRENT_SO
 set_target_properties(rd_tests PROPERTIES
   BUILD_RPATH "/opt/homebrew/lib;/usr/local/lib;$ENV{VULKAN_SDK}/lib")
 gtest_discover_tests(rd_tests)
+
+# perf_test 冒烟:8 帧无门槛,验证不崩 + 输出 4 场景行
+# (ctest 正则不支持 \s\S;PASS_REGULAR_EXPRESSION 列表语义=每个模式都须匹配)
+add_test(NAME perf_smoke_metal
+         COMMAND $<TARGET_FILE:perf_test> --backend metal --frames 8 --no-gate)
+set_tests_properties(perf_smoke_metal PROPERTIES PASS_REGULAR_EXPRESSION
+  "\\[bench\\] helmet_high;\\[bench\\] items_64")
+if(RD_HAVE_VULKAN)
+  add_test(NAME perf_smoke_vulkan
+           COMMAND $<TARGET_FILE:perf_test> --backend vulkan --frames 8 --no-gate)
+  set_tests_properties(perf_smoke_vulkan PROPERTIES PASS_REGULAR_EXPRESSION
+    "\\[bench\\] helmet_high;\\[bench\\] items_64")
+endif()

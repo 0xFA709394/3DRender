@@ -27,7 +27,9 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - P2-3 完成：骨骼动画(节点层级/skins/animations 解析 + GPU 蒙皮
   pbr_forward_skinned + JointUBO slot3 调色板 + Animator 播放/交叉淡入
   + C API play/crossfade/pause,load_gltf 自动播放 clip0)
-- 下一步：P2 余下(拾取/性能基准)
+- P2-4 完成：拾取交互(scene::picking 三角形精确求交 + rd_engine_pick 同步结构体;
+  蒙皮按绑定姿态——已知限制)
+- 下一步：P2 余下(性能基准套件)
 
 ## 构建与测试
 ```bash
@@ -123,6 +125,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   **场景管线含 skinned 变体,首帧 ensureScenePipelines 统一重建(pipeSamples_ 初始 0)**
 - Animator:clip 线性插值(rotation slerp),STEP 退化保持;节点父先子后序依赖
   (反序模型已知限制);C API play/crossfade/pause;load_gltf 自动播放 clip0
+- 拾取:`scene::picking` screenRay(屏幕 y 翻转 NDC)+ pickModel(world 逆变换入模型空间,
+  Möller–Trumbore;包围球随调随算预筛;48B/80B 布局兼容);
+  `rd_engine_pick` 无 surface 时用 512×512 默认投影
 
 ## 提交规范
 - 小步提交，每任务一个 commit；格式 `<type>(<scope>): 描述`

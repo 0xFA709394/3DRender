@@ -29,7 +29,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   + C API play/crossfade/pause,load_gltf 自动播放 clip0)
 - P2-4 完成：拾取交互(scene::picking 三角形精确求交 + rd_engine_pick 同步结构体;
   蒙皮按绑定姿态——已知限制)
-- 下一步：P2 余下(性能基准套件)
+- P2-5 完成：性能基准套件(perf_test 4 场景×双后端,avg/p50/p95/p99/FPS,
+  基线 JSON + p50 超 2× 软门槛,--update-baseline 更新;ctest 冒烟注册)
+- P2 全部完成(阴影+多光源/后处理链/骨骼动画/拾取/性能基准)
+- 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
 
 ## 构建与测试
 ```bash
@@ -39,6 +42,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 更新 golden image：`RD_UPDATE_GOLDENS=1 ctest --test-dir build -R Cube`，
   然后目视核对 tests/golden/*.png 再提交
 - 手动渲染：`./build/tools/render_test/render_test --backend metal|vulkan --out cube.png`
+- 性能基准：`./build/tools/perf_test/perf_test --backend all`(软门槛 p50>2× 判败);
+  更新基线 `--update-baseline`(核对数值合理后提交 tests/perf/baseline.json);
+  CI 噪声大用 `--no-gate` 只采集
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 

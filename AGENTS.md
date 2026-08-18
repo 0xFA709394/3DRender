@@ -24,7 +24,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - P2-2 完成：HDR 后处理链(High/Mid:RGBA16F SceneTarget + Bloom 3 级 tent 模糊
   + ACES composite;Low:FXAA 兜底;R16F 格式 + hdr_render_target caps;
   场景管线按目标格式/采样数匹配重建)
-- 下一步：P2 余下(骨骼动画/拾取/性能基准)
+- P2-3 完成：骨骼动画(节点层级/skins/animations 解析 + GPU 蒙皮
+  pbr_forward_skinned + JointUBO slot3 调色板 + Animator 播放/交叉淡入
+  + C API play/crossfade/pause,load_gltf 自动播放 clip0)
+- 下一步：P2 余下(拾取/性能基准)
 
 ## 构建与测试
 ```bash
@@ -113,6 +116,13 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 格式:`Format::R16G16B16A16_FLOAT`(8B/px);caps `hdr_render_target`(GLES 查 EXT);
   **场景管线(pbr/unlit)按 SceneTarget 格式/采样数匹配重建**(ensureScenePipelines,
   管线经 RenderContext 在 record 时注入,勿在构造渲染项时固化)
+- 蒙皮:顶点布局 80B(48B + joints4f@48|weights4f@64,location 4/5);
+  JointUBO=slot3(64KB 共享,8 项×8192B 步进,超 128 骨截断告警);
+  jointMatrices[j] = nodeGlobals[joints[j]] × IBM[j];
+  蒙皮阴影用 shadow_depth_skinned;法线蒙皮用 mat3(skin) 近似;
+  **场景管线含 skinned 变体,首帧 ensureScenePipelines 统一重建(pipeSamples_ 初始 0)**
+- Animator:clip 线性插值(rotation slerp),STEP 退化保持;节点父先子后序依赖
+  (反序模型已知限制);C API play/crossfade/pause;load_gltf 自动播放 clip0
 
 ## 提交规范
 - 小步提交，每任务一个 commit；格式 `<type>(<scope>): 描述`

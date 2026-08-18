@@ -39,6 +39,8 @@ add_executable(rd_tests
   renderer/shadow_test.cpp
   renderer/post_test.cpp
   renderer/skinned_test.cpp
+  renderer/demo_scenes_test.cpp
+  ${CMAKE_SOURCE_DIR}/tools/render_test/scenes.cpp
   common/image.cpp
   common/image_test.cpp
   common/ktx2_gen.cpp
@@ -55,6 +57,7 @@ target_link_libraries(rd_tests PRIVATE rd_core GTest::gtest_main ktx)
 target_include_directories(rd_tests PRIVATE
   ${CMAKE_BINARY_DIR}/generated
   ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}
   ${stb_SOURCE_DIR}
   ${ktx_SOURCE_DIR}/include)
 target_compile_definitions(rd_tests PRIVATE RD_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

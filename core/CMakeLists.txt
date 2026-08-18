@@ -17,6 +17,7 @@ add_library(rd_core STATIC
   scene/node.cpp
   scene/orbit_controller.cpp
   scene/animator.cpp
+  scene/picking.cpp
   scene/scene.cpp
   api/rd_api.cpp
 )

@@ -27,6 +27,7 @@ add_executable(rd_tests
   scene/scene_test.cpp
   scene/orbit_test.cpp
   scene/animator_test.cpp
+  scene/picking_test.cpp
   renderer/renderer_test.cpp
   renderer/box_render_test.cpp
   renderer/pbr_test.cpp

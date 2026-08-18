@@ -9,6 +9,7 @@ add_library(rd_core STATIC
   resource/gltf_loader.cpp
   resource/mesh_render_resource.cpp
   resource/mesh_utils.cpp
+  resource/primitives.cpp
   renderer/renderer.cpp
   renderer/mesh_renderable.cpp
   renderer/environment.cpp

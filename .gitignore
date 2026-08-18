@@ -29,3 +29,6 @@ Pods/
 # Gradle
 .gradle/
 gradlew-local.properties
+
+# demo 知名场景资产(fetch_assets.sh 下载,不入库)
+assets/

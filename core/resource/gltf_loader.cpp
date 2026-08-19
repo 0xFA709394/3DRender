@@ -99,6 +99,9 @@ MaterialData readMaterial(const cgltf_primitive& prim, const char* gltfDir,
   const cgltf_material* mat = prim.material;
   if (!mat) return m;
   m.unlit = mat->unlit;
+  m.alphaBlend = mat->alpha_mode == cgltf_alpha_mode_blend;
+  if (mat->alpha_mode == cgltf_alpha_mode_mask)
+    RD_LOGW("resource.gltf", "alphaMode=MASK 暂不支持,按 OPAQUE 处理");
   if (mat->has_pbr_metallic_roughness) {
     const auto& pbr = mat->pbr_metallic_roughness;
     if (pbr.base_color_texture.texture) {

@@ -15,7 +15,7 @@ const char* const kNames[] = {"material_balls", "cornell_box", "light_playground
                               "skinned_demo",   "instanced_field",
                               "sponza",         "cesium_man",
                               "emissive_bloom", "normal_map_wall",
-                              "shadow_gallery", "ktx2_gallery"};
+                              "shadow_gallery", "ktx2_gallery", "alpha_blend"};
 
 /// 单 mesh ModelAsset 包装(材质参数由调用方设)。
 ModelAsset wrapMesh(MeshData&& mesh) {
@@ -315,6 +315,33 @@ void buildKtx2Gallery(Device& dev, DemoScene& out) {
   out.framingRadius = 2.0f;
 }
 
+void buildAlphaBlend(Device& dev, DemoScene& out) {
+  // 后排:3 彩色盒;前排:3 玻璃板(alpha 0.8/0.5/0.3)
+  const float cols[3][3] = {{0.9f, 0.3f, 0.3f}, {0.3f, 0.9f, 0.4f}, {0.3f, 0.5f, 0.95f}};
+  for (int i = 0; i < 3; ++i) {
+    auto mesh = primitives::makeBox(0.9f, 0.9f, 0.9f);
+    memcpy(mesh.material.baseColorFactor, cols[i], 12);
+    mesh.material.roughnessFactor = 0.4f;
+    uploadInto(dev, wrapMesh(std::move(mesh)), out,
+               glm::translate(math::Mat4(1.0f),
+                              math::Vec3((i - 1) * 1.2f, 0, -1.0f - i * 0.6f)));
+  }
+  const float alpha[3] = {0.8f, 0.5f, 0.3f};
+  for (int i = 0; i < 3; ++i) {
+    auto mesh = primitives::makePlane(1.6f, 1.0f);
+    memcpy(mesh.material.baseColorFactor, cols[i], 12);
+    mesh.material.baseColorFactor[3] = alpha[i];
+    mesh.material.alphaBlend = true;  // 引擎混合路径
+    uploadInto(dev, wrapMesh(std::move(mesh)), out,
+               glm::rotate(math::Mat4(1.0f), -1.5707963f, math::Vec3(1, 0, 0)) *
+                   glm::translate(math::Mat4(1.0f),
+                                  math::Vec3((i - 1) * 1.3f, 0, 0.5f + i * 0.3f)));
+  }
+  out.camera.lookAt({0, 0.5f, 5.0f}, {0, 0, -0.5f}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+  out.framingRadius = 3.0f;
+}
+
 bool buildFamousGlb(Device& dev, DemoScene& out, ModelAsset& storage,
                     const char* relPath, bool anim) {
   const std::string path = std::string("assets/") + relPath;
@@ -381,6 +408,8 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
     buildShadowGallery(dev, out);
   } else if (n == "ktx2_gallery") {
     buildKtx2Gallery(dev, out);
+  } else if (n == "alpha_blend") {
+    buildAlphaBlend(dev, out);
   } else {
     RD_LOGE("demo.scene", "未知场景: %s", name);
     return false;

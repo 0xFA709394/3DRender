@@ -163,6 +163,18 @@ TEST(DemoScenes, Ktx2GalleryVulkan) {
 #endif
 }
 
+
+TEST(DemoScenes, AlphaBlendMetal) {
+#if defined(__APPLE__)
+  runGolden(rd::Backend::Metal, "alpha_blend", "demo_blend_metal.png");
+#endif
+}
+TEST(DemoScenes, AlphaBlendVulkan) {
+#if defined(RD_WITH_VULKAN)
+  runGolden(rd::Backend::Vulkan, "alpha_blend", "demo_blend_vulkan.png");
+#endif
+}
+
 // 全程序场景冒烟(含 skinned_demo/instanced_field;知名 glb 缺失自动 skip)
 TEST(DemoScenes, SmokeAll) {
 #if defined(__APPLE__)

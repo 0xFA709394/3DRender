@@ -228,6 +228,16 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
   pbrPipeline_ = dev_->createPipeline(ppd);
   if (!unlitPipeline_.valid() || !pbrPipeline_.valid())
     RD_LOGE("renderer", "场景管线重建失败(fmt=%d samples=%u)", int(fmt), samples);
+  // 混合管线(alphaBlend;与 pbr 同布局/格式/采样数,blend 开 depthWrite 关)
+  PipelineDesc bpd = ppd;
+  bpd.blend.enable = true;
+  bpd.blend.srcColor = BlendFactor::SrcAlpha;
+  bpd.blend.dstColor = BlendFactor::OneMinusSrcAlpha;
+  bpd.blend.srcAlpha = BlendFactor::One;
+  bpd.blend.dstAlpha = BlendFactor::OneMinusSrcAlpha;
+  bpd.depthWrite = false;
+  if (blendPipeline_.valid()) dev_->destroyPipeline(blendPipeline_);
+  blendPipeline_ = dev_->createPipeline(bpd);
   // 蒙皮管线(80B 六属性;pbr frag 复用)
   PipelineDesc skd;
   skd.vertexShader = skvs_;
@@ -318,6 +328,7 @@ void Renderer::shutdown() {
   if (blitSampler_.valid()) dev_->destroySampler(blitSampler_);
   if (unlitPipeline_.valid()) dev_->destroyPipeline(unlitPipeline_);
   if (pbrPipeline_.valid()) dev_->destroyPipeline(pbrPipeline_);
+  if (blendPipeline_.valid()) dev_->destroyPipeline(blendPipeline_);
   if (uvs_.valid()) dev_->destroyShaderModule(uvs_);
   if (ufs_.valid()) dev_->destroyShaderModule(ufs_);
   if (vs_.valid()) dev_->destroyShaderModule(vs_);
@@ -347,6 +358,7 @@ void Renderer::shutdown() {
   blitSampler_ = {};
   unlitPipeline_ = {};
   pbrPipeline_ = {};
+  blendPipeline_ = {};
   uvs_ = {};
   ufs_ = {};
   vs_ = {};
@@ -490,6 +502,7 @@ bool Renderer::ensureFxaaTarget(uint32_t w, uint32_t h) {
 void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) {
   viewProj_ = camera.projMatrix() * camera.viewMatrix();
   clear_ = clear;
+  cameraEye_ = camera.eye();
 
   // FrameUBO:viewProj|cameraPos|lightDir|lightColor|sh[9×vec4]
   struct {
@@ -546,15 +559,31 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
 }
 
 void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
-  // 统一填充 per-item ItemUBO
   const uint32_t count = uint32_t(queue_.size());
+  // opaque/blend 分区排序:opaque 先;blend 按视距远→近(正确透明叠加)
+  std::vector<uint32_t> order(count);
+  for (uint32_t i = 0; i < count; ++i) order[i] = i;
+  auto isBlend = [&](uint32_t i) {
+    const auto* r = static_cast<const MeshRenderable*>(queue_[i].get());
+    return !r->meshData().empty() && r->meshData()[0].material.alphaBlend;
+  };
+  std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+    const bool ba = isBlend(a), bb = isBlend(b);
+    if (ba != bb) return !ba;
+    const math::Vec4 e(cameraEye_, 1.0f);
+    const float da = glm::dot(worldStack_[a][3] - e, worldStack_[a][3] - e);
+    const float db = glm::dot(worldStack_[b][3] - e, worldStack_[b][3] - e);
+    return da > db;
+  });
+
+  // 统一填充 per-item ItemUBO(槽位按排序后顺序)
   for (uint32_t i = 0; i < count; ++i) {
-    const auto* renderable = static_cast<const MeshRenderable*>(queue_[i].get());
+    const auto* renderable = static_cast<const MeshRenderable*>(queue_[order[i]].get());
     const auto& meshes = renderable->meshData();
     // ItemUBO 按 mesh 首个材质填(多 mesh 模型共享 item 槽——简化:逐 item 一个 UBO,
     // 多 mesh 差异材质归 P2 拆 item)
     ItemUBOData iu{};
-    const auto& world = worldStack_[i];
+    const auto& world = worldStack_[order[i]];
     iu.mvp = viewProj_ * world;
     iu.world = world;
     iu.normalMatrix = glm::transpose(glm::inverse(world));
@@ -628,9 +657,10 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     sctx.jointUbo = jointUbo_;
     for (uint32_t i = 0; i < count; ++i) {
       sctx.itemOffset = uint64_t(i) * kUboStride;
-      sctx.jointOffset =
-          jointSlot_[i] >= 0 ? uint64_t(jointSlot_[i]) * kJointItemStride : 0;
-      queue_[i]->record(cmd, sctx);
+      sctx.jointOffset = jointSlot_[order[i]] >= 0
+                             ? uint64_t(jointSlot_[order[i]]) * kJointItemStride
+                             : 0;
+      queue_[order[i]]->record(cmd, sctx);
     }
     cmd->endRenderPass();
   }
@@ -660,13 +690,15 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.unlitPipeline = unlitPipeline_;
   ctx.skinnedPipeline = skinnedPipeline_;
   ctx.skinnedShadowPipe = skinnedShadowPipeline_;
+  ctx.blendPipeline = blendPipeline_;
   ctx.jointUbo = jointUbo_;
   for (uint32_t i = 0; i < count; ++i) {
-    queue_[i]->prepass(cmd);  // 2b 钩子(默认空)
+    queue_[order[i]]->prepass(cmd);  // 2b 钩子(默认空)
     ctx.itemOffset = uint64_t(i) * kUboStride;
-    ctx.jointOffset =
-        jointSlot_[i] >= 0 ? uint64_t(jointSlot_[i]) * kJointItemStride : 0;
-    queue_[i]->record(cmd, ctx);
+    ctx.jointOffset = jointSlot_[order[i]] >= 0
+                          ? uint64_t(jointSlot_[order[i]]) * kJointItemStride
+                          : 0;
+    queue_[order[i]]->record(cmd, ctx);
   }
   cmd->endRenderPass();
   if (scene != target) {

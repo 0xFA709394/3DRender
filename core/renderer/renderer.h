@@ -84,6 +84,8 @@ private:
   ShaderModuleHandle uvs_, ufs_;                // unlit shader(场景管线重建用)
   PipelineHandle unlitPipeline_;
   PipelineHandle pbrPipeline_;
+  PipelineHandle blendPipeline_;        // alphaBlend 用(pbr 布局,blend 开)
+  math::Vec3 cameraEye_{0, 0, 3};       ///< beginScene 记录(endScene 排序用)
   Format pipeFmt_ = Format::RGBA8_UNORM;        ///< 当前场景管线格式
   uint32_t pipeSamples_ = 0;                    ///< 当前场景管线采样数(0=未初始化)
   /// 场景管线(pbr/unlit/skinned)按 SceneTarget 格式/采样数匹配;key 变化时重建。

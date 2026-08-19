@@ -315,3 +315,52 @@ TEST(Gltf, SkinnedQuad) {
   EXPECT_TRUE(box.skins.empty());
   EXPECT_TRUE(box.animations.empty());
 }
+
+// alphaMode=BLEND 解析。
+TEST(Gltf, AlphaBlendMode) {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "rd_gltf_blend";
+  fs::create_directories(dir);
+  const float pos[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  const uint16_t idx[3] = {0, 1, 2};
+  const std::string binPath = (dir / "tri.bin").string();
+  {
+    FILE* f = fopen(binPath.c_str(), "wb");
+    ASSERT_NE(f, nullptr);
+    fwrite(pos, 4, 9, f);
+    fwrite(idx, 2, 3, f);
+    fclose(f);
+  }
+  const char* json = R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{"alphaMode": "BLEND",
+      "pbrMetallicRoughness": {"baseColorFactor": [1, 0.5, 0.2, 0.4]}}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  const std::string gltfPath = (dir / "blend.gltf").string();
+  {
+    FILE* f = fopen(gltfPath.c_str(), "wb");
+    ASSERT_NE(f, nullptr);
+    fwrite(json, 1, strlen(json), f);
+    fclose(f);
+  }
+  auto model = rd::loadGltf(gltfPath.c_str());
+  ASSERT_TRUE(model.valid());
+  ASSERT_EQ(model.meshes.size(), 1u);
+  EXPECT_TRUE(model.meshes[0].material.alphaBlend);
+  EXPECT_NEAR(model.meshes[0].material.baseColorFactor[3], 0.4f, 1e-4f);
+  // 无 alphaMode 材质为 false
+  auto box = rd::loadGltf((std::string(kAssets) + "/BoxTextured.glb").c_str());
+  ASSERT_TRUE(box.valid());
+  EXPECT_FALSE(box.meshes[0].material.alphaBlend);
+}

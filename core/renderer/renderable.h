@@ -28,6 +28,8 @@ struct RenderContext {
   /// 蒙皮管线(同匹配规则)
   PipelineHandle skinnedPipeline;
   PipelineHandle skinnedShadowPipe;
+  /// 混合管线(alphaBlend 材质用;pbr 布局,blend 开 depthWrite 关)
+  PipelineHandle blendPipeline;
   /// 共享 JointUBO(slot3;per-item 偏移)
   BufferHandle jointUbo;
   uint64_t jointOffset = 0;               ///< 本项在 JointUBO 中的偏移(蒙皮项)

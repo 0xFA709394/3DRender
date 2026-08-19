@@ -1,5 +1,6 @@
 // demo 场景的实现:程序场景经 primitives 组装;知名 glb 从 assets/ 加载。
 #include "tools/render_test/scenes.h"
+#include "common/ktx2_gen.h"
 #include "common/skinned_gen.h"
 #include "foundation/log.h"
 #include "resource/primitives.h"
@@ -12,7 +13,9 @@ namespace {
 
 const char* const kNames[] = {"material_balls", "cornell_box", "light_playground",
                               "skinned_demo",   "instanced_field",
-                              "sponza",         "cesium_man"};
+                              "sponza",         "cesium_man",
+                              "emissive_bloom", "normal_map_wall",
+                              "shadow_gallery", "ktx2_gallery"};
 
 /// 单 mesh ModelAsset 包装(材质参数由调用方设)。
 ModelAsset wrapMesh(MeshData&& mesh) {
@@ -174,6 +177,144 @@ void buildInstancedField(Device& dev, DemoScene& out) {
   out.framingRadius = 6.0f;
 }
 
+void buildEmissiveBloom(Device& dev, DemoScene& out) {
+  static const QualityPreset kHigh = {1.0f, 4, 256, 6, 4096, 2048, 1, 0};
+  out.quality = &kHigh;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) {
+      auto mesh = primitives::makeSphere(0.3f, 32, 16);
+      mesh.material.roughnessFactor = 0.4f;
+      mesh.material.metallicFactor = 0.0f;
+      mesh.material.baseColorFactor[0] = mesh.material.baseColorFactor[1] =
+          mesh.material.baseColorFactor[2] = 0.15f;
+      const float e = 0.5f + float(i + j) / 6.0f * 7.5f;
+      mesh.material.emissiveFactor[0] = e * (i % 2 ? 1.0f : 0.25f);
+      mesh.material.emissiveFactor[1] = e * (j % 2 ? 1.0f : 0.4f);
+      mesh.material.emissiveFactor[2] = e * ((i + j) % 3 ? 0.6f : 1.0f);
+      uploadInto(dev, wrapMesh(std::move(mesh)), out,
+                 glm::translate(math::Mat4(1.0f),
+                                math::Vec3((i - 1.5f) * 0.85f, (j - 1.5f) * 0.85f, 0)));
+    }
+  out.camera.lookAt({0, 0, 5.0f}, {0, 0, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+  out.framingRadius = 2.0f;
+}
+
+/// 程序化砖墙法线贴图:8 行砖+错缝,砖面凸起/灰浆凹槽 → 高度场转法线。
+ImageData makeBrickNormalMap() {
+  const uint32_t W = 256, H = 256;
+  std::vector<float> height(size_t(W) * H, 0.0f);
+  const uint32_t rowH = H / 8, brickW = W / 4;
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W; ++x) {
+      const uint32_t row = y / rowH;
+      const uint32_t off = (row % 2) ? brickW / 2 : 0;
+      const bool mortarY = (y % rowH) < 3;
+      const bool mortarX = ((x + off) % brickW) < 3;
+      height[size_t(y) * W + x] = (mortarY || mortarX) ? 0.0f : 1.0f;
+    }
+  ImageData img;
+  img.width = W;
+  img.height = H;
+  img.pixels.resize(size_t(W) * H * 4);
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W; ++x) {
+      const float hl = height[size_t(y) * W + (x ? x - 1 : 0)];
+      const float hr = height[size_t(y) * W + (x + 1 < W ? x + 1 : x)];
+      const float hd = height[size_t(y ? y - 1 : 0) * W + x];
+      const float hu = height[size_t(y + 1 < H ? y + 1 : y) * W + x];
+      const float nx = (hl - hr) * 2.0f, ny = (hd - hu) * 2.0f, nz = 1.0f;
+      const float inv = 1.0f / std::sqrt(nx * nx + ny * ny + nz * nz);
+      uint8_t* p = img.pixels.data() + (size_t(y) * W + x) * 4;
+      p[0] = uint8_t((nx * inv * 0.5f + 0.5f) * 255);
+      p[1] = uint8_t((ny * inv * 0.5f + 0.5f) * 255);
+      p[2] = uint8_t((nz * inv * 0.5f + 0.5f) * 255);
+      p[3] = 255;
+    }
+  return img;
+}
+
+void buildNormalMapWall(Device& dev, DemoScene& out) {
+  auto mesh = primitives::makePlane(4.0f, 2.0f);
+  mesh.material.normal = makeBrickNormalMap();
+  mesh.material.normalScale = 1.0f;
+  mesh.material.roughnessFactor = 0.85f;
+  mesh.material.metallicFactor = 0.0f;
+  mesh.material.baseColorFactor[0] = 0.72f;
+  mesh.material.baseColorFactor[1] = 0.45f;
+  mesh.material.baseColorFactor[2] = 0.35f;
+  // 平面立起面向 +Z(绕 X 轴 -90°),加斜向方向光
+  uploadInto(dev, wrapMesh(std::move(mesh)), out,
+             glm::rotate(math::Mat4(1.0f), -1.5707963f, math::Vec3(1, 0, 0)));
+  LightData dl;
+  dl.type = LightType::Directional;
+  const float n = std::sqrt(0.5f * 0.5f + 0.5f * 0.5f + 0.5f * 0.5f);
+  dl.direction[0] = 0.5f / n;
+  dl.direction[1] = 0.5f / n;
+  dl.direction[2] = 0.5f / n;
+  dl.color[0] = dl.color[1] = dl.color[2] = 3.0f;
+  out.lights.push_back(dl);
+  out.camera.lookAt({0, 0, 4.0f}, {0, 0, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+  out.framingRadius = 2.5f;
+}
+
+void buildShadowGallery(Device& dev, DemoScene& out) {
+  static const QualityPreset kHigh = {1.0f, 4, 256, 6, 4096, 2048, 1, 0};
+  out.quality = &kHigh;
+  uploadInto(dev, wrapMesh(primitives::makePlane(10.0f, 2.0f)), out, math::Mat4(1.0f));
+  uploadInto(dev, wrapMesh(primitives::makeBox(1.6f, 0.2f, 1.6f)), out,
+             glm::translate(math::Mat4(1.0f), math::Vec3(1.2f, 0.8f, -0.5f)));
+  uploadInto(dev, wrapMesh(primitives::makeBox(0.7f, 0.7f, 0.7f)), out,
+             glm::translate(math::Mat4(1.0f), math::Vec3(0.0f, 1.8f, 0.4f)));
+  LightData dl;
+  dl.type = LightType::Directional;
+  const float n = std::sqrt(0.5f * 0.5f + 1.0f + 0.3f * 0.3f);
+  dl.direction[0] = 0.5f / n;
+  dl.direction[1] = 1.0f / n;
+  dl.direction[2] = 0.3f / n;
+  dl.color[0] = dl.color[1] = dl.color[2] = 3.0f;
+  out.lights.push_back(dl);
+  out.framingRadius = 3.5f;
+  out.camera.lookAt({0, 2.5f, 6.0f}, {0, 0.8f, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+}
+
+/// Ktx2Image → ImageData(字段直搬;压缩格式/mip 直通,资源层已支持)。
+ImageData toImageData(Ktx2Image&& k) {
+  ImageData img;
+  img.width = k.width;
+  img.height = k.height;
+  img.pixels = std::move(k.data);
+  img.format = k.format;
+  img.mipLevels = k.mipLevels;
+  return img;
+}
+
+void buildKtx2Gallery(Device& dev, DemoScene& out) {
+  // 左右双 quad,同 ktx2 棋盘源:左 RGBA32 解码,右按 caps 转码压缩格式
+  const auto ktxBytes = test::makeTestKtx2(256);
+  const bool astc = dev.caps().supports(Capability::texture_compression_astc);
+  const bool etc2 = dev.caps().supports(Capability::texture_compression_etc2);
+  auto leftMesh = primitives::makePlane(1.6f, 1.0f);
+  leftMesh.material.baseColor =
+      toImageData(decodeKtx2(ktxBytes.data(), ktxBytes.size(), Ktx2Target::Rgba32));
+  leftMesh.material.roughnessFactor = 0.9f;
+  uploadInto(dev, wrapMesh(std::move(leftMesh)), out,
+             glm::rotate(math::Mat4(1.0f), -1.5707963f, math::Vec3(1, 0, 0)) *
+                 glm::translate(math::Mat4(1.0f), math::Vec3(-0.9f, 0, 0)));
+  auto rightMesh = primitives::makePlane(1.6f, 1.0f);
+  rightMesh.material.baseColor = toImageData(
+      decodeKtx2(ktxBytes.data(), ktxBytes.size(), pickTranscodeTarget(astc, etc2)));
+  rightMesh.material.roughnessFactor = 0.9f;
+  uploadInto(dev, wrapMesh(std::move(rightMesh)), out,
+             glm::rotate(math::Mat4(1.0f), -1.5707963f, math::Vec3(1, 0, 0)) *
+                 glm::translate(math::Mat4(1.0f), math::Vec3(0.9f, 0, 0)));
+  out.camera.lookAt({0, 0, 2.6f}, {0, 0, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+  out.framingRadius = 2.0f;
+}
+
 bool buildFamousGlb(Device& dev, DemoScene& out, ModelAsset& storage,
                     const char* relPath, bool anim) {
   const std::string path = std::string("assets/") + relPath;
@@ -232,11 +373,20 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
     if (!buildFamousGlb(dev, out, modelStorage, "sponza/Sponza.gltf", false)) return false;
   } else if (n == "cesium_man") {
     if (!buildFamousGlb(dev, out, modelStorage, "CesiumMan.glb", true)) return false;
+  } else if (n == "emissive_bloom") {
+    buildEmissiveBloom(dev, out);
+  } else if (n == "normal_map_wall") {
+    buildNormalMapWall(dev, out);
+  } else if (n == "shadow_gallery") {
+    buildShadowGallery(dev, out);
+  } else if (n == "ktx2_gallery") {
+    buildKtx2Gallery(dev, out);
   } else {
     RD_LOGE("demo.scene", "未知场景: %s", name);
     return false;
   }
   if (!out.lights.empty()) renderer.setLights(out.lights);
+  if (out.quality) renderer.setQuality(*out.quality);
   renderer.setLightFraming(out.framingCenter, out.framingRadius);
   return true;
 }

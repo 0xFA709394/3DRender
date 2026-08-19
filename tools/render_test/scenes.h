@@ -23,6 +23,8 @@ struct DemoScene {
   std::shared_ptr<MeshRenderResource> skinnedRes;
   float framingCenter[3] = {0, 0, 0};
   float framingRadius = 1.0f;
+  /// 可选画质档(默认 nullptr=legacy 档;Bloom/阴影场景显式指定)。
+  const QualityPreset* quality = nullptr;
 };
 
 /// 按名构建场景;资产缺失(sponza/cesium_man)返回 false 并记日志。

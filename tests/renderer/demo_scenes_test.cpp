@@ -121,6 +121,48 @@ TEST(DemoScenes, LightsVulkan) {
 #endif
 }
 
+
+TEST(DemoScenes, BloomMetal) {
+#if defined(__APPLE__)
+  runGolden(rd::Backend::Metal, "emissive_bloom", "demo_bloom_metal.png");
+#endif
+}
+TEST(DemoScenes, BloomVulkan) {
+#if defined(RD_WITH_VULKAN)
+  runGolden(rd::Backend::Vulkan, "emissive_bloom", "demo_bloom_vulkan.png");
+#endif
+}
+TEST(DemoScenes, NormalWallMetal) {
+#if defined(__APPLE__)
+  runGolden(rd::Backend::Metal, "normal_map_wall", "demo_normal_metal.png");
+#endif
+}
+TEST(DemoScenes, NormalWallVulkan) {
+#if defined(RD_WITH_VULKAN)
+  runGolden(rd::Backend::Vulkan, "normal_map_wall", "demo_normal_vulkan.png");
+#endif
+}
+TEST(DemoScenes, ShadowGalleryMetal) {
+#if defined(__APPLE__)
+  runGolden(rd::Backend::Metal, "shadow_gallery", "demo_shadow_metal.png");
+#endif
+}
+TEST(DemoScenes, ShadowGalleryVulkan) {
+#if defined(RD_WITH_VULKAN)
+  runGolden(rd::Backend::Vulkan, "shadow_gallery", "demo_shadow_vulkan.png");
+#endif
+}
+TEST(DemoScenes, Ktx2GalleryMetal) {
+#if defined(__APPLE__)
+  runGolden(rd::Backend::Metal, "ktx2_gallery", "demo_ktx2_metal.png");
+#endif
+}
+TEST(DemoScenes, Ktx2GalleryVulkan) {
+#if defined(RD_WITH_VULKAN)
+  runGolden(rd::Backend::Vulkan, "ktx2_gallery", "demo_ktx2_vulkan.png");
+#endif
+}
+
 // 全程序场景冒烟(含 skinned_demo/instanced_field;知名 glb 缺失自动 skip)
 TEST(DemoScenes, SmokeAll) {
 #if defined(__APPLE__)

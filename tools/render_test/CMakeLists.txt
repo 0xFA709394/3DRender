@@ -4,6 +4,7 @@ add_executable(render_test
   ${CMAKE_SOURCE_DIR}/tests/common/shader_code.cpp
   ${CMAKE_SOURCE_DIR}/tests/common/image.cpp
   ${CMAKE_SOURCE_DIR}/tests/common/skinned_gen.cpp
+  ${CMAKE_SOURCE_DIR}/tests/common/ktx2_gen.cpp
 )
 target_link_libraries(render_test PRIVATE rd_core ktx)
 target_include_directories(render_test PRIVATE

@@ -109,6 +109,30 @@ class RenderView @JvmOverloads constructor(
     /** 物理像素换算(C API 约定像素坐标,与 surface 尺寸一致) */
     private val pxScale: Float get() = resources.displayMetrics.density
 
+    // ---- 输入录制(与 host 回放同格式:归一化坐标)----
+    private var recordWriter: java.io.BufferedWriter? = null
+    private var recordStartNanos = 0L
+
+    /** 输入录制开关;path 空串=停止。 */
+    fun setInputRecording(path: String) {
+        if (path.isEmpty()) {
+            recordWriter?.close()
+            recordWriter = null
+            return
+        }
+        recordWriter = java.io.File(path).bufferedWriter()
+        recordStartNanos = System.nanoTime()
+        recordWriter?.write("# viewport $width $height\n")
+        recordWriter?.flush()
+    }
+
+    private fun recordEvent(action: String, id: Int, nx: Float, ny: Float) {
+        val w = recordWriter ?: return
+        val t = (System.nanoTime() - recordStartNanos) / 1_000_000
+        w.write("$t $action $id $nx $ny\n")
+        w.flush()
+    }
+
     private val scaleDetector = ScaleGestureDetector(context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
@@ -142,6 +166,20 @@ class RenderView @JvmOverloads constructor(
         }
         if (action >= 0) {
             val i = e.actionIndex
+            // 录制(归一化坐标;与 host 回放同格式)
+            if (recordWriter != null) {
+                val actionName = when (action) {
+                    0 -> "down"; 1 -> "move"; else -> "up"
+                }
+                if (action == 1) {
+                    for (k in 0 until e.pointerCount)
+                        recordEvent(actionName, e.getPointerId(k),
+                                    e.getX(k) / width, e.getY(k) / height)
+                } else {
+                    recordEvent(actionName, e.getPointerId(i),
+                                e.getX(i) / width, e.getY(i) / height)
+                }
+            }
             renderHandler.post {
                 if (enginePtr == 0L) return@post
                 if (action == 1) {

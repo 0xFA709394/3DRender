@@ -26,6 +26,19 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         stateIndex = (stateIndex + 1) % states().count
         applyCurrentState()
     }
+
+    private var recording = false
+    @objc private func onRecordLongPress(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began, let renderView else { return }
+        recording.toggle()
+        if (recording) {
+            let docs = FileManager.default.urls(for: .documentDirectory,
+                                                in: .userDomainMask).first!
+            renderView.setInputRecording(docs.appendingPathComponent("rd_input.log").path)
+        } else {
+            renderView.setInputRecording("")
+        }
+    }
     private func applyCurrentState() {
         guard let renderView else { return }
         let st = states()[stateIndex]
@@ -62,6 +75,11 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             button.heightAnchor.constraint(equalToConstant: 36),
         ])
         button.addTarget(self, action: #selector(onSwitchTap), for: .touchUpInside)
+        // 长按「切换」2s = 输入录制开关(写 Documents/rd_input.log,与 host 回放同格式)
+        let longPress = UILongPressGestureRecognizer(target: self,
+                                                     action: #selector(onRecordLongPress(_:)))
+        longPress.minimumPressDuration = 2.0
+        button.addGestureRecognizer(longPress)
         self.renderView = renderView
         window.makeKeyAndVisible()
         // surface 就绪(loadModel 内部等 engine 创建)后加载演示模型

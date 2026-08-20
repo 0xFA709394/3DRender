@@ -58,6 +58,7 @@ class MainActivity : Activity() {
         )
         if (hasCesium) states.add(DemoState(1, cesium, "High+骨骼动画"))
         var index = 0
+        var recording = false
         val button = Button(this).apply {
             text = "切换"
             setOnClickListener {
@@ -66,6 +67,14 @@ class MainActivity : Activity() {
                 renderView.setQuality(st.quality)
                 renderView.loadModel(st.model.absolutePath)
                 Log.i("RdSample", "demo 状态 -> ${st.label}")
+            }
+            // 长按 2s = 输入录制开关(写 filesDir/rd_input.log,与 host 回放同格式)
+            setOnLongClickListener {
+                recording = !recording
+                renderView.setInputRecording(
+                    if (recording) File(filesDir, "rd_input.log").absolutePath else "")
+                Log.i("RdSample", "输入录制 -> $recording")
+                true
             }
         }
         addContentView(

@@ -39,6 +39,9 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - 场景库扩充:新增 emissive_bloom/normal_map_wall(程序化法线贴图)/shadow_gallery/
   ktx2_gallery(KTX2 vs PNG 对比)/alpha_blend(glTF alphaMode BLEND 混合管线+排序)/
   fox_anim(真骨骼动画)
+- golden 三件套(F3D 学习落地):SSIM 主判据(compareSSIM,阈值 0.05)+
+  RD_GOLDEN_TEST 声明式宏 + 输入注入回放(render_test --record/--play +
+  tests/recordings/orbit_drag.log 手势回归);移动端录制同格式(demo 长按「切换」)
 - loader 补强:非索引/strip 分解(交替绕序)+ 法线缺失时逐面 flat 生成(Fox 可用)
 - 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
 
@@ -56,6 +59,11 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 场景示例：`./build/tools/render_test/render_test --scene <name> --out x.png`
   (5 程序场景 + sponza/cesium_man);交互 `--interactive --scene <name>`;
   知名资产 `./scripts/fetch_assets.sh` 下载(assets/ gitignore 不入库)
+- golden 判据 = SSIM(`compareSSIM`,阈值默认 0.05);pixel diffRatio 仅辅助日志;
+  golden 用例一律 `RD_GOLDEN_TEST` 宏;新增场景只写 renderFn(Image 返回)
+- 输入回放:`./build/tools/render_test/render_test --interactive --play
+  tests/recordings/orbit_drag.log`;录制 `--record <path>`(归一化坐标文本行);
+  移动端录制:demo 长按「切换」起停,日志在 app 文档目录 rd_input.log
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 

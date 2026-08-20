@@ -18,6 +18,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
+#include <vector>
 
 namespace {
 struct Ctx {
@@ -25,7 +27,18 @@ struct Ctx {
   rd::scene::OrbitController* orbit = nullptr;  // 场景直驱路径
   bool dragging = false;
   double lastClickTime = 0;
+  FILE* recordFile = nullptr;               // 录制输出(非空则写事件)
+  int winW = 960, winH = 720;
 };
+
+/// 录制一行:t(ms) action id x y(归一化)。
+void recordEvent(Ctx* c, const char* action, int id, float px, float py) {
+  if (!c->recordFile) return;
+  const long long t = (long long)(glfwGetTime() * 1000.0);
+  fprintf(c->recordFile, "%lld %s %d %.4f %.4f\n", t, action, id, px / c->winW,
+          py / c->winH);
+  fflush(c->recordFile);
+}
 
 void onMouseButton(GLFWwindow* w, int button, int action, int) {
   Ctx* c = static_cast<Ctx*>(glfwGetWindowUserPointer(w));
@@ -37,16 +50,19 @@ void onMouseButton(GLFWwindow* w, int button, int action, int) {
   const float px = float(x * sx), py = float(y * sy);
   if (action == GLFW_PRESS) {
     c->dragging = true;
+    recordEvent(c, "down", 0, px, py);
     if (c->orbit) c->orbit->onPointerDown(0, px, py);
     else rd_engine_on_pointer(c->engine, RD_POINTER_DOWN, 0, px, py);
     const double now = glfwGetTime();
     if (now - c->lastClickTime < 0.3) {
+      recordEvent(c, "dtap", 0, px, py);
       if (c->orbit) c->orbit->onDoubleTap();
       else rd_engine_on_double_tap(c->engine, px, py);
     }
     c->lastClickTime = now;
   } else {
     c->dragging = false;
+    recordEvent(c, "up", 0, px, py);
     if (c->orbit) c->orbit->onPointerUp(0, px, py);
     else rd_engine_on_pointer(c->engine, RD_POINTER_UP, 0, px, py);
   }
@@ -56,13 +72,15 @@ void onCursorPos(GLFWwindow* w, double x, double y) {
   if (!c->dragging) return;
   float sx, sy;
   glfwGetWindowContentScale(w, &sx, &sy);
+  recordEvent(c, "move", 0, float(x * sx), float(y * sy));
   if (c->orbit) c->orbit->onPointerMove(0, float(x * sx), float(y * sy));
   else rd_engine_on_pointer(c->engine, RD_POINTER_MOVE, 0, float(x * sx), float(y * sy));
 }
 void onScroll(GLFWwindow* w, double, double dy) {
   Ctx* c = static_cast<Ctx*>(glfwGetWindowUserPointer(w));
+  recordEvent(c, "scroll", 0, float(dy * 120.0), 0);  // y 通道存像素量纲
   if (c->orbit) c->orbit->onScroll(float(dy * 120.0));
-  else rd_engine_on_scroll(c->engine, float(dy * 120.0));  // 滚轮刻度 → 像素量纲
+  else rd_engine_on_scroll(c->engine, float(dy * 120.0));
 }
 
 /// 场景直驱路径(Renderer + DemoScene + OrbitController)。
@@ -150,7 +168,8 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
 }
 } // namespace
 
-int rd::tool::runInteractive(const char* modelPath, const char* sceneName) {
+int rd::tool::runInteractive(const char* modelPath, const char* sceneName,
+                             const char* recordPath, const char* playPath) {
   if (!glfwInit()) {
     fprintf(stderr, "glfwInit 失败(headless 环境?)\n");
     return 1;
@@ -198,10 +217,44 @@ int rd::tool::runInteractive(const char* modelPath, const char* sceneName) {
 
   Ctx ctx;
   ctx.engine = engine;
+  if (recordPath && recordPath[0]) {
+    ctx.recordFile = fopen(recordPath, "wb");
+    if (ctx.recordFile) fprintf(ctx.recordFile, "# viewport %d %d\n", fbw, fbh);
+  }
   glfwSetWindowUserPointer(win, &ctx);
   glfwSetMouseButtonCallback(win, onMouseButton);
   glfwSetCursorPosCallback(win, onCursorPos);
   glfwSetScrollCallback(win, onScroll);
+
+  // --play:读日志事件,按虚拟时间轴注入(固定 1/60 dt,确定性)
+  struct PlayEv {
+    float t;
+    std::string action;
+    int id;
+    float x, y;
+  };
+  std::vector<PlayEv> playEvs;
+  if (playPath && playPath[0]) {
+    FILE* pf = fopen(playPath, "rb");
+    if (!pf) {
+      fprintf(stderr, "play 日志打开失败: %s\n", playPath);
+      return 2;
+    }
+    char line[128];
+    while (fgets(line, sizeof(line), pf)) {
+      if (line[0] == '#') continue;
+      PlayEv e{};
+      char act[16] = {};
+      if (sscanf(line, "%f %15s %d %f %f", &e.t, act, &e.id, &e.x, &e.y) >= 3) {
+        e.action = act;
+        playEvs.push_back(std::move(e));
+      }
+    }
+    fclose(pf);
+    fprintf(stderr, "[play] 载入 %zu 事件\n", playEvs.size());
+  }
+  size_t playIdx = 0;
+  float virtualMs = 0;
 
   const char* framesEnv = getenv("RD_INTERACTIVE_FRAMES");
   const long maxFrames = framesEnv ? atol(framesEnv) : 0;  // 0 = 不限
@@ -219,6 +272,17 @@ int rd::tool::runInteractive(const char* modelPath, const char* sceneName) {
       layer.drawableSize = CGSizeMake(fbw, fbh);
       rd_engine_resize(engine, uint32_t(fbw), uint32_t(fbh));
     }
+    // 回放注入(在渲染前;坐标归一化 → 像素)
+    while (playIdx < playEvs.size() && playEvs[playIdx].t <= virtualMs) {
+      const PlayEv& e = playEvs[playIdx++];
+      const float px = e.x * float(fbw), py = e.y * float(fbh);
+      if (e.action == "down") rd_engine_on_pointer(engine, RD_POINTER_DOWN, e.id, px, py);
+      else if (e.action == "move") rd_engine_on_pointer(engine, RD_POINTER_MOVE, e.id, px, py);
+      else if (e.action == "up") rd_engine_on_pointer(engine, RD_POINTER_UP, e.id, px, py);
+      else if (e.action == "scroll") rd_engine_on_scroll(engine, e.y);
+      else if (e.action == "dtap") rd_engine_on_double_tap(engine, px, py);
+    }
+    virtualMs += 1000.0f / 60.0f;
     if (cycleFrames > 0 && frame > 0 && frame % cycleFrames == 0) {
       const long step = frame / cycleFrames;
       rd_engine_set_quality(engine, tiers[step % 3]);
@@ -228,14 +292,22 @@ int rd::tool::runInteractive(const char* modelPath, const char* sceneName) {
       }
       fprintf(stderr, "[cycle] frame=%ld tier=%d\n", frame, int(step % 3));
     }
+    // 回放模式:固定 dt(与注入时间轴一致);否则真实 dt
     const auto now = std::chrono::steady_clock::now();
-    const float dt = std::chrono::duration<float>(now - last).count();
+    const float dt = playEvs.empty() ? std::chrono::duration<float>(now - last).count()
+                                     : 1.0f / 60.0f;
     last = now;
     rd_engine_render_frame(engine, dt);
     if (maxFrames > 0 && ++frame >= maxFrames) break;
+    // 回放结束:日志耗尽再渲 5 帧收尾即退出
+    if (!playEvs.empty() && playIdx >= playEvs.size()) {
+      static int tail = 0;
+      if (++tail > 5) break;
+    }
   }
   rd_engine_clear_surface(engine);
   rd_engine_destroy(engine);
+  if (ctx.recordFile) fclose(ctx.recordFile);
   glfwDestroyWindow(win);
   glfwTerminate();
   return 0;

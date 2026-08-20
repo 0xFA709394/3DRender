@@ -35,6 +35,8 @@ int main(int argc, char** argv) {
   bool pbr = false;  // --pbr:包围球取景(任意模型自动取景);默认固定机位 (0,0,3)
   bool interactive = false;  // --interactive:GLFW 窗口交互(Metal,macOS)
   std::string sceneName;     // --scene:demo 场景(与 --model 互斥,scene 优先)
+  std::string recordPath;    // --record:指针事件录制输出
+  std::string playPath;      // --play:按日志回放
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
       backend = !strcmp(argv[++i], "vulkan") ? rd::Backend::Vulkan : rd::Backend::Metal;
@@ -50,13 +52,19 @@ int main(int argc, char** argv) {
       sceneName = argv[++i];
     } else if (!strcmp(argv[i], "--interactive")) {
       interactive = true;
+    } else if (!strcmp(argv[i], "--record") && i + 1 < argc) {
+      recordPath = argv[++i];
+    } else if (!strcmp(argv[i], "--play") && i + 1 < argc) {
+      playPath = argv[++i];
     }
   }
 
 #if defined(__APPLE__)
   if (interactive)
     return rd::tool::runInteractive(model.empty() ? nullptr : model.c_str(),
-                                    sceneName.empty() ? nullptr : sceneName.c_str());
+                                    sceneName.empty() ? nullptr : sceneName.c_str(),
+                                    recordPath.empty() ? nullptr : recordPath.c_str(),
+                                    playPath.empty() ? nullptr : playPath.c_str());
 #else
   (void)interactive;
 #endif

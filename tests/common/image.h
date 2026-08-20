@@ -39,4 +39,14 @@ struct CompareResult {
 CompareResult compareRGBA8(const uint8_t* a, const uint8_t* b, uint32_t w, uint32_t h,
                            int channelTol, double ratioTol);
 
+/// SSIM 比较结果：error = 1 - 平均 SSIM（0=完全一致）。
+struct SsimResult {
+  bool pass = false;
+  double error = 0;
+};
+/// 亮度域 SSIM（8x8 窗口逐块，均值）；errTol 为 error 上限（默认 0.05）。
+/// 跨 GPU/驱动的 AA/抖动微差鲁棒（golden 主判据）。
+SsimResult compareSSIM(const uint8_t* a, const uint8_t* b, uint32_t w, uint32_t h,
+                       double errTol = 0.05);
+
 } // namespace rd::test

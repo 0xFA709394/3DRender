@@ -3,6 +3,7 @@
 // 更新:RD_UPDATE_GOLDENS=1 ctest --test-dir build -R PbrHelmet(须像素核对再提交)
 #include <gtest/gtest.h>
 #include <cstdlib>
+#include "common/golden_test.h"
 #include "common/image.h"
 #include "common/shader_code.h"
 #include "renderer/renderer.h"
@@ -16,11 +17,6 @@
 
 namespace {
 constexpr uint32_t kW = 512, kH = 512;
-
-std::string goldenPath(rd::Backend b) {
-  std::string name = (b == rd::Backend::Metal) ? "helmet_metal.png" : "helmet_vulkan.png";
-  return std::string(RD_TEST_DATA_DIR) + "/golden/" + name;
-}
 
 rd::test::Image renderHelmet(rd::Backend b) {
   rd::DeviceDesc d;
@@ -87,31 +83,8 @@ rd::test::Image renderHelmet(rd::Backend b) {
   return img;
 }
 
-void runGolden(rd::Backend b) {
-  auto img = renderHelmet(b);
-  ASSERT_EQ(img.pixels.size(), size_t(kW) * kH * 4);
-  const std::string path = goldenPath(b);
-  if (std::getenv("RD_UPDATE_GOLDENS")) {
-    ASSERT_TRUE(rd::test::savePNG(path, img.width, img.height, img.pixels.data()));
-    return;
-  }
-  auto golden = rd::test::loadPNG(path);
-  ASSERT_EQ(golden.pixels.size(), img.pixels.size()) << "golden 缺失: " << path;
-  auto cmp = rd::test::compareSSIM(img.pixels.data(), golden.pixels.data(), kW, kH);
-  auto pix_cmp = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), kW, kH, 3, 1.0);
-  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
-      << " pixelDiffRatio=" << pix_cmp.diffRatio;
-}
 } // namespace
 
-TEST(PbrHelmet, MetalGolden) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal);
-#endif
-}
 
-TEST(PbrHelmet, VulkanGolden) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan);
-#endif
-}
+// 声明式双后端 golden(SSIM 判据)
+RD_GOLDEN_TEST(PbrHelmet, Golden, "helmet", 0.05, renderHelmet)

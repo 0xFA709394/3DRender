@@ -1,6 +1,7 @@
 // demo 场景 golden(material_balls/cornell_box/light_playground 双后端)
 // + 全程序场景冒烟(渲染不崩 + 非背景覆盖率 >3%)。
 #include <gtest/gtest.h>
+#include "common/golden_test.h"
 #include "common/image.h"
 #include "common/shader_code.h"
 #include "tools/render_test/scenes.h"
@@ -61,23 +62,6 @@ rd::test::Image renderScene(rd::Backend b, const char* name, rd::ModelAsset& sto
   return img;
 }
 
-void runGolden(rd::Backend b, const char* scene, const char* goldenName) {
-  rd::ModelAsset storage;
-  auto img = renderScene(b, scene, storage);
-  ASSERT_FALSE(img.pixels.empty());
-  const std::string path = std::string(RD_TEST_DATA_DIR) + "/golden/" + goldenName;
-  if (std::getenv("RD_UPDATE_GOLDENS")) {
-    ASSERT_TRUE(rd::test::savePNG(path, img.width, img.height, img.pixels.data()));
-    return;
-  }
-  auto golden = rd::test::loadPNG(path);
-  ASSERT_EQ(golden.pixels.size(), img.pixels.size()) << "golden 缺失: " << path;
-  auto cmp = rd::test::compareSSIM(img.pixels.data(), golden.pixels.data(), kW, kH);
-  auto pix_cmp = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), kW, kH, 3, 1.0);
-  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
-      << " pixelDiffRatio=" << pix_cmp.diffRatio;
-}
-
 // 冒烟:非背景像素占比(16 步进采样)
 double coverage(const rd::test::Image& img) {
   const uint8_t bg[3] = {13, 13, 15};
@@ -90,92 +74,43 @@ double coverage(const rd::test::Image& img) {
     }
   return double(hit) / double(total);
 }
+
+// 每场景渲染包装(宏的 RenderFn 签名)
+rd::test::Image renderMaterialBalls(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "material_balls", storage);
+}
+rd::test::Image renderCornell(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "cornell_box", storage);
+}
+rd::test::Image renderLights(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "light_playground", storage);
+}
+rd::test::Image renderBloom(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "emissive_bloom", storage);
+}
+rd::test::Image renderNormalWall(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "normal_map_wall", storage);
+}
+rd::test::Image renderShadowGallery(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "shadow_gallery", storage);
+}
+rd::test::Image renderKtx2Gallery(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "ktx2_gallery", storage);
+}
+rd::test::Image renderAlphaBlend(rd::Backend b) {
+  rd::ModelAsset storage;
+  return renderScene(b, "alpha_blend", storage);
+}
 } // namespace
 
-TEST(DemoScenes, MaterialBallsMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "material_balls", "demo_material_metal.png");
-#endif
-}
-TEST(DemoScenes, MaterialBallsVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "material_balls", "demo_material_vulkan.png");
-#endif
-}
-TEST(DemoScenes, CornellMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "cornell_box", "demo_cornell_metal.png");
-#endif
-}
-TEST(DemoScenes, CornellVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "cornell_box", "demo_cornell_vulkan.png");
-#endif
-}
-TEST(DemoScenes, LightsMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "light_playground", "demo_lights_metal.png");
-#endif
-}
-TEST(DemoScenes, LightsVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "light_playground", "demo_lights_vulkan.png");
-#endif
-}
 
-
-TEST(DemoScenes, BloomMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "emissive_bloom", "demo_bloom_metal.png");
-#endif
-}
-TEST(DemoScenes, BloomVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "emissive_bloom", "demo_bloom_vulkan.png");
-#endif
-}
-TEST(DemoScenes, NormalWallMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "normal_map_wall", "demo_normal_metal.png");
-#endif
-}
-TEST(DemoScenes, NormalWallVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "normal_map_wall", "demo_normal_vulkan.png");
-#endif
-}
-TEST(DemoScenes, ShadowGalleryMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "shadow_gallery", "demo_shadow_metal.png");
-#endif
-}
-TEST(DemoScenes, ShadowGalleryVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "shadow_gallery", "demo_shadow_vulkan.png");
-#endif
-}
-TEST(DemoScenes, Ktx2GalleryMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "ktx2_gallery", "demo_ktx2_metal.png");
-#endif
-}
-TEST(DemoScenes, Ktx2GalleryVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "ktx2_gallery", "demo_ktx2_vulkan.png");
-#endif
-}
-
-
-TEST(DemoScenes, AlphaBlendMetal) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal, "alpha_blend", "demo_blend_metal.png");
-#endif
-}
-TEST(DemoScenes, AlphaBlendVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan, "alpha_blend", "demo_blend_vulkan.png");
-#endif
-}
 
 // 全程序场景冒烟(含 skinned_demo/instanced_field;知名 glb 缺失自动 skip)
 TEST(DemoScenes, SmokeAll) {
@@ -192,3 +127,12 @@ TEST(DemoScenes, SmokeAll) {
   }
 #endif
 }
+
+RD_GOLDEN_TEST(DemoScenes, MaterialBalls, "demo_material", 0.05, renderMaterialBalls)
+RD_GOLDEN_TEST(DemoScenes, Cornell, "demo_cornell", 0.05, renderCornell)
+RD_GOLDEN_TEST(DemoScenes, Lights, "demo_lights", 0.05, renderLights)
+RD_GOLDEN_TEST(DemoScenes, Bloom, "demo_bloom", 0.05, renderBloom)
+RD_GOLDEN_TEST(DemoScenes, NormalWall, "demo_normal", 0.05, renderNormalWall)
+RD_GOLDEN_TEST(DemoScenes, ShadowGallery, "demo_shadow", 0.05, renderShadowGallery)
+RD_GOLDEN_TEST(DemoScenes, Ktx2Gallery, "demo_ktx2", 0.05, renderKtx2Gallery)
+RD_GOLDEN_TEST(DemoScenes, AlphaBlend, "demo_blend", 0.05, renderAlphaBlend)

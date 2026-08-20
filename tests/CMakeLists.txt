@@ -44,6 +44,7 @@ add_executable(rd_tests
   common/image.cpp
   common/image_test.cpp
   common/ktx2_gen.cpp
+  common/golden_test.cpp
   common/skinned_gen.cpp
   common/shader_code.cpp
   rhi/cube_test.cpp

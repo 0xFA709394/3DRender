@@ -1,6 +1,7 @@
 // KTX2 渲染 golden:运行时生成 basisu gltf(tri.ktx2 纹理)→ 按 caps 转码上传
 // → Renderer 渲染 512x512 → golden 感知容差比对。验证转码+压缩上传+采样全链稳定。
 #include <gtest/gtest.h>
+#include "common/golden_test.h"
 #include "common/image.h"
 #include "common/ktx2_gen.h"
 #include "common/shader_code.h"
@@ -57,14 +58,15 @@ std::string writeTriGltf(const std::filesystem::path& dir) {
   return gltfPath;
 }
 
-void runGolden(rd::Backend b) {
+// golden 渲染函数(SSIM 判据由宏统一)
+rd::test::Image renderKtx2(rd::Backend b) {
   rd::DeviceDesc d;
   d.backend = b;
   auto device = rd::createDevice(d);
-  ASSERT_NE(device, nullptr);
+  if (!((device) != (nullptr))) return {};
   const auto dir = std::filesystem::temp_directory_path() / "rd_ktx2_golden";
   std::filesystem::create_directories(dir);
-  ASSERT_TRUE(rd::test::writeTestKtx2((dir / "tex.ktx2").string().c_str(), 64));
+  if (!(rd::test::writeTestKtx2((dir / "tex.ktx2").string().c_str(), 64))) return {};
   const std::string gltfPath = writeTriGltf(dir);
 
   rd::TextureLoadPref pref;
@@ -72,7 +74,7 @@ void runGolden(rd::Backend b) {
       device->caps().supports(rd::Capability::texture_compression_astc),
       device->caps().supports(rd::Capability::texture_compression_etc2));
   auto model = rd::loadGltf(gltfPath.c_str(), pref);
-  ASSERT_TRUE(model.valid());
+  if (!(model.valid())) return {};
 
   auto load = [&](const char* n) { return rd::test::loadShaderCode(b, RD_SHADER_DIR, n); };
   auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
@@ -91,15 +93,15 @@ void runGolden(rd::Backend b) {
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
                             exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
                             unlitVs.entry, rd::Format::RGBA8_UNORM};
-  ASSERT_TRUE(renderer.init(*device, sd));
+  if (!(renderer.init(*device, sd))) return {};
   rd::OffscreenTargetDesc td;
   td.width = kW;
   td.height = kH;
   td.depth = true;
   auto target = device->createOffscreenTarget(td);
-  ASSERT_TRUE(target.valid());
+  if (!(target.valid())) return {};
   auto res = rd::MeshRenderResource::upload(*device, model);
-  ASSERT_NE(res, nullptr);
+  if (!((res) != (nullptr))) return {};
   rd::scene::Scene scene;
   auto node = std::make_unique<rd::scene::MeshNode>();
   node->mesh = res;
@@ -117,34 +119,16 @@ void runGolden(rd::Backend b) {
   device->waitIdle();
   device->endFrame();
 
-  std::vector<uint8_t> px(size_t(kW) * kH * 4);
-  ASSERT_TRUE(device->readbackTarget(target, px.data(), px.size()));
+  rd::test::Image img;
+  img.width = kW;
+  img.height = kH;
+  img.pixels.resize(size_t(kW) * kH * 4);
+  auto& px = img.pixels;
+  if (!(device->readbackTarget(target, px.data(), px.size()))) return {};
   res->destroy(*device);
   renderer.shutdown();
-  const std::string name =
-      b == rd::Backend::Metal ? "ktx2_tri_metal.png" : "ktx2_tri_vulkan.png";
-  const std::string path = std::string(RD_TEST_DATA_DIR) + "/golden/" + name;
-  if (std::getenv("RD_UPDATE_GOLDENS")) {
-    ASSERT_TRUE(rd::test::savePNG(path, kW, kH, px.data()));
-    return;
-  }
-  auto golden = rd::test::loadPNG(path);
-  ASSERT_EQ(golden.pixels.size(), px.size()) << "golden 缺失: " << path;
-  // KTX2 有损 + ASTC/ETC2 解码差:容差放宽(10/0.05)
-  auto cmp = rd::test::compareSSIM(px.data(), golden.pixels.data(), kW, kH);
-  auto pix_cmp = rd::test::compareRGBA8(px.data(), golden.pixels.data(), kW, kH, 3, 1.0);
-  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
-      << " pixelDiffRatio=" << pix_cmp.diffRatio;
+    return img;
 }
 } // namespace
 
-TEST(Ktx2Render, MetalGolden) {
-#if defined(__APPLE__)
-  runGolden(rd::Backend::Metal);
-#endif
-}
-TEST(Ktx2Render, VulkanGolden) {
-#if defined(RD_WITH_VULKAN)
-  runGolden(rd::Backend::Vulkan);
-#endif
-}
+RD_GOLDEN_TEST(Ktx2Render, Golden, "ktx2_tri", 0.05, renderKtx2)

@@ -91,3 +91,36 @@ TEST(Image, MaxDimDownscale) {
   EXPECT_EQ(full.width, 16u);
   EXPECT_EQ(full.height, 8u);
 }
+
+// SSIM:同图 error=0;微噪声 <阈值;结构差异 >阈值
+TEST(Image, SsimIdentical) {
+  const uint32_t W = 64, H = 64;
+  std::vector<uint8_t> a(W * H * 4, 128), b(W * H * 4, 128);
+  auto r = rd::test::compareSSIM(a.data(), b.data(), W, H);
+  EXPECT_TRUE(r.pass);
+  EXPECT_NEAR(r.error, 0.0, 1e-9);
+}
+
+TEST(Image, SsimNoiseTolerance) {
+  const uint32_t W = 64, H = 64;
+  std::vector<uint8_t> a(W * H * 4), b(W * H * 4);
+  for (uint32_t i = 0; i < W * H; ++i) {
+    const uint8_t v = uint8_t((i * 7) & 0xFF);
+    for (int c = 0; c < 4; ++c) {
+      a[i * 4 + c] = v;
+      b[i * 4 + c] = uint8_t(v + ((i + c) % 3) - 1);  // ±1 微噪声
+    }
+  }
+  auto r = rd::test::compareSSIM(a.data(), b.data(), W, H, 0.05);
+  EXPECT_TRUE(r.pass) << "error=" << r.error;
+}
+
+TEST(Image, SsimStructuralFail) {
+  const uint32_t W = 64, H = 64;
+  std::vector<uint8_t> a(W * H * 4, 0), b(W * H * 4, 0);
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W / 2; ++x)
+      for (int c = 0; c < 4; ++c) b[(y * W + x) * 4 + c] = 255;
+  auto r = rd::test::compareSSIM(a.data(), b.data(), W, H, 0.05);
+  EXPECT_FALSE(r.pass) << "error=" << r.error;
+}

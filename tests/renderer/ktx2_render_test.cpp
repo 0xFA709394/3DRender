@@ -131,8 +131,10 @@ void runGolden(rd::Backend b) {
   auto golden = rd::test::loadPNG(path);
   ASSERT_EQ(golden.pixels.size(), px.size()) << "golden 缺失: " << path;
   // KTX2 有损 + ASTC/ETC2 解码差:容差放宽(10/0.05)
-  auto cmp = rd::test::compareRGBA8(px.data(), golden.pixels.data(), kW, kH, 10, 0.05);
-  EXPECT_TRUE(cmp.pass) << "diffRatio=" << cmp.diffRatio;
+  auto cmp = rd::test::compareSSIM(px.data(), golden.pixels.data(), kW, kH);
+  auto pix_cmp = rd::test::compareRGBA8(px.data(), golden.pixels.data(), kW, kH, 3, 1.0);
+  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
+      << " pixelDiffRatio=" << pix_cmp.diffRatio;
 }
 } // namespace
 

@@ -38,4 +38,45 @@ CompareResult compareRGBA8(const uint8_t* a, const uint8_t* b, uint32_t w, uint3
   return r;
 }
 
+SsimResult compareSSIM(const uint8_t* a, const uint8_t* b, uint32_t w, uint32_t h,
+                       double errTol) {
+  auto luma = [](const uint8_t* p) {
+    return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+  };
+  const double c1 = (0.01 * 255) * (0.01 * 255);
+  const double c2 = (0.03 * 255) * (0.03 * 255);
+  double sum = 0;
+  uint32_t blocks = 0;
+  for (uint32_t by = 0; by < h; by += 8)
+    for (uint32_t bx = 0; bx < w; bx += 8) {
+      const uint32_t bw = std::min(8u, w - bx), bh = std::min(8u, h - by);
+      const uint32_t n = bw * bh;
+      double mux = 0, muy = 0;
+      for (uint32_t y = 0; y < bh; ++y)
+        for (uint32_t x = 0; x < bw; ++x) {
+          mux += luma(a + ((by + y) * w + bx + x) * 4);
+          muy += luma(b + ((by + y) * w + bx + x) * 4);
+        }
+      mux /= n;
+      muy /= n;
+      double vx = 0, vy = 0, cxy = 0;
+      for (uint32_t y = 0; y < bh; ++y)
+        for (uint32_t x = 0; x < bw; ++x) {
+          const double lx = luma(a + ((by + y) * w + bx + x) * 4) - mux;
+          const double ly = luma(b + ((by + y) * w + bx + x) * 4) - muy;
+          vx += lx * lx;
+          vy += ly * ly;
+          cxy += lx * ly;
+        }
+      vx /= n;
+      vy /= n;
+      cxy /= n;
+      sum += ((2 * mux * muy + c1) * (2 * cxy + c2)) /
+             ((mux * mux + muy * muy + c1) * (vx + vy + c2));
+      ++blocks;
+    }
+  const double err = 1.0 - sum / double(blocks);
+  return {err <= errTol, err};
+}
+
 } // namespace rd::test

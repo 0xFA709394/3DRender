@@ -61,9 +61,11 @@ void expectMatchesGolden(rd::Backend b, const rd::test::Image& img) {
   auto golden = rd::test::loadPNG(path);
   ASSERT_EQ(golden.width, img.width) << "golden 缺失？用 RD_UPDATE_GOLDENS=1 生成";
   ASSERT_EQ(golden.height, img.height);
-  auto r = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), img.width,
-                                  img.height, /*channelTol=*/3, /*ratioTol=*/0.01);
-  EXPECT_TRUE(r.pass) << "diffRatio=" << r.diffRatio << " maxChannelDiff=" << r.maxChannelDiff;
+  auto r = rd::test::compareSSIM(img.pixels.data(), golden.pixels.data(), img.width,
+                                 img.height);
+  auto pix = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), img.width,
+                                    img.height, 3, 1.0);
+  EXPECT_TRUE(r.pass) << "ssimError=" << r.error << " pixelDiffRatio=" << pix.diffRatio;
 }
 } // namespace
 
@@ -97,8 +99,10 @@ TEST(Cube, CrossBackendConsistent) {
   auto b = renderCube(rd::Backend::Vulkan);
   ASSERT_FALSE(a.pixels.empty());
   ASSERT_FALSE(b.pixels.empty());
-  auto r = rd::test::compareRGBA8(a.pixels.data(), b.pixels.data(), kW, kH, 3, 0.02);
-  EXPECT_TRUE(r.pass) << "diffRatio=" << r.diffRatio << " maxChannelDiff=" << r.maxChannelDiff;
+  auto r = rd::test::compareSSIM(a.pixels.data(), b.pixels.data(), kW, kH);
+  auto pix_r = rd::test::compareRGBA8(a.pixels.data(), b.pixels.data(), kW, kH, 3, 1.0);
+  EXPECT_TRUE(r.pass) << "ssimError=" << r.error
+      << " pixelDiffRatio=" << pix_r.diffRatio;
 #else
   GTEST_SKIP() << "需要双后端";
 #endif

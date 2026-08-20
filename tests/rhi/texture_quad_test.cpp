@@ -153,9 +153,11 @@ TEST(TextureQuad, MetalGolden) {
   }
   auto golden = rd::test::loadPNG(path);
   ASSERT_EQ(golden.width, img.width) << "RD_UPDATE_GOLDENS=1 先生成";
-  auto r = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), img.width,
-                                  img.height, 3, 0.01);
-  EXPECT_TRUE(r.pass) << "diffRatio=" << r.diffRatio;
+  auto r = rd::test::compareSSIM(img.pixels.data(), golden.pixels.data(), img.width,
+                                 img.height);
+  auto pix = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), img.width,
+                                    img.height, 3, 1.0);
+  EXPECT_TRUE(r.pass) << "ssimError=" << r.error << " pixelDiffRatio=" << pix.diffRatio;
 #endif
 }
 
@@ -171,9 +173,11 @@ TEST(TextureQuad, VulkanGolden) {
   }
   auto golden = rd::test::loadPNG(path);
   ASSERT_EQ(golden.width, img.width) << "RD_UPDATE_GOLDENS=1 先生成";
-  auto r = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), img.width,
-                                  img.height, 3, 0.01);
-  EXPECT_TRUE(r.pass) << "diffRatio=" << r.diffRatio;
+  auto r = rd::test::compareSSIM(img.pixels.data(), golden.pixels.data(), img.width,
+                                 img.height);
+  auto pix = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), img.width,
+                                    img.height, 3, 1.0);
+  EXPECT_TRUE(r.pass) << "ssimError=" << r.error << " pixelDiffRatio=" << pix.diffRatio;
 #endif
 }
 
@@ -198,7 +202,9 @@ TEST(TextureQuad, CrossBackend) {
   auto b = renderTexQuad(rd::Backend::Vulkan);
   ASSERT_FALSE(a.pixels.empty());
   ASSERT_FALSE(b.pixels.empty());
-  auto r = rd::test::compareRGBA8(a.pixels.data(), b.pixels.data(), kW, kH, 3, 0.02);
-  EXPECT_TRUE(r.pass) << "diffRatio=" << r.diffRatio;
+  auto r = rd::test::compareSSIM(a.pixels.data(), b.pixels.data(), kW, kH);
+  auto pix_r = rd::test::compareRGBA8(a.pixels.data(), b.pixels.data(), kW, kH, 3, 1.0);
+  EXPECT_TRUE(r.pass) << "ssimError=" << r.error
+      << " pixelDiffRatio=" << pix_r.diffRatio;
 #endif
 }

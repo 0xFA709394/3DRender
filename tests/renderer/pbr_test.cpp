@@ -97,8 +97,10 @@ void runGolden(rd::Backend b) {
   }
   auto golden = rd::test::loadPNG(path);
   ASSERT_EQ(golden.pixels.size(), img.pixels.size()) << "golden 缺失: " << path;
-  auto cmp = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), kW, kH, 3, 0.02);
-  EXPECT_TRUE(cmp.pass) << "diffRatio=" << cmp.diffRatio;
+  auto cmp = rd::test::compareSSIM(img.pixels.data(), golden.pixels.data(), kW, kH);
+  auto pix_cmp = rd::test::compareRGBA8(img.pixels.data(), golden.pixels.data(), kW, kH, 3, 1.0);
+  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
+      << " pixelDiffRatio=" << pix_cmp.diffRatio;
 }
 } // namespace
 

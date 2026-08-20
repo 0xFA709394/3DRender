@@ -36,6 +36,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   (material_balls/cornell_box/light_playground/skinned_demo/instanced_field)
   + 知名场景(sponza/cesium_man,scripts/fetch_assets.sh 下载,assets/ 不入库)
   + render_test --scene + interactive --scene 直驱 + 移动 demo 画质/模型切换
+- 场景库扩充:新增 emissive_bloom/normal_map_wall(程序化法线贴图)/shadow_gallery/
+  ktx2_gallery(KTX2 vs PNG 对比)/alpha_blend(glTF alphaMode BLEND 混合管线+排序)/
+  fox_anim(真骨骼动画)
+- loader 补强:非索引/strip 分解(交替绕序)+ 法线缺失时逐面 flat 生成(Fox 可用)
 - 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
 
 ## 构建与测试
@@ -146,6 +150,11 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 拾取:`scene::picking` screenRay(屏幕 y 翻转 NDC)+ pickModel(world 逆变换入模型空间,
   Möller–Trumbore;包围球随调随算预筛;48B/80B 布局兼容);
   `rd_engine_pick` 无 surface 时用 512×512 默认投影
+- 混合:glTF alphaMode=BLEND → MaterialData.alphaBlend;混合管线(BlendDesc srcAlpha/
+  oneMinusSrcAlpha,depthWrite 关);endScene opaque 先、blend 按视距远→近;
+  blend 项不参与蒙皮路径(按 opaque 处理)
+- loader:非索引图元顺序生成索引;triangle_strip 分解为三角形列表(交替绕序);
+  法线缺失时逐面 flat 生成(须在索引生成之后)
 
 ## 提交规范
 - 小步提交，每任务一个 commit；格式 `<type>(<scope>): 描述`

@@ -102,3 +102,79 @@ TEST(Skinned, VulkanGolden) {
   runSkinnedGolden(rd::Backend::Vulkan);
 #endif
 }
+
+// Fox.glb(24 关节/真纹理/条带索引)冒烟:非背景覆盖率断言(资产缺失则跳过)。
+TEST(Skinned, FoxSmoke) {
+  if (!getenv("RD_ASSETS_DIR"))
+    setenv("RD_ASSETS_DIR", (std::string(RD_TEST_DATA_DIR) + "/../assets").c_str(), 1);
+  if (!getenv("RD_ASSETS_DIR"))
+    setenv("RD_ASSETS_DIR", (std::string(RD_TEST_DATA_DIR) + "/../assets").c_str(), 1);
+  const std::string foxPath =
+      std::string(getenv("RD_ASSETS_DIR") ? getenv("RD_ASSETS_DIR") : "assets") +
+      "/Fox.glb";
+  if (!std::filesystem::exists(foxPath)) GTEST_SKIP() << "Fox.glb 未下载";
+#if defined(__APPLE__)
+  rd::DeviceDesc d;
+  d.backend = rd::Backend::Metal;
+  auto device = rd::createDevice(d);
+  ASSERT_NE(device, nullptr);
+  auto model = rd::loadGltf(foxPath.c_str());
+  ASSERT_TRUE(model.valid());
+  auto load = [&](const char* n) { return rd::test::loadShaderCode(rd::Backend::Metal, RD_SHADER_DIR, n); };
+  auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
+  auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
+  auto skVs = load("pbr_forward_skinned.vert");
+  auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
+  auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
+  auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
+  auto sdsVs = load("shadow_depth_skinned.vert");
+  auto exFs = load("bloom_extract.frag");
+  auto bbFs = load("bloom_blur.frag");
+  auto cpFs = load("composite.frag");
+  auto fxFs = load("fxaa.frag");
+  rd::Renderer renderer;
+  rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
+                            pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
+                            sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
+                            cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
+                            unlitVs.entry, rd::Format::RGBA8_UNORM};
+  ASSERT_TRUE(renderer.init(*device, sd));
+  auto res = rd::MeshRenderResource::upload(*device, model);
+  ASSERT_NE(res, nullptr);
+  rd::scene::Animator anim;
+  ASSERT_TRUE(anim.bind(model));
+  anim.play(0);
+  anim.update(0.0f);  // 首帧姿态
+  rd::OffscreenTargetDesc td;
+  td.width = 256;
+  td.height = 256;
+  td.depth = true;
+  auto target = device->createOffscreenTarget(td);
+  ASSERT_TRUE(target.valid());
+  rd::scene::Camera cam;
+  // 模型包围球取景(与场景一致)
+  const float dist = model.boundingRadius * 2.5f;
+  glm::vec3 c(model.boundingCenter[0], model.boundingCenter[1], model.boundingCenter[2]);
+  glm::vec3 eye = c + glm::vec3(dist * 0.65f, dist * 0.35f, dist * 0.65f);
+  cam.lookAt({eye.x, eye.y, eye.z}, {c.x, c.y, c.z}, {0, 1, 0});
+  cam.setPerspective(0.78539816f, 1.0f, dist * 0.1f, dist * 10.0f);
+  device->beginFrame();
+  renderer.beginScene(cam, {0.05f, 0.05f, 0.06f, 1.0f});
+  renderer.submit(res, rd::math::Mat4(1.0f), anim.jointMatrices().data(),
+                  uint32_t(anim.jointMatrices().size()));
+  auto* cmd = device->acquireCommandBuffer();
+  renderer.endScene(cmd, target);
+  device->submit(cmd);
+  device->waitIdle();
+  device->endFrame();
+  std::vector<uint8_t> px(size_t(256) * 256 * 4);
+  ASSERT_TRUE(device->readbackTarget(target, px.data(), px.size()));
+  // 非背景像素占比
+  uint32_t hit = 0;
+  for (size_t i = 0; i < px.size(); i += 4)
+    if (abs(px[i] - 13) + abs(px[i + 1] - 13) + abs(px[i + 2] - 15) > 12) ++hit;
+  EXPECT_GT(double(hit) * 4 / (256.0 * 256.0), 0.02f) << "fox 未渲染";
+  res->destroy(*device);
+  renderer.shutdown();
+#endif
+}

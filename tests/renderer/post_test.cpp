@@ -1,5 +1,6 @@
 // 后处理 golden:helmet + 程序化地面 quad,High 档 Bloom+ACES。
 #include <gtest/gtest.h>
+#include "common/golden_test.h"
 #include "common/image.h"
 #include "common/shader_code.h"
 #include "renderer/light_ubo.h"
@@ -48,11 +49,12 @@ rd::ModelAsset makeGround(float y, float half) {
   return m;
 }
 
-void runPostGolden(rd::Backend b) {
+// golden 渲染函数(SSIM 判据由宏统一)
+rd::test::Image renderPost(rd::Backend b) {
   rd::DeviceDesc d;
   d.backend = b;
   auto device = rd::createDevice(d);
-  ASSERT_NE(device, nullptr);
+  if (!((device) != (nullptr))) return {};
   auto load = [&](const char* n) { return rd::test::loadShaderCode(b, RD_SHADER_DIR, n); };
   auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
   auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
@@ -78,12 +80,12 @@ void runPostGolden(rd::Backend b) {
   auto target = device->createOffscreenTarget(td);
   auto helmet = rd::loadGltf(RD_TEST_DATA_DIR "/assets/DamagedHelmet.glb");
   auto ground = makeGround(-0.55f, 1.6f);
-  ASSERT_TRUE(target.valid() && helmet.valid());
-  ASSERT_TRUE(renderer.init(*device, sd));
+  if (!(target.valid() && helmet.valid())) return {};
+  if (!(renderer.init(*device, sd))) return {};
   auto helmetRes = rd::MeshRenderResource::upload(*device, helmet);
   auto groundRes = rd::MeshRenderResource::upload(*device, ground);
-  ASSERT_NE(helmetRes, nullptr);
-  ASSERT_NE(groundRes, nullptr);
+  if (!((helmetRes) != (nullptr))) return {};
+  if (!((groundRes) != (nullptr))) return {};
   rd::scene::Scene scene;
   auto n1 = std::make_unique<rd::scene::MeshNode>();
   n1->mesh = helmetRes;
@@ -112,34 +114,17 @@ void runPostGolden(rd::Backend b) {
   device->waitIdle();
   device->endFrame();
 
-  std::vector<uint8_t> px(size_t(kW) * kH * 4);
-  ASSERT_TRUE(device->readbackTarget(target, px.data(), px.size()));
+  rd::test::Image img;
+  img.width = kW;
+  img.height = kH;
+  img.pixels.resize(size_t(kW) * kH * 4);
+  auto& px = img.pixels;
+  if (!(device->readbackTarget(target, px.data(), px.size()))) return {};
   helmetRes->destroy(*device);
   groundRes->destroy(*device);
   renderer.shutdown();
-  const std::string name =
-      b == rd::Backend::Metal ? "helmet_post_metal.png" : "helmet_post_vulkan.png";
-  const std::string path = std::string(RD_TEST_DATA_DIR) + "/golden/" + name;
-  if (std::getenv("RD_UPDATE_GOLDENS")) {
-    ASSERT_TRUE(rd::test::savePNG(path, kW, kH, px.data()));
-    return;
-  }
-  auto golden = rd::test::loadPNG(path);
-  ASSERT_EQ(golden.pixels.size(), px.size()) << "golden 缺失: " << path;
-  auto cmp = rd::test::compareSSIM(px.data(), golden.pixels.data(), kW, kH);
-  auto pix_cmp = rd::test::compareRGBA8(px.data(), golden.pixels.data(), kW, kH, 3, 1.0);
-  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
-      << " pixelDiffRatio=" << pix_cmp.diffRatio;
+    return img;
 }
 } // namespace
 
-TEST(Post, MetalGolden) {
-#if defined(__APPLE__)
-  runPostGolden(rd::Backend::Metal);
-#endif
-}
-TEST(Post, VulkanGolden) {
-#if defined(RD_WITH_VULKAN)
-  runPostGolden(rd::Backend::Vulkan);
-#endif
-}
+RD_GOLDEN_TEST(Post, Golden, "helmet_post", 0.05, renderPost)

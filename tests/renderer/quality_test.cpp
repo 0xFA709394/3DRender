@@ -1,5 +1,6 @@
 // 画质预设表 + caps 启发式 + setQuality 渲染(Low 档 golden)。
 #include <gtest/gtest.h>
+#include "common/golden_test.h"
 #include "common/image.h"
 #include "common/shader_code.h"
 #include "renderer/quality.h"
@@ -56,11 +57,12 @@ namespace {
 constexpr uint32_t kW = 512, kH = 512;
 
 // Low 档渲染 helmet:0.5x 内部分辨率 → upscale;golden 感知容差比对。
-void runLowGolden(rd::Backend b) {
+// golden 渲染函数(SSIM 判据由宏统一)
+rd::test::Image renderLow(rd::Backend b) {
   rd::DeviceDesc d;
   d.backend = b;
   auto device = rd::createDevice(d);
-  ASSERT_NE(device, nullptr);
+  if (!((device) != (nullptr))) return {};
   auto load = [&](const char* n) { return rd::test::loadShaderCode(b, RD_SHADER_DIR, n); };
   auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
   auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
@@ -84,11 +86,11 @@ void runLowGolden(rd::Backend b) {
   td.depth = true;
   auto target = device->createOffscreenTarget(td);
   auto model = rd::loadGltf(RD_TEST_DATA_DIR "/assets/DamagedHelmet.glb");
-  ASSERT_TRUE(target.valid() && model.valid());
-  ASSERT_TRUE(renderer.init(*device, sd));
+  if (!(target.valid() && model.valid())) return {};
+  if (!(renderer.init(*device, sd))) return {};
   renderer.setQuality(rd::qualityPreset(rd::QualityTier::Low));
   auto res = rd::MeshRenderResource::upload(*device, model);
-  ASSERT_NE(res, nullptr);
+  if (!((res) != (nullptr))) return {};
   rd::scene::Scene scene;
   auto node = std::make_unique<rd::scene::MeshNode>();
   node->mesh = res;
@@ -109,33 +111,16 @@ void runLowGolden(rd::Backend b) {
   device->waitIdle();
   device->endFrame();
 
-  std::vector<uint8_t> px(size_t(kW) * kH * 4);
-  ASSERT_TRUE(device->readbackTarget(target, px.data(), px.size()));
+  rd::test::Image img;
+  img.width = kW;
+  img.height = kH;
+  img.pixels.resize(size_t(kW) * kH * 4);
+  auto& px = img.pixels;
+  if (!(device->readbackTarget(target, px.data(), px.size()))) return {};
   res->destroy(*device);
   renderer.shutdown();
-  const std::string name =
-      b == rd::Backend::Metal ? "helmet_low_metal.png" : "helmet_low_vulkan.png";
-  const std::string path = std::string(RD_TEST_DATA_DIR) + "/golden/" + name;
-  if (std::getenv("RD_UPDATE_GOLDENS")) {
-    ASSERT_TRUE(rd::test::savePNG(path, kW, kH, px.data()));
-    return;
-  }
-  auto golden = rd::test::loadPNG(path);
-  ASSERT_EQ(golden.pixels.size(), px.size()) << "golden 缺失: " << path;
-  auto cmp = rd::test::compareSSIM(px.data(), golden.pixels.data(), kW, kH);
-  auto pix_cmp = rd::test::compareRGBA8(px.data(), golden.pixels.data(), kW, kH, 3, 1.0);
-  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
-      << " pixelDiffRatio=" << pix_cmp.diffRatio;
+    return img;
 }
 } // namespace
 
-TEST(Quality, LowGoldenMetal) {
-#if defined(__APPLE__)
-  runLowGolden(rd::Backend::Metal);
-#endif
-}
-TEST(Quality, LowGoldenVulkan) {
-#if defined(RD_WITH_VULKAN)
-  runLowGolden(rd::Backend::Vulkan);
-#endif
-}
+RD_GOLDEN_TEST(Quality, LowGolden, "helmet_low", 0.05, renderLow)

@@ -1,5 +1,6 @@
 // 蒙皮 golden:运行时生成 2 骨 quad,弯折中点(t=0.5)渲染,双后端 golden。
 #include <gtest/gtest.h>
+#include "common/golden_test.h"
 #include "common/image.h"
 #include "common/shader_code.h"
 #include "common/skinned_gen.h"
@@ -16,16 +17,17 @@
 namespace {
 constexpr uint32_t kW = 256, kH = 256;
 
-void runSkinnedGolden(rd::Backend b) {
+// golden 渲染函数(SSIM 判据由宏统一)
+rd::test::Image renderSkinned(rd::Backend b) {
   rd::DeviceDesc d;
   d.backend = b;
   auto device = rd::createDevice(d);
-  ASSERT_NE(device, nullptr);
+  if (!((device) != (nullptr))) return {};
   const std::string dir =
       (std::filesystem::temp_directory_path() / "rd_skin_golden").string();
   const std::string gltfPath = rd::test::writeSkinnedQuad(dir);
   auto model = rd::loadGltf(gltfPath.c_str());
-  ASSERT_TRUE(model.valid());
+  if (!(model.valid())) return {};
 
   auto load = [&](const char* n) { return rd::test::loadShaderCode(b, RD_SHADER_DIR, n); };
   auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
@@ -45,12 +47,12 @@ void runSkinnedGolden(rd::Backend b) {
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
                             unlitVs.entry, rd::Format::RGBA8_UNORM};
-  ASSERT_TRUE(renderer.init(*device, sd));
+  if (!(renderer.init(*device, sd))) return {};
 
   auto res = rd::MeshRenderResource::upload(*device, model);
-  ASSERT_NE(res, nullptr);
+  if (!((res) != (nullptr))) return {};
   rd::scene::Animator anim;
-  ASSERT_TRUE(anim.bind(model));
+  if (!(anim.bind(model))) return {};
   anim.play(0);
   anim.update(0.5f);  // 弯折中点(确定性)
 
@@ -59,7 +61,7 @@ void runSkinnedGolden(rd::Backend b) {
   td.height = kH;
   td.depth = true;
   auto target = device->createOffscreenTarget(td);
-  ASSERT_TRUE(target.valid());
+  if (!(target.valid())) return {};
   rd::scene::Camera cam;
   cam.lookAt({0, 1.2f, 3}, {0, 1, 0}, {0, 1, 0});
   cam.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
@@ -74,36 +76,17 @@ void runSkinnedGolden(rd::Backend b) {
   device->waitIdle();
   device->endFrame();
 
-  std::vector<uint8_t> px(size_t(kW) * kH * 4);
-  ASSERT_TRUE(device->readbackTarget(target, px.data(), px.size()));
+  rd::test::Image img;
+  img.width = kW;
+  img.height = kH;
+  img.pixels.resize(size_t(kW) * kH * 4);
+  auto& px = img.pixels;
+  if (!(device->readbackTarget(target, px.data(), px.size()))) return {};
   res->destroy(*device);
   renderer.shutdown();
-  const std::string name =
-      b == rd::Backend::Metal ? "skinned_quad_metal.png" : "skinned_quad_vulkan.png";
-  const std::string path = std::string(RD_TEST_DATA_DIR) + "/golden/" + name;
-  if (std::getenv("RD_UPDATE_GOLDENS")) {
-    ASSERT_TRUE(rd::test::savePNG(path, kW, kH, px.data()));
-    return;
-  }
-  auto golden = rd::test::loadPNG(path);
-  ASSERT_EQ(golden.pixels.size(), px.size()) << "golden 缺失: " << path;
-  auto cmp = rd::test::compareSSIM(px.data(), golden.pixels.data(), kW, kH);
-  auto pix_cmp = rd::test::compareRGBA8(px.data(), golden.pixels.data(), kW, kH, 3, 1.0);
-  EXPECT_TRUE(cmp.pass) << "ssimError=" << cmp.error
-      << " pixelDiffRatio=" << pix_cmp.diffRatio;
+    return img;
 }
 } // namespace
-
-TEST(Skinned, MetalGolden) {
-#if defined(__APPLE__)
-  runSkinnedGolden(rd::Backend::Metal);
-#endif
-}
-TEST(Skinned, VulkanGolden) {
-#if defined(RD_WITH_VULKAN)
-  runSkinnedGolden(rd::Backend::Vulkan);
-#endif
-}
 
 // Fox.glb(24 关节/真纹理/条带索引)冒烟:非背景覆盖率断言(资产缺失则跳过)。
 TEST(Skinned, FoxSmoke) {
@@ -119,7 +102,7 @@ TEST(Skinned, FoxSmoke) {
   rd::DeviceDesc d;
   d.backend = rd::Backend::Metal;
   auto device = rd::createDevice(d);
-  ASSERT_NE(device, nullptr);
+  ASSERT_TRUE((device) != (nullptr));
   auto model = rd::loadGltf(foxPath.c_str());
   ASSERT_TRUE(model.valid());
   auto load = [&](const char* n) { return rd::test::loadShaderCode(rd::Backend::Metal, RD_SHADER_DIR, n); };
@@ -142,7 +125,7 @@ TEST(Skinned, FoxSmoke) {
                             unlitVs.entry, rd::Format::RGBA8_UNORM};
   ASSERT_TRUE(renderer.init(*device, sd));
   auto res = rd::MeshRenderResource::upload(*device, model);
-  ASSERT_NE(res, nullptr);
+  ASSERT_TRUE((res) != (nullptr));
   rd::scene::Animator anim;
   ASSERT_TRUE(anim.bind(model));
   anim.play(0);
@@ -180,3 +163,5 @@ TEST(Skinned, FoxSmoke) {
   renderer.shutdown();
 #endif
 }
+
+RD_GOLDEN_TEST(Skinned, Golden, "skinned_quad", 0.05, renderSkinned)

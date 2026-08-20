@@ -15,6 +15,8 @@ import UIKit
     private var engine: OpaquePointer?       ///< rd_engine 实例
     private var link: CADisplayLink?         ///< 垂直同步回调
     private var lastTimestamp: CFTimeInterval = 0  ///< 上一帧时间戳（算 dt 用）
+    private var recordFile: UnsafeMutablePointer<FILE>?  ///< 输入录制(非空则写)
+    private var recordStart: CFTimeInterval = 0   ///< 录制起始时刻(时间戳基准)
 
     override public init(frame: CGRect) {
         super.init(frame: frame)
@@ -113,9 +115,40 @@ import UIKit
         let scale = contentScaleFactor  // 逻辑点 → 物理像素
         for t in touches {
             let p = t.location(in: self)
+            // 录制(归一化坐标,与 host 回放同格式)
+            if let f = recordFile {
+                let actionName: String
+                switch action {
+                case RD_POINTER_DOWN: actionName = "down"
+                case RD_POINTER_MOVE: actionName = "move"
+                case RD_POINTER_UP, RD_POINTER_CANCEL: actionName = "up"
+                default: actionName = "move"
+                }
+                let tMs = Int64((CACurrentMediaTime() - recordStart) * 1000)
+                let nx = Float(p.x / bounds.width), ny = Float(p.y / bounds.height)
+                let line = "\(tMs) \(actionName) \(touchId(t)) \(nx) \(ny)\n"
+                fwrite(line, 1, line.utf8.count, f)
+            }
             rd_engine_on_pointer(engine, action, touchId(t),
                                  Float(p.x * scale), Float(p.y * scale))
         }
+    }
+
+    /// 输入录制开关;path 空串=停止。与 host --record 同格式(归一化坐标)。
+    public func setInputRecording(_ path: String) {
+        if path.isEmpty {
+            if let f = recordFile { fclose(f) }
+            recordFile = nil
+            print("RD: 录制停止")
+            return
+        }
+        recordFile = fopen(path, "wb")
+        if let f = recordFile {
+            recordStart = CACurrentMediaTime()
+            let hdr = "# viewport \(Int(bounds.width)) \(Int(bounds.height))\n"
+            fwrite(hdr, 1, hdr.utf8.count, f)
+        }
+        print("RD: 录制开始 -> \(path)")
     }
     override public func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         forwardTouches(touches, action: RD_POINTER_DOWN)

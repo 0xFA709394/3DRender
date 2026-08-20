@@ -178,6 +178,8 @@ TEST(DemoScenes, AlphaBlendVulkan) {
 // 全程序场景冒烟(含 skinned_demo/instanced_field;知名 glb 缺失自动 skip)
 TEST(DemoScenes, SmokeAll) {
 #if defined(__APPLE__)
+  if (!getenv("RD_ASSETS_DIR"))
+    setenv("RD_ASSETS_DIR", (std::string(RD_TEST_DATA_DIR) + "/../assets").c_str(), 1);
   uint32_t count = 0;
   const char* const* names = rd::tool::demoSceneNames(count);
   for (uint32_t i = 0; i < count; ++i) {

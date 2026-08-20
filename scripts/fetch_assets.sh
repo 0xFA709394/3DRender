@@ -11,6 +11,7 @@ dl() {  # dl <本地名> <远端路径>
     && echo "OK $1" || { echo "失败 $1(弱网可重跑)"; return 1; }
 }
 dl CesiumMan.glb CesiumMan/glTF-Binary/CesiumMan.glb
+dl Fox.glb Fox/glTF-Binary/Fox.glb
 
 # Sponza(无 glb 形态):glTF 主文件 + 全部外链纹理到 assets/sponza/
 if [ -f assets/sponza/Sponza.gltf ]; then

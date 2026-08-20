@@ -15,7 +15,8 @@ const char* const kNames[] = {"material_balls", "cornell_box", "light_playground
                               "skinned_demo",   "instanced_field",
                               "sponza",         "cesium_man",
                               "emissive_bloom", "normal_map_wall",
-                              "shadow_gallery", "ktx2_gallery", "alpha_blend"};
+                              "shadow_gallery", "ktx2_gallery", "alpha_blend",
+                              "fox_anim"};
 
 /// 单 mesh ModelAsset 包装(材质参数由调用方设)。
 ModelAsset wrapMesh(MeshData&& mesh) {
@@ -344,7 +345,12 @@ void buildAlphaBlend(Device& dev, DemoScene& out) {
 
 bool buildFamousGlb(Device& dev, DemoScene& out, ModelAsset& storage,
                     const char* relPath, bool anim) {
-  const std::string path = std::string("assets/") + relPath;
+  // 资产定位:CWD 相对 assets/ 优先;否则 RD_ASSETS_DIR 环境变量
+  std::string path = std::string("assets/") + relPath;
+  if (!std::filesystem::exists(path)) {
+    const char* alt = getenv("RD_ASSETS_DIR");
+    if (alt) path = std::string(alt) + "/" + relPath;
+  }
   if (!std::filesystem::exists(path)) {
     RD_LOGW("demo.scene", "资产缺失(scripts/fetch_assets.sh 下载): %s", path.c_str());
     return false;
@@ -356,23 +362,36 @@ bool buildFamousGlb(Device& dev, DemoScene& out, ModelAsset& storage,
   if (anim && !storage.animations.empty() && !storage.skins.empty()) {
     out.animator.bind(storage);
     out.animator.play(0);
+    out.animator.update(0.0f);  // 采样到 clip 首帧姿态(动画可能含缩放,取景依赖)
     out.animated = true;
   } else {
     out.resources.push_back(out.skinnedRes);
     out.worlds.push_back(math::Mat4(1.0f));
     out.skinnedRes = {};
   }
-  // 包围球取景
-  const float dist = storage.boundingRadius * 2.5f;
-  glm::vec3 c(storage.boundingCenter[0], storage.boundingCenter[1],
-              storage.boundingCenter[2]);
+  // 包围球取景;动画模型的 nodeGlobals 含节点缩放(如 Fox 根节点 0.01),
+  // 而 boundingRadius 按原始顶点算——取景须按关节缩放修正
+  float scaleFactor = 1.0f;
+  if (out.animated && !storage.skins.empty()) {
+    const auto& globals = out.animator.nodeGlobals();
+    for (int32_t j : storage.skins[0].joints) {
+      const auto& g = globals[size_t(j)];
+      const float s = glm::length(glm::vec3(g[0]));
+      if (s > 1e-6f && s < scaleFactor) scaleFactor = s;  // 取最小显著缩放
+    }
+  }
+  const float effRadius = storage.boundingRadius * scaleFactor;
+  const float dist = effRadius * 2.5f;
+  glm::vec3 c(storage.boundingCenter[0] * scaleFactor,
+              storage.boundingCenter[1] * scaleFactor,
+              storage.boundingCenter[2] * scaleFactor);
   glm::vec3 eye = c + glm::vec3(dist * 0.65f, dist * 0.35f, dist * 0.65f);
   out.camera.lookAt({eye.x, eye.y, eye.z}, {c.x, c.y, c.z}, {0, 1, 0});
   out.camera.setPerspective(0.78539816f, 1.0f, dist * 0.1f, dist * 10.0f);
   out.framingCenter[0] = c.x;
   out.framingCenter[1] = c.y;
   out.framingCenter[2] = c.z;
-  out.framingRadius = storage.boundingRadius;
+  out.framingRadius = effRadius;
   return true;
 }
 
@@ -410,6 +429,8 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
     buildKtx2Gallery(dev, out);
   } else if (n == "alpha_blend") {
     buildAlphaBlend(dev, out);
+  } else if (n == "fox_anim") {
+    if (!buildFamousGlb(dev, out, modelStorage, "Fox.glb", true)) return false;
   } else {
     RD_LOGE("demo.scene", "未知场景: %s", name);
     return false;
@@ -424,6 +445,15 @@ void submitDemoScene(DemoScene& s, Renderer& renderer, float dt) {
   s.animTime += dt;
   if (s.animated) {
     s.animator.update(dt);
+    if (getenv("RD_SCENE_DEBUG")) {
+      const auto& jm = s.animator.jointMatrices();
+      fprintf(stderr, "[scene] joints=%zu j0: |%.3f %.3f %.3f %.3f| j1: |%.3f %.3f %.3f %.3f|\n",
+              jm.size(), jm[0][0][0], jm[0][1][0], jm[0][2][0], jm[0][3][0],
+              jm[1][0][0], jm[1][1][0], jm[1][2][0], jm[1][3][0]);
+      const auto& ng = s.animator.nodeGlobals();
+      fprintf(stderr, "[scene] ng1 T=(%.2f,%.2f,%.2f) col0len=%.4f\n", ng[1][3][0],
+              ng[1][3][1], ng[1][3][2], glm::length(glm::vec3(ng[1][0])));
+    }
     renderer.submit(s.skinnedRes, math::Mat4(1.0f), s.animator.jointMatrices().data(),
                     uint32_t(s.animator.jointMatrices().size()));
     return;

@@ -189,7 +189,9 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
     const cgltf_mesh& mesh = *node->mesh;
     for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
       const cgltf_primitive& prim = mesh.primitives[pi];
-      if (prim.type != cgltf_primitive_type_triangles || !prim.indices) continue;
+      if (prim.type != cgltf_primitive_type_triangles &&
+          prim.type != cgltf_primitive_type_triangle_strip)
+        continue;
 
       MeshData out;
       out.name = mesh.name ? mesh.name : "mesh";
@@ -216,6 +218,7 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
                     vertexCount, 3, out.vertices.data() + 3, strideFloats);
       readFloatAttr(prim.attributes, prim.attributes_count, cgltf_attribute_type_texcoord,
                     vertexCount, 2, out.vertices.data() + 10, strideFloats);
+
 
       // 蒙皮属性:joints(u8/u16 → float)/weights(归一化自动转 float)
       if (out.skinned) {
@@ -245,24 +248,90 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
         }
       }
 
-      // 索引:源 u32 或顶点数超 u16 范围 → UInt32
-      const cgltf_size indexCount = prim.indices->count;
-      const bool needU32 = prim.indices->component_type == cgltf_component_type_r_32u ||
+      // 索引序列(u32 中间形态):有索引按源,无索引顺序生成;
+      // triangle_strip 分解为三角形列表(交替绕序)
+      const bool isStrip = prim.type == cgltf_primitive_type_triangle_strip;
+      std::vector<uint32_t> seq;
+      if (prim.indices) {
+        seq.resize(prim.indices->count);
+        for (cgltf_size i = 0; i < prim.indices->count; ++i)
+          seq[i] = uint32_t(cgltf_accessor_read_index(prim.indices, i));
+      } else {
+        seq.resize(vertexCount);
+        for (uint32_t v = 0; v < vertexCount; ++v) seq[v] = v;
+      }
+      std::vector<uint32_t> tris;
+      if (isStrip) {
+        tris.reserve(seq.size() * 3);
+        for (size_t k = 0; k + 2 < seq.size(); ++k) {
+          if (k % 2 == 0) {
+            tris.push_back(seq[k]);
+            tris.push_back(seq[k + 1]);
+            tris.push_back(seq[k + 2]);
+          } else {
+            tris.push_back(seq[k + 1]);
+            tris.push_back(seq[k]);
+            tris.push_back(seq[k + 2]);
+          }
+        }
+      } else {
+        tris = std::move(seq);
+      }
+      const cgltf_size indexCount = tris.size();
+      const bool needU32 = prim.indices &&
+                               prim.indices->component_type == cgltf_component_type_r_32u ||
                            vertexCount > 65535;
       out.indexType = needU32 ? IndexType::UInt32 : IndexType::UInt16;
       out.indexCount = uint32_t(indexCount);
       if (needU32) {
         out.indices.resize(size_t(indexCount) * 4);
         auto* dst = reinterpret_cast<uint32_t*>(out.indices.data());
-        for (cgltf_size i = 0; i < indexCount; ++i)
-          dst[i] = uint32_t(cgltf_accessor_read_index(prim.indices, i));
+        for (cgltf_size i = 0; i < indexCount; ++i) dst[i] = tris[i];
       } else {
         out.indices.resize(size_t(indexCount) * 2);
         auto* dst = reinterpret_cast<uint16_t*>(out.indices.data());
-        for (cgltf_size i = 0; i < indexCount; ++i)
-          dst[i] = uint16_t(cgltf_accessor_read_index(prim.indices, i));
+        for (cgltf_size i = 0; i < indexCount; ++i) dst[i] = uint16_t(tris[i]);
       }
 
+      // 法线缺失 → 逐面 flat 法线(glTF 允许;Fox 等老模型无 NORMAL);
+      // 须在索引生成之后(依赖 out.indices)
+      {
+        bool hasNormal = false;
+        for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai)
+          if (prim.attributes[ai].type == cgltf_attribute_type_normal) hasNormal = true;
+        if (!hasNormal) {
+          const uint32_t triCount = out.indexCount / 3;
+          for (uint32_t t = 0; t < triCount; ++t) {
+            const size_t base = size_t(t) * 3;
+            uint32_t iv[3];
+            for (int k = 0; k < 3; ++k) {
+              const size_t byteOff = (base + k) * (out.indexType == IndexType::UInt32 ? 4 : 2);
+              iv[k] = out.indexType == IndexType::UInt32
+                          ? *reinterpret_cast<const uint32_t*>(out.indices.data() + byteOff)
+                          : *reinterpret_cast<const uint16_t*>(out.indices.data() + byteOff);
+            }
+            float* pa = out.vertices.data() + size_t(iv[0]) * strideFloats;
+            float* pb = out.vertices.data() + size_t(iv[1]) * strideFloats;
+            float* pc = out.vertices.data() + size_t(iv[2]) * strideFloats;
+            const float e1[3] = {pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
+            const float e2[3] = {pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
+            float n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                          e1[0] * e2[1] - e1[1] * e2[0]};
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len > 1e-8f) {
+              n[0] /= len;
+              n[1] /= len;
+              n[2] /= len;
+            }
+            for (int k = 0; k < 3; ++k) {
+              float* pv = out.vertices.data() + size_t(iv[k]) * strideFloats;
+              pv[3] = n[0];
+              pv[4] = n[1];
+              pv[5] = n[2];
+            }
+          }
+        }
+      }
       // 切线(uv 缺失/退化时降级,法线贴图近似)
       if (!computeTangents(out.vertices.data(), uint32_t(vertexCount), out.indices.data(),
                            out.indexCount, out.indexType, strideFloats)) {

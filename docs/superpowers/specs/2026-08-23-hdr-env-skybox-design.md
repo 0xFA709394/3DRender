@@ -29,12 +29,13 @@ env.yaw 旋转;程序化环境保留为默认/回退。
   RGBA8(CPU 像素直接上传)。**双格式**:envTex_ format 记录成员,
   预滤波 shader 采样不在意格式(都是 float 采样)。
 
-### 1.3 预滤波升 HDR(16F)
-- prefilterCube_ 格式 RGBA8 → **RGBA16F**(程序化路径同步升,统一单路径);
-  预滤波管线 pd.colorFormat 同步;预滤波输出 HDR(不夹 [0,1])。
-- AGENTS 记过"预滤波恒 RGBA8"——本次变更即移除该约束,记新约定。
-- IBL 缓存:version 2,pixel 格式 16F(8B/px);键含格式+HDR 源哈希。
-  旧 v1 缓存(version 1)读取拒绝(版本不符按未命中)。
+### 1.3 预滤波格式(修正:双格式随模式)
+- **侦察修正**:`readbackTarget` 只有 RGBA8 输出,HDR 预滤波缓存无法无损落盘;
+  且程序化路径升 16F 会改全部 golden 像素。因此:
+  - **程序化模式:预滤波保持 RGBA8 不变**(零回归;IBL 缓存 v1 不动)
+  - **HDR 模式:envTex/prefilter 用 RGBA16F;v1 不做磁盘缓存**
+    (v2 需 readback16F RHI 扩展,记为后续)
+- 预滤波管线 colorFormat 随模式(RGBA8/RGBA16F);Environment 整体重建时切换。
 
 ### 1.4 SH9 HDR
 - projectToSH 输入改 float(HDR 模式用 HDR cube 像素——GPU 生成的 cube 需读回?
@@ -68,8 +69,8 @@ void rd_engine_set_environment_procedural(rd_engine* engine);
 | 层 | 内容 |
 |---|---|
 | 单测(tests/resource/hdr_env_test.cpp) | stbi_write_hdr 生成 → loadHdrEnv 解码(尺寸/浮点值域) |
-| golden | `hdr_env`(头盔 + tests 生成的渐变 hdr + 天空盒);程序化 golden 全回归——16F 升格式预期像素微差,SSIM 判据内;超阈则重生成并目视核对 |
-| 缓存 | HDR 键 ≠ LDR 键(格式入键);v1 缓存文件拒绝 |
+| golden | `hdr_env`(头盔 + 运行时生成的渐变 hdr + 天空盒开);程序化 golden 全回归(RGBA8 路径不动,零回归) |
+| 缓存 | HDR 模式跳过磁盘缓存(日志注明);程序化 v1 缓存不受影响 |
 | 回归 | 默认(程序化+天空盒开?)——**默认天空盒开会改所有 golden!** → 默认 env.skybox=false? |
 
 **关键决策**:env.skybox 默认 false(保持现有 golden 零回归);golden_hdr_env 用例显式开。

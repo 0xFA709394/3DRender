@@ -121,3 +121,12 @@ foreach(b IN ITEMS metal vulkan)
                    ${CMAKE_BINARY_DIR}/pc_hit_${b}.png)
   set_tests_properties(pipeline_cache_equal_${b} PROPERTIES DEPENDS pipeline_cache_hit_${b})
 endforeach()
+
+# 命令脚本冒烟:交互模式加载脚本(30 帧自动退出),错误输出即失败
+file(WRITE ${CMAKE_BINARY_DIR}/smoke.rds "# 冒烟脚本\nset render.exposure 1.5\ntoggle quality.fxaa\n")
+add_test(NAME command_script_smoke
+         COMMAND $<TARGET_FILE:render_test> --interactive --scene cornell_box
+                 --script ${CMAKE_BINARY_DIR}/smoke.rds)
+set_tests_properties(command_script_smoke PROPERTIES
+  ENVIRONMENT "RD_INTERACTIVE_FRAMES=30"
+  FAIL_REGULAR_EXPRESSION "脚本执行失败")

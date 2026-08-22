@@ -169,7 +169,8 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
 } // namespace
 
 int rd::tool::runInteractive(const char* modelPath, const char* sceneName,
-                             const char* recordPath, const char* playPath) {
+                             const char* recordPath, const char* playPath,
+                             const char* scriptPath) {
   if (!glfwInit()) {
     fprintf(stderr, "glfwInit 失败(headless 环境?)\n");
     return 1;
@@ -214,6 +215,9 @@ int rd::tool::runInteractive(const char* modelPath, const char* sceneName,
   if (modelPath && modelPath[0] &&
       rd_engine_load_gltf(engine, modelPath) != RD_OK)
     fprintf(stderr, "load_gltf 失败: %s\n", rd_get_last_error(engine));
+  if (scriptPath && scriptPath[0] &&
+      rd_engine_exec_script(engine, scriptPath) != RD_OK)
+    fprintf(stderr, "脚本执行失败: %s\n", rd_get_last_error(engine));
 
   Ctx ctx;
   ctx.engine = engine;

@@ -51,6 +51,7 @@ int main(int argc, char** argv) {
   std::string recordPath;    // --record:指针事件录制输出
   std::string playPath;      // --play:按日志回放
   std::string cacheDir;      // --cache-dir:IBL 预滤波磁盘缓存目录
+  std::string scriptPath;    // --script:命令脚本(交互模式启动后执行)
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
       backend = !strcmp(argv[++i], "vulkan") ? rd::Backend::Vulkan : rd::Backend::Metal;
@@ -72,6 +73,8 @@ int main(int argc, char** argv) {
       playPath = argv[++i];
     } else if (!strcmp(argv[i], "--cache-dir") && i + 1 < argc) {
       cacheDir = argv[++i];
+    } else if (!strcmp(argv[i], "--script") && i + 1 < argc) {
+      scriptPath = argv[++i];
     }
   }
 
@@ -80,7 +83,8 @@ int main(int argc, char** argv) {
     return rd::tool::runInteractive(model.empty() ? nullptr : model.c_str(),
                                     sceneName.empty() ? nullptr : sceneName.c_str(),
                                     recordPath.empty() ? nullptr : recordPath.c_str(),
-                                    playPath.empty() ? nullptr : playPath.c_str());
+                                    playPath.empty() ? nullptr : playPath.c_str(),
+                                    scriptPath.empty() ? nullptr : scriptPath.c_str());
 #else
   (void)interactive;
 #endif

@@ -20,6 +20,7 @@ add_library(rd_core STATIC
   scene/animator.cpp
   scene/picking.cpp
   scene/scene.cpp
+  api/command_bus.cpp
   api/rd_api.cpp
 )
 target_include_directories(rd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}

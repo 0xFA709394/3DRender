@@ -172,6 +172,10 @@ rd_result_t rd_engine_exec_command(rd_engine* engine, const char* command);
 /// 最近一次命令的输出(get 等的值);无输出返回空串。
 const char* rd_engine_command_output(rd_engine* engine);
 
+/// 执行脚本文件(每行一条命令;# 注释;空行跳过;错误即停)。
+/// 失败输出 "行号: 错误描述"(rd_engine_command_output)。
+rd_result_t rd_engine_exec_script(rd_engine* engine, const char* path);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

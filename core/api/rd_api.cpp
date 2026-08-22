@@ -556,6 +556,39 @@ void rd_engine_set_cache_dir(rd_engine* e, const char* path) {
 
 const char* rd_engine_command_output(rd_engine* e) { return e ? e->cmdOutput : ""; }
 
+rd_result_t rd_engine_exec_script(rd_engine* e, const char* path) {
+  if (!e || !path) return RD_ERROR_INVALID_ARG;
+  FILE* f = fopen(path, "r");
+  if (!f) {
+    setError(e, (std::string("脚本不存在: ") + path).c_str());
+    return RD_ERROR_INVALID_ARG;
+  }
+  char line[512];
+  int lineNo = 0;
+  rd_result_t result = RD_OK;
+  while (fgets(line, sizeof(line), f)) {
+    ++lineNo;
+    std::string s(line);
+    // 去首尾空白
+    const auto a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) continue;       // 空行
+    if (s[a] == '#') continue;                  // 注释
+    const auto b = s.find_last_not_of(" \t\r\n");
+    s = s.substr(a, b - a + 1);
+    std::string out;
+    if (!e->bus.exec(s, out)) {
+      snprintf(e->cmdOutput, sizeof(e->cmdOutput), "%d: %s", lineNo, out.c_str());
+      setError(e, e->cmdOutput);
+      result = RD_ERROR_INVALID_ARG;
+      break;
+    }
+    e->renderDirty = true;
+    std::strncpy(e->cmdOutput, out.c_str(), sizeof(e->cmdOutput) - 1);
+  }
+  fclose(f);
+  return result;
+}
+
 int32_t rd_options_count() { return rd::optionsCount(); }
 const char* rd_options_name(int32_t index) {
   if (index < 0 || index >= rd::optionsCount()) return nullptr;

@@ -82,3 +82,20 @@ if(RD_HAVE_VULKAN)
   set_tests_properties(perf_smoke_vulkan PROPERTIES PASS_REGULAR_EXPRESSION
     "\\[bench\\] helmet_high;\\[bench\\] items_64")
 endif()
+
+# IBL 缓存双跑:miss 写缓存 → hit 命中 → 两图字节一致(同后端同参数确定性)
+set(RD_IBL_CACHE_DIR ${CMAKE_BINARY_DIR}/test_ibl_cache)
+add_test(NAME ibl_cache_miss
+         COMMAND $<TARGET_FILE:render_test> --backend metal --pbr
+                 --model ${CMAKE_CURRENT_SOURCE_DIR}/assets/DamagedHelmet.glb
+                 --cache-dir ${RD_IBL_CACHE_DIR} --out ${CMAKE_BINARY_DIR}/ibl_miss.png)
+add_test(NAME ibl_cache_hit
+         COMMAND $<TARGET_FILE:render_test> --backend metal --pbr
+                 --model ${CMAKE_CURRENT_SOURCE_DIR}/assets/DamagedHelmet.glb
+                 --cache-dir ${RD_IBL_CACHE_DIR} --out ${CMAKE_BINARY_DIR}/ibl_hit.png)
+set_tests_properties(ibl_cache_hit PROPERTIES DEPENDS ibl_cache_miss
+                     PASS_REGULAR_EXPRESSION "IBL 缓存命中")
+add_test(NAME ibl_cache_equal
+         COMMAND ${CMAKE_COMMAND} -E compare_files ${CMAKE_BINARY_DIR}/ibl_miss.png
+                 ${CMAKE_BINARY_DIR}/ibl_hit.png)
+set_tests_properties(ibl_cache_equal PROPERTIES DEPENDS ibl_cache_hit)

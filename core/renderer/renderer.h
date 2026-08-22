@@ -77,6 +77,8 @@ public:
   void setShadowBias(float b) { shadowBias_ = b; }
   /// 阴影贴图尺寸覆盖(0=按画质档)。
   void setShadowMapSizeOverride(uint32_t size) { shadowMapSizeOverride_ = size; }
+  /// IBL 预滤波磁盘缓存目录(空=关,默认关;下次环境重建生效)。
+  void setCacheDir(const char* dir) { env_.setCacheDir(dir); }
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍

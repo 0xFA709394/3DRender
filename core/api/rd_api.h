@@ -66,6 +66,9 @@ void rd_engine_render_frame(rd_engine* engine, float dt_seconds);
 /// 手动置脏（下一帧渲染）；按需渲染模式下宿主在状态变更/外部事件时调用。
 void rd_engine_request_render(rd_engine* engine);
 
+/// 设置 IBL 预滤波磁盘缓存目录；NULL/空串关闭（默认关）。目录自动创建。
+void rd_engine_set_cache_dir(rd_engine* engine, const char* path);
+
 /// 画质档位（AUTO=caps 启发式默认，引擎初始状态）。
 typedef enum rd_quality {
   RD_QUALITY_AUTO = 0,

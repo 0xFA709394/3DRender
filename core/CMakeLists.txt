@@ -6,6 +6,7 @@ add_library(rd_core STATIC
   rhi/rhi_capability.cpp
   resource/image_codec.cpp
   resource/ktx2_codec.cpp
+  resource/ibl_cache.cpp
   resource/gltf_loader.cpp
   resource/mesh_render_resource.cpp
   resource/mesh_utils.cpp

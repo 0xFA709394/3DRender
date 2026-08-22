@@ -23,6 +23,7 @@ add_executable(rd_tests
   rhi/hdr_target_test.cpp
   resource/gltf_test.cpp
   resource/ktx2_test.cpp
+  resource/ibl_cache_test.cpp
   resource/mesh_utils_test.cpp
   resource/primitives_test.cpp
   scene/scene_test.cpp

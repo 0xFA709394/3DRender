@@ -58,6 +58,22 @@ else()
   target_sources(rd_core PRIVATE ${RD_EMBEDDED_CPP})
 endif()
 
+# 声明式选项:options.json → options_generated(host=build 期;移动端在 Task 3 补 configure 期)
+if(NOT ANDROID AND NOT IOS)
+  set(RD_OPTIONS_CPP ${CMAKE_BINARY_DIR}/generated/options_generated.cpp)
+  add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/generated/options_generated.h ${RD_OPTIONS_CPP}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
+    COMMAND ${CMAKE_COMMAND} -DJSON=${CMAKE_CURRENT_SOURCE_DIR}/api/options.json
+            -DOUT_H=${CMAKE_BINARY_DIR}/generated/options_generated.h
+            -DOUT_CPP=${RD_OPTIONS_CPP}
+            -P ${CMAKE_SOURCE_DIR}/cmake/GenOptions.cmake
+    DEPENDS api/options.json ${CMAKE_SOURCE_DIR}/cmake/GenOptions.cmake
+    COMMENT "生成 options_generated")
+  target_sources(rd_core PRIVATE ${RD_OPTIONS_CPP})
+  target_include_directories(rd_core PUBLIC ${CMAKE_BINARY_DIR}/generated)
+endif()
+
 if(APPLE)
   target_sources(rd_core PRIVATE rhi/backends/metal/metal_device.mm)
   set_source_files_properties(rhi/backends/metal/metal_device.mm

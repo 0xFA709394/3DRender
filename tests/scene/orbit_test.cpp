@@ -103,3 +103,21 @@ TEST(Orbit, ApplyToCameraDistance) {
                             (e.z - 3) * (e.z - 3));
   EXPECT_NEAR(d, 5.0f, 0.01f);
 }
+
+// 按需渲染:无输入静止;拖拽/惯性期间在动;惯性收敛后静止
+TEST(Orbit, IsMoving) {
+  rd::scene::OrbitController c;
+  c.frameModel((const float[]){0, 0, 0}, 1.0f);
+  EXPECT_FALSE(c.isMoving());   // 静止
+  c.onPointerDown(0, 0, 0);
+  EXPECT_TRUE(c.isMoving());    // 指针按下
+  c.onPointerUp(0, 0, 0);
+  c.update(0.016f);
+  EXPECT_FALSE(c.isMoving());   // 无惯性(未拖)
+  c.onPointerDown(0, 0, 0);
+  for (int i = 1; i <= 5; ++i) c.onPointerMove(0, float(i * 20), 0);
+  c.onPointerUp(0, 100, 0);
+  EXPECT_TRUE(c.isMoving());    // 惯性
+  for (int i = 0; i < 600; ++i) c.update(0.016f);
+  EXPECT_FALSE(c.isMoving());   // 收敛停止
+}

@@ -156,3 +156,13 @@ TEST(Api, ExecCommand) {
   EXPECT_EQ(rd_engine_exec_command(e, "nonsense cmd"), RD_ERROR_INVALID_ARG);
   rd_engine_destroy(e);
 }
+
+// 按需渲染:无 surface 恒 no-op;request_render 安全
+TEST(Api, OnDemandRender) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  rd_engine_render_frame(e, 0.016f);
+  rd_engine_request_render(e);
+  rd_engine_render_frame(e, 0.016f);
+  rd_engine_destroy(e);
+}

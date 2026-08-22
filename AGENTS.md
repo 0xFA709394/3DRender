@@ -47,6 +47,11 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   字符串反射 get/set/reset/domainJson;C API rd_options_count/name + set/get_option;
   engine render_frame 每帧映射进 Renderer(默认=现状零回归);
   composite 曝光经独立 compositeUbo_(逐 pass 独立 UBO)
+- 命令总线+按需渲染(F3D 落地):core/api/command_bus;C API rd_engine_exec_command
+  + command_output;内建命令=选项族(set/get/increase/decrease/cycle/toggle,
+  域驱动 optionsRange/optionsEnumValues)+ 引擎族(load_model/play_animation/...);
+  render_frame 干净时零 GPU 跳过(脏源:选项/命令/模型/输入/画质;
+  Orbit 惯性或动画播放期间持续渲)
 - loader 补强:非索引/strip 分解(交替绕序)+ 法线缺失时逐面 flat 生成(Fox 可用)
 - 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
 
@@ -72,6 +77,11 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 选项:core/api/options.json 唯一事实源(改 JSON 自动重生成);
   C API `rd_engine_set_option(engine, name, value)` / `get_option`;
   名表 `rd_options_count/name`;新增选项只需加 JSON 条目 + 在 applyOptions 接线
+- 命令总线:`rd_engine_exec_command(engine, "set render.exposure 2.0")` /
+  `rd_engine_command_output`(get 输出);内建 set/get/increase/decrease/cycle/toggle
+  + load_model/play_animation/crossfade_animation/pause_animation/quality/reset_view
+- 按需渲染:render_frame 干净(无脏/无动画/无惯性)时零 GPU 跳过;
+  `rd_engine_request_render` 手动置脏;新增状态变更 API 须置脏
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 

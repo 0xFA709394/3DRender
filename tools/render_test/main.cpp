@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <glm/glm.hpp>
@@ -25,6 +26,18 @@
 #if defined(__APPLE__)
 #include "tools/render_test/interactive.h"
 #endif
+
+
+namespace {
+/// pipeline 缓存目录接线(与 engine 同约定:<dir>/pipelines/<backend>.bin)。
+void applyPipelineCache(rd::Device& device, rd::Backend backend, const std::string& dir) {
+  if (dir.empty()) return;
+  const std::string pdir = dir + "/pipelines";
+  std::filesystem::create_directories(pdir);
+  const char* bn = backend == rd::Backend::Vulkan ? "vulkan" : "metal";
+  device.setPipelineCachePath((pdir + "/" + bn + ".bin").c_str());
+}
+} // namespace
 
 int main(int argc, char** argv) {
   // ---- 参数解析（默认 metal、45°、输出 cube.png）----
@@ -81,6 +94,7 @@ int main(int argc, char** argv) {
       fprintf(stderr, "后端不可用\n");
       return 1;
     }
+    applyPipelineCache(*device, backend, cacheDir);
     constexpr uint32_t kW = 512, kH = 512;
     auto load = [&](const char* name) {
       return rd::test::loadShaderCode(backend, RD_SHADER_DIR, name);
@@ -155,6 +169,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "后端不可用\n");
     return 1;
   }
+  applyPipelineCache(*device, backend, cacheDir);
   constexpr uint32_t kW = 512, kH = 512;
 
   // ---- glTF 模型模式(renderer/scene/resource 新骨架驱动)----

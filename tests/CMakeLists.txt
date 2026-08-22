@@ -99,3 +99,25 @@ add_test(NAME ibl_cache_equal
          COMMAND ${CMAKE_COMMAND} -E compare_files ${CMAKE_BINARY_DIR}/ibl_miss.png
                  ${CMAKE_BINARY_DIR}/ibl_hit.png)
 set_tests_properties(ibl_cache_equal PROPERTIES DEPENDS ibl_cache_hit)
+
+# pipeline 缓存双跑:miss 落盘 → hit 装载 → 两图字节一致
+foreach(b IN ITEMS metal vulkan)
+  if(b STREQUAL "vulkan" AND NOT RD_HAVE_VULKAN)
+    continue()
+  endif()
+  set(d ${CMAKE_BINARY_DIR}/test_pipeline_cache_${b})
+  add_test(NAME pipeline_cache_miss_${b}
+           COMMAND $<TARGET_FILE:render_test> --backend ${b} --pbr
+                   --model ${CMAKE_CURRENT_SOURCE_DIR}/assets/DamagedHelmet.glb
+                   --cache-dir ${d} --out ${CMAKE_BINARY_DIR}/pc_miss_${b}.png)
+  add_test(NAME pipeline_cache_hit_${b}
+           COMMAND $<TARGET_FILE:render_test> --backend ${b} --pbr
+                   --model ${CMAKE_CURRENT_SOURCE_DIR}/assets/DamagedHelmet.glb
+                   --cache-dir ${d} --out ${CMAKE_BINARY_DIR}/pc_hit_${b}.png)
+  set_tests_properties(pipeline_cache_hit_${b} PROPERTIES DEPENDS pipeline_cache_miss_${b}
+                       PASS_REGULAR_EXPRESSION "管线缓存装载")
+  add_test(NAME pipeline_cache_equal_${b}
+           COMMAND ${CMAKE_COMMAND} -E compare_files ${CMAKE_BINARY_DIR}/pc_miss_${b}.png
+                   ${CMAKE_BINARY_DIR}/pc_hit_${b}.png)
+  set_tests_properties(pipeline_cache_equal_${b} PROPERTIES DEPENDS pipeline_cache_hit_${b})
+endforeach()

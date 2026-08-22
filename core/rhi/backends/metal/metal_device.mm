@@ -265,7 +265,9 @@ public:
         [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:dst error:nil];
         RD_LOGI("rhi.metal", "管线缓存落盘 %s", pipelineCachePath_.c_str());
       } else {
-        RD_LOGW("rhi.metal", "管线缓存落盘失败: %s",
+        // "Nothing to serialize":Apple Silicon 系统 shader 缓存命中时 archive 收集不到
+        // 二进制(已知良性;冷启动/新驱动版本才会收集)——降级 debug。
+        RD_LOGD("rhi.metal", "管线缓存落盘跳过: %s",
                 err ? err.localizedDescription.UTF8String : "unknown");
       }
     }

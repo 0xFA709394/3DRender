@@ -142,3 +142,17 @@ TEST(Api, OptionsApi) {
   EXPECT_EQ(rd_engine_set_option(e, "quality.tier", "nope"), RD_ERROR_INVALID_ARG);
   rd_engine_destroy(e);
 }
+
+// 命令总线 C API:set/get/toggle 经文本命令
+TEST(Api, ExecCommand) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(rd_engine_exec_command(e, "set render.exposure 2.0"), RD_OK);
+  EXPECT_EQ(rd_engine_exec_command(e, "get render.exposure"), RD_OK);
+  EXPECT_STREQ(rd_engine_command_output(e), "2.000000");
+  EXPECT_EQ(rd_engine_exec_command(e, "toggle quality.fxaa"), RD_OK);
+  EXPECT_EQ(rd_engine_exec_command(e, "get quality.fxaa"), RD_OK);
+  EXPECT_STREQ(rd_engine_command_output(e), "true");
+  EXPECT_EQ(rd_engine_exec_command(e, "nonsense cmd"), RD_ERROR_INVALID_ARG);
+  rd_engine_destroy(e);
+}

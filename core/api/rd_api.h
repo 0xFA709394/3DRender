@@ -159,6 +159,13 @@ rd_result_t rd_engine_set_option(rd_engine* engine, const char* name, const char
 rd_result_t rd_engine_get_option(rd_engine* engine, const char* name, char* out,
                                  uint32_t size);
 
+/// 执行一行文本命令(选项族 set/get/increase/decrease/cycle/toggle +
+/// 引擎族 load_model/play_animation/crossfade_animation/pause_animation/quality/reset_view)。
+/// 结果码 RD_OK / RD_ERROR_INVALID_ARG(未知命令/参数错)。
+rd_result_t rd_engine_exec_command(rd_engine* engine, const char* command);
+/// 最近一次命令的输出(get 等的值);无输出返回空串。
+const char* rd_engine_command_output(rd_engine* engine);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

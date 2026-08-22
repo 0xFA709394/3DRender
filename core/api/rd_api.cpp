@@ -6,6 +6,7 @@
 // （同一线程串行调用，无内部锁）。
 // ============================================================================
 #include "api/rd_api.h"
+#include "api/command_bus.h"
 #include "api/embedded_shaders.h"
 #include "foundation/log.h"
 #include "options_generated.h"
@@ -40,6 +41,8 @@ struct rd_engine {
   bool shadowEnabled = true;
   bool lightsDirty = false;
   rd::Options options;                  ///< 声明式选项(render_frame 映射进 renderer)
+  rd::CommandBus bus;                   ///< 命令总线(create 时注册内建命令)
+  char cmdOutput[256] = {};             ///< 最近一次命令输出(get 等)
   rd::ModelAsset modelAsset;            ///< 当前模型 CPU 资产(Animator 绑定源)
   rd::scene::Animator animator;
   bool hasAnimation = false;
@@ -71,6 +74,13 @@ void applyQuality(rd_engine* e) {
 const std::vector<rd::LightData>& activeLights(rd_engine* e) {
   return !e->manualLights.empty() ? e->manualLights : e->gltfLights;
 }
+/// 当前生效相机(无 surface 时用 512×512 默认投影,pick/测试可用)。
+void applyCamera(rd_engine* e, float vw, float vh) {
+  e->orbit.applyTo(e->camera);
+  e->camera.setPerspective(e->options.camera.fov_deg * 0.0174532925f, vw / vh,
+                          std::max(0.01f, e->orbit.distance() * 0.02f),
+                          e->orbit.distance() * 20.0f);
+}
 /// 把 options 映射进 renderer(每帧开头;幂等——setQuality/setShadow* 内部按值去重)。
 void applyOptions(rd_engine* e) {
   if (!e->rendererReady) return;
@@ -93,12 +103,85 @@ void applyOptions(rd_engine* e) {
   e->renderer.setExposure(o.render.exposure);
   e->renderer.setShadowBias(o.shadow.bias);
 }
-/// 当前生效相机(无 surface 时用 512×512 默认投影,pick/测试可用)。
-void applyCamera(rd_engine* e, float vw, float vh) {
-  e->orbit.applyTo(e->camera);
-  e->camera.setPerspective(e->options.camera.fov_deg * 0.0174532925f, vw / vh,
-                          std::max(0.01f, e->orbit.distance() * 0.02f),
-                          e->orbit.distance() * 20.0f);
+
+/// increase/decrease:range 域按 step 增减并钳制。
+bool optionsStep(rd_engine* e, const std::string& name, int dir) {
+  double mn, mx, step;
+  if (!rd::optionsRange(name, mn, mx, step)) return false;
+  std::string cur;
+  if (!rd::optionsGet(e->options, name, cur)) return false;
+  double v = std::stod(cur) + dir * step;
+  v = std::max(mn, std::min(mx, v));
+  std::string s = std::to_string(v);
+  s.erase(s.find_last_not_of('0') + 1);
+  if (!s.empty() && s.back() == '.') s.pop_back();
+  return rd::optionsSet(e->options, name, s);
+}
+/// cycle:enum 域循环。
+bool optionsCycle(rd_engine* e, const std::string& name) {
+  std::vector<std::string> vals;
+  if (!rd::optionsEnumValues(name, vals) || vals.empty()) return false;
+  std::string cur;
+  if (!rd::optionsGet(e->options, name, cur)) return false;
+  for (size_t i = 0; i < vals.size(); ++i)
+    if (vals[i] == cur)
+      return rd::optionsSet(e->options, name, vals[(i + 1) % vals.size()]);
+  return false;
+}
+
+/// 注册内建命令(选项族 + 引擎族)。
+void registerCommands(rd_engine* e) {
+  auto& bus = e->bus;
+  // ---- 选项族 ----
+  bus.add("set", [e](const std::string& a, std::string&) {
+    const auto sp = a.find(' ');
+    if (sp == std::string::npos) return false;
+    return rd::optionsSet(e->options, a.substr(0, sp), a.substr(sp + 1));
+  });
+  bus.add("get", [e](const std::string& a, std::string& out) {
+    return rd::optionsGet(e->options, a, out);
+  });
+  bus.add("toggle", [e](const std::string& a, std::string&) {
+    std::string cur;
+    if (!rd::optionsGet(e->options, a, cur)) return false;
+    if (cur != "true" && cur != "false") return false;
+    return rd::optionsSet(e->options, a, cur == "true" ? "false" : "true");
+  });
+  bus.add("increase", [e](const std::string& a, std::string&) {
+    return optionsStep(e, a, +1);
+  });
+  bus.add("decrease", [e](const std::string& a, std::string&) {
+    return optionsStep(e, a, -1);
+  });
+  bus.add("cycle", [e](const std::string& a, std::string&) {
+    return optionsCycle(e, a);
+  });
+  // ---- 引擎族 ----
+  bus.add("load_model", [e](const std::string& a, std::string&) {
+    return rd_engine_load_gltf(e, a.c_str()) == RD_OK;
+  });
+  bus.add("play_animation", [e](const std::string& a, std::string&) {
+    rd_engine_play_animation(e, atoi(a.c_str()));
+    return true;
+  });
+  bus.add("crossfade_animation", [e](const std::string& a, std::string&) {
+    const auto sp = a.find(' ');
+    if (sp == std::string::npos) return false;
+    rd_engine_crossfade_animation(e, atoi(a.substr(0, sp).c_str()),
+                                  float(atof(a.substr(sp + 1).c_str())));
+    return true;
+  });
+  bus.add("pause_animation", [e](const std::string& a, std::string&) {
+    rd_engine_pause_animation(e, atoi(a.c_str()));
+    return true;
+  });
+  bus.add("quality", [e](const std::string& a, std::string&) {
+    return rd::optionsSet(e->options, "quality.tier", a);
+  });
+  bus.add("reset_view", [e](const std::string&, std::string&) {
+    e->orbit.onDoubleTap();
+    return true;
+  });
 }
 } // namespace
 
@@ -110,6 +193,7 @@ rd_engine* rd_engine_create(rd_backend_t backend) {
   auto* e = new rd_engine();
   e->device = std::move(device);
   e->scene = std::make_unique<rd::scene::Scene>();
+  registerCommands(e);  // 命令总线内建命令
   // 初始取景(模型加载后由 frameModel 重取景)
   e->orbit.frameModel((const float[]){0, 0, 0}, 1.2f);
   return e;
@@ -423,6 +507,20 @@ void rd_engine_set_shadow_enabled(rd_engine* e, int en) {
 }
 
 const char* rd_get_last_error(rd_engine* e) { return e ? e->lastError : ""; }
+
+rd_result_t rd_engine_exec_command(rd_engine* e, const char* command) {
+  if (!e || !command) return RD_ERROR_INVALID_ARG;
+  std::string out;
+  if (!e->bus.exec(command, out)) {
+    setError(e, out.c_str());
+    return RD_ERROR_INVALID_ARG;
+  }
+  std::strncpy(e->cmdOutput, out.c_str(), sizeof(e->cmdOutput) - 1);
+  e->cmdOutput[sizeof(e->cmdOutput) - 1] = '\0';
+  return RD_OK;
+}
+
+const char* rd_engine_command_output(rd_engine* e) { return e ? e->cmdOutput : ""; }
 
 int32_t rd_options_count() { return rd::optionsCount(); }
 const char* rd_options_name(int32_t index) {

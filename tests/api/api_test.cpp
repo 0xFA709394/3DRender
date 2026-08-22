@@ -125,3 +125,20 @@ TEST(Api, Pick) {
   auto rz = rd_engine_pick(nullptr, 0, 0);  // 不崩
   EXPECT_EQ(rz.hit, 0);
 }
+
+// 选项 C API:名表/set/get 往返/非法拒绝
+TEST(Api, OptionsApi) {
+  EXPECT_GT(rd_options_count(), 0);
+  EXPECT_NE(rd_options_name(0), nullptr);
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  char buf[64];
+  EXPECT_EQ(rd_engine_get_option(e, "render.exposure", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "1.000000");
+  EXPECT_EQ(rd_engine_set_option(e, "render.exposure", "2.5"), RD_OK);
+  EXPECT_EQ(rd_engine_get_option(e, "render.exposure", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "2.500000");
+  EXPECT_EQ(rd_engine_set_option(e, "no.such", "1"), RD_ERROR_INVALID_ARG);
+  EXPECT_EQ(rd_engine_set_option(e, "quality.tier", "nope"), RD_ERROR_INVALID_ARG);
+  rd_engine_destroy(e);
+}

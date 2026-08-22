@@ -71,6 +71,12 @@ public:
   void setLightFraming(const float center[3], float radius);
   /// 手动阴影开关(与画质档 shadowMapSize>0 为与关系)。
   void setShadowEnabled(bool on) { shadowManual_ = on; }
+  /// composite 曝光(乘性;≤0 视为 1)。
+  void setExposure(float e) { compositeExposure_ = e > 0.0f ? e : 1.0f; }
+  /// 阴影 bias(LightUBO shadowParams.x)。
+  void setShadowBias(float b) { shadowBias_ = b; }
+  /// 阴影贴图尺寸覆盖(0=按画质档)。
+  void setShadowMapSizeOverride(uint32_t size) { shadowMapSizeOverride_ = size; }
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
@@ -145,6 +151,10 @@ private:
   TargetHandle bloomExtract_, bloomL1_, bloomL2_, bloomL3_;
   TargetHandle fxaaTarget_;      // RGBA8 自建(fxaa 中间目标,final 尺寸)
   BufferHandle blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_;  // 各 16B:x=vFlip,yz=texel
+  BufferHandle compositeUbo_;    // composite 参数 UBO:x=vFlip,w=exposure
+  float compositeExposure_ = 1.0f;
+  float shadowBias_ = 0.0015f;
+  uint32_t shadowMapSizeOverride_ = 0;  ///< 0=按档
   uint32_t postW_ = 0, postH_ = 0;   // PostChain 目标链当前尺寸(scene 尺寸)
   Format sceneFormat_ = Format::RGBA8_UNORM;  ///< SceneTarget 当前格式(post=R16F)
   uint32_t fxaaW_ = 0, fxaaH_ = 0;

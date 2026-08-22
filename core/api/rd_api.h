@@ -148,6 +148,17 @@ typedef struct rd_pick_result {
  */
 rd_pick_result_t rd_engine_pick(rd_engine* engine, float x, float y);
 
+/// 选项名表（静态，引擎无关）。
+int32_t rd_options_count();
+const char* rd_options_name(int32_t index);
+
+/// 设置选项（字符串值；bool 用 "true"/"false"，enum 用枚举名）。
+/// 名不存在/域外值 → RD_ERROR_INVALID_ARG。
+rd_result_t rd_engine_set_option(rd_engine* engine, const char* name, const char* value);
+/// 读选项到 out（字符串）；名不存在/缓冲过小 → RD_ERROR_INVALID_ARG。
+rd_result_t rd_engine_get_option(rd_engine* engine, const char* name, char* out,
+                                 uint32_t size);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

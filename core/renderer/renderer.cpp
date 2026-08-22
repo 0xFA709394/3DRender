@@ -170,7 +170,8 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   blurUbo2_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
   blurUbo3_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
   fxaaUbo_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
-  for (auto u : {blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_})
+  compositeUbo_ = dev.createBuffer({16, BufferUsage::Uniform, true, false, nullptr});
+  for (auto u : {blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_, compositeUbo_})
     if (u.valid()) dev.updateBuffer(u, zp, sizeof(zp), 0);
 
   if (!unlitPipeline_.valid() || !pbrPipeline_.valid() || !frameUbo_.valid() ||
@@ -312,7 +313,7 @@ void Renderer::shutdown() {
   env_.destroy(*dev_);
   destroyPostTargets();
   if (fxaaTarget_.valid()) dev_->destroyTarget(fxaaTarget_);
-  for (BufferHandle u : {blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_})
+  for (BufferHandle u : {blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_, compositeUbo_})
     if (u.valid()) dev_->destroyBuffer(u);
   for (PipelineHandle p : {extractPipeline_, blurPipeline_, compositePipeline_, fxaaPipeline_})
     if (p.valid()) dev_->destroyPipeline(p);
@@ -342,7 +343,7 @@ void Renderer::shutdown() {
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
   fxaaTarget_ = {};
-  blurUbo1_ = blurUbo2_ = blurUbo3_ = fxaaUbo_ = {};
+  blurUbo1_ = blurUbo2_ = blurUbo3_ = fxaaUbo_ = compositeUbo_ = {};
   extractPipeline_ = blurPipeline_ = compositePipeline_ = fxaaPipeline_ = {};
   fxaaW_ = fxaaH_ = 0;
   shadowTarget_ = {};
@@ -380,7 +381,7 @@ void Renderer::setQuality(const QualityPreset& q) {
   renderScale_ = q.renderScale;
   msaa_ = q.msaa;
   maxTextureDim_ = q.maxTextureDim;
-  shadowMapSize_ = q.shadowMapSize;
+  shadowMapSize_ = shadowMapSizeOverride_ > 0 ? shadowMapSizeOverride_ : q.shadowMapSize;
   const bool wantPost = q.postEnabled != 0;
   if (wantPost && !dev_->caps().supports(Capability::hdr_render_target))
     RD_LOGW("renderer", "后端无 HDR 渲染目标 caps,后处理自动关闭");
@@ -641,7 +642,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   LightUBOData lu{};
   fillLightUBO(lu, effective, lvp,
                shadowMapSize_ ? 1.0f / float(shadowMapSize_) : 0.0f, shadowActive,
-               dev_->backend() == Backend::GLES);
+               dev_->backend() == Backend::GLES, shadowBias_);
   lu.lightCount[1] = postEnabled_ ? 1.0f : 0.0f;  // hdrMode(post 开输出线性 HDR)
   dev_->updateBuffer(lightUbo_, &lu, sizeof(lu), 0);
 
@@ -721,7 +722,11 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       fsPass(bloomL3_, blurPipeline_, blurUbo3_, bloomL2Tex_);
       cmd->beginRenderPass(target, clear_);
       cmd->bindPipeline(compositePipeline_);
-      cmd->bindUniformBuffer(0, blitUbo_, 0, 16);
+      // composite 独立 UBO(逐 pass 独立教训):x=vFlip,w=exposure
+      const float cp[4] = {dev_->backend() == Backend::GLES ? 1.0f : 0.0f, 0.0f, 0.0f,
+                           compositeExposure_};
+      dev_->updateBuffer(compositeUbo_, cp, sizeof(cp), 0);
+      cmd->bindUniformBuffer(0, compositeUbo_, 0, 16);
       cmd->bindTexture(0, sceneTex, blitSampler_);
       cmd->bindTexture(1, bloomL1Tex_, blitSampler_);
       cmd->bindTexture(2, bloomL2Tex_, blitSampler_);

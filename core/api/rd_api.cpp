@@ -8,6 +8,7 @@
 #include "api/rd_api.h"
 #include "api/embedded_shaders.h"
 #include "foundation/log.h"
+#include "options_generated.h"
 #include "renderer/quality.h"
 #include "renderer/renderer.h"
 #include "resource/gltf_loader.h"
@@ -38,6 +39,7 @@ struct rd_engine {
   std::vector<rd::LightData> gltfLights;    ///< glTF 解析灯(load_gltf 时存)
   bool shadowEnabled = true;
   bool lightsDirty = false;
+  rd::Options options;                  ///< 声明式选项(render_frame 映射进 renderer)
   rd::ModelAsset modelAsset;            ///< 当前模型 CPU 资产(Animator 绑定源)
   rd::scene::Animator animator;
   bool hasAnimation = false;
@@ -69,10 +71,32 @@ void applyQuality(rd_engine* e) {
 const std::vector<rd::LightData>& activeLights(rd_engine* e) {
   return !e->manualLights.empty() ? e->manualLights : e->gltfLights;
 }
+/// 把 options 映射进 renderer(每帧开头;幂等——setQuality/setShadow* 内部按值去重)。
+void applyOptions(rd_engine* e) {
+  if (!e->rendererReady) return;
+  auto& o = e->options;
+  // tier 字符串落到 e->quality(AUTO 时 resolveTier 走启发式)
+  if (o.quality.tier == "high") e->quality = RD_QUALITY_HIGH;
+  else if (o.quality.tier == "mid") e->quality = RD_QUALITY_MID;
+  else if (o.quality.tier == "low") e->quality = RD_QUALITY_LOW;
+  else e->quality = RD_QUALITY_AUTO;
+  // 组合档:post=preset&&opt;fxaa=preset||opt;ibl/阴影尺寸按选项覆盖
+  const rd::QualityTier tier = resolveTier(e);
+  rd::QualityPreset preset = rd::qualityPreset(tier);
+  preset.postEnabled = (preset.postEnabled != 0 && o.quality.post) ? 1 : 0;
+  preset.fxaaEnabled = (preset.fxaaEnabled != 0 || o.quality.fxaa) ? 1 : 0;
+  preset.iblPrefilterSize = uint32_t(o.ibl.prefilter_size);
+  preset.iblPrefilterMips = uint32_t(o.ibl.prefilter_mips);
+  if (o.shadow.map_size > 0) preset.shadowMapSize = uint32_t(o.shadow.map_size);
+  e->renderer.setQuality(preset);
+  e->renderer.setShadowEnabled(o.quality.shadow && e->shadowEnabled);
+  e->renderer.setExposure(o.render.exposure);
+  e->renderer.setShadowBias(o.shadow.bias);
+}
 /// 当前生效相机(无 surface 时用 512×512 默认投影,pick/测试可用)。
 void applyCamera(rd_engine* e, float vw, float vh) {
   e->orbit.applyTo(e->camera);
-  e->camera.setPerspective(0.78539816f, vw / vh,
+  e->camera.setPerspective(e->options.camera.fov_deg * 0.0174532925f, vw / vh,
                           std::max(0.01f, e->orbit.distance() * 0.02f),
                           e->orbit.distance() * 20.0f);
 }
@@ -199,6 +223,7 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
     e->renderer.setLights(activeLights(e));
     e->lightsDirty = false;
   }
+  applyOptions(e);  // 选项映射(幂等)
   e->orbit.update(dt);  // 惯性积分(无指针按下时生效)
   applyCamera(e, float(e->width), float(e->height));
   e->renderer.beginScene(e->camera, {0.05f, 0.05f, 0.06f, 1.0f});
@@ -398,3 +423,32 @@ void rd_engine_set_shadow_enabled(rd_engine* e, int en) {
 }
 
 const char* rd_get_last_error(rd_engine* e) { return e ? e->lastError : ""; }
+
+int32_t rd_options_count() { return rd::optionsCount(); }
+const char* rd_options_name(int32_t index) {
+  if (index < 0 || index >= rd::optionsCount()) return nullptr;
+  return rd::optionsAllNames()[index];
+}
+
+rd_result_t rd_engine_set_option(rd_engine* e, const char* name, const char* value) {
+  if (!e || !name || !value) return RD_ERROR_INVALID_ARG;
+  if (!rd::optionsSet(e->options, name, value)) {
+    setError(e, (std::string("选项非法: ") + name).c_str());
+    return RD_ERROR_INVALID_ARG;
+  }
+  return RD_OK;
+}
+
+rd_result_t rd_engine_get_option(rd_engine* e, const char* name, char* out,
+                                 uint32_t size) {
+  if (!e || !name || !out || size == 0) return RD_ERROR_INVALID_ARG;
+  std::string s;
+  if (!rd::optionsGet(e->options, name, s)) {
+    setError(e, (std::string("选项不存在: ") + name).c_str());
+    return RD_ERROR_INVALID_ARG;
+  }
+  if (s.size() + 1 > size) return RD_ERROR_INVALID_ARG;
+  std::strncpy(out, s.c_str(), size - 1);
+  out[size - 1] = '\0';
+  return RD_OK;
+}

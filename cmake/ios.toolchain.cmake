@@ -10,7 +10,9 @@
 # RD_EMBED_IOS_SIMULATOR，内嵌对应的 shader 产物。
 # ============================================================================
 set(CMAKE_SYSTEM_NAME iOS)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0") # 最低部署版本 iOS 16
+# 最低部署版本 iOS 16(std::filesystem 需 13+;须 CACHE FORCE——project() 的平台
+# 初始化会用 SDK 默认值回填非 cache 变量,toolchain 普通 set 会被覆盖)
+set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0" CACHE STRING "iOS 最低部署版本" FORCE)
 if(NOT DEFINED RD_IOS_SDK)
   set(RD_IOS_SDK iphoneos) # 默认真机；模拟器须在配置时显式传 -DRD_IOS_SDK=iphonesimulator
 endif()

@@ -42,6 +42,11 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - golden 三件套(F3D 学习落地):SSIM 主判据(compareSSIM,阈值 0.05)+
   RD_GOLDEN_TEST 声明式宏 + 输入注入回放(render_test --record/--play +
   tests/recordings/orbit_drag.log 手势回归);移动端录制同格式(demo 长按「切换」)
+- 声明式选项系统(F3D 落地):core/api/options.json 唯一事实源;
+  cmake/GenOptions.cmake 纯 CMake 生成 options_generated;`rd::Options` 强类型 +
+  字符串反射 get/set/reset/domainJson;C API rd_options_count/name + set/get_option;
+  engine render_frame 每帧映射进 Renderer(默认=现状零回归);
+  composite 曝光经独立 compositeUbo_(逐 pass 独立 UBO)
 - loader 补强:非索引/strip 分解(交替绕序)+ 法线缺失时逐面 flat 生成(Fox 可用)
 - 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
 
@@ -64,6 +69,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 输入回放:`./build/tools/render_test/render_test --interactive --play
   tests/recordings/orbit_drag.log`;录制 `--record <path>`(归一化坐标文本行);
   移动端录制:demo 长按「切换」起停,日志在 app 文档目录 rd_input.log
+- 选项:core/api/options.json 唯一事实源(改 JSON 自动重生成);
+  C API `rd_engine_set_option(engine, name, value)` / `get_option`;
+  名表 `rd_options_count/name`;新增选项只需加 JSON 条目 + 在 applyOptions 接线
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 

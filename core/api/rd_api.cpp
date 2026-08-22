@@ -537,6 +537,12 @@ void rd_engine_request_render(rd_engine* e) {
   if (e) e->renderDirty = true;
 }
 
+void rd_engine_set_cache_dir(rd_engine* e, const char* path) {
+  if (!e) return;
+  e->renderer.setCacheDir(path);
+  e->renderDirty = true;
+}
+
 const char* rd_engine_command_output(rd_engine* e) { return e ? e->cmdOutput : ""; }
 
 int32_t rd_options_count() { return rd::optionsCount(); }

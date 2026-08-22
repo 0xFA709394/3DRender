@@ -166,3 +166,12 @@ TEST(Api, OnDemandRender) {
   rd_engine_render_frame(e, 0.016f);
   rd_engine_destroy(e);
 }
+
+// IBL 缓存 C API:设置目录不崩;NULL 关闭
+TEST(Api, CacheDir) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  rd_engine_set_cache_dir(e, "/tmp/rd_test_cache");
+  rd_engine_set_cache_dir(e, nullptr);  // 关闭
+  rd_engine_destroy(e);
+}

@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
   std::string sceneName;     // --scene:demo 场景(与 --model 互斥,scene 优先)
   std::string recordPath;    // --record:指针事件录制输出
   std::string playPath;      // --play:按日志回放
+  std::string cacheDir;      // --cache-dir:IBL 预滤波磁盘缓存目录
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
       backend = !strcmp(argv[++i], "vulkan") ? rd::Backend::Vulkan : rd::Backend::Metal;
@@ -56,6 +57,8 @@ int main(int argc, char** argv) {
       recordPath = argv[++i];
     } else if (!strcmp(argv[i], "--play") && i + 1 < argc) {
       playPath = argv[++i];
+    } else if (!strcmp(argv[i], "--cache-dir") && i + 1 < argc) {
+      cacheDir = argv[++i];
     }
   }
 
@@ -104,7 +107,12 @@ int main(int argc, char** argv) {
     td.height = kH;
     td.depth = true;
     auto target = device->createOffscreenTarget(td);
-    if (!target.valid() || !renderer.init(*device, sd)) {
+    if (!target.valid()) {
+      fprintf(stderr, "初始化失败\n");
+      return 1;
+    }
+    if (!cacheDir.empty()) renderer.setCacheDir(cacheDir.c_str());  // init 前(env 在 init 建)
+    if (!renderer.init(*device, sd)) {
       fprintf(stderr, "初始化失败\n");
       return 1;
     }
@@ -176,7 +184,12 @@ int main(int argc, char** argv) {
     td.depth = true;
     auto target = device->createOffscreenTarget(td);
     auto m = rd::loadGltf(model.c_str());
-    if (!target.valid() || !m.valid() || !renderer.init(*device, sd)) {
+    if (!target.valid() || !m.valid()) {
+      fprintf(stderr, "初始化失败\n");
+      return 1;
+    }
+    if (!cacheDir.empty()) renderer.setCacheDir(cacheDir.c_str());  // init 前
+    if (!renderer.init(*device, sd)) {
       fprintf(stderr, "初始化失败\n");
       return 1;
     }

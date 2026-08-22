@@ -51,9 +51,12 @@ public:
   SamplerHandle lutSampler() const { return lutSampler_; }     // Nearest
   const float* sh() const { return sh_; }                      // 27 float(9×vec3)
   const EnvCubemap& cubemap() const { return env_; }
+  /// IBL 预滤波磁盘缓存目录(空=关,默认关;下次 build 生效)。
+  void setCacheDir(const char* dir) { cacheDir_ = dir ? dir : ""; }
 
 private:
   EnvCubemap env_;
+  std::string cacheDir_;  ///< IBL 缓存目录(空=关)
   TextureHandle envTex_;
   TextureHandle prefilterCube_;
   TextureHandle brdfLutTex_;

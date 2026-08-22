@@ -1,6 +1,9 @@
 // environment 的实现(CPU 部分):程序化摄影棚环境、SH9 投影、BRDF LUT 积分。
 // 方向约定:GL/Khronos cubemap 约定(与 GPU 采样一致;旧 CPU 自洽约定已废弃)。
 #include "renderer/environment.h"
+#include "foundation/hash.h"
+#include "foundation/log.h"
+#include "resource/ibl_cache.h"
 #include "rhi/rhi_device.h"
 #include <algorithm>
 #include <cmath>
@@ -277,6 +280,32 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
   dev.destroyShaderModule(fsm);
   if (!prefilterPipeline_.valid() || !prefilterUbo_.valid()) return false;
 
+  // 6. 预滤波(缓存开启:命中直接上传;未命中渲到离屏目标读回+写盘+上传)
+  uint64_t cacheKey = 0;
+  if (!cacheDir_.empty()) {
+    // 键:env 源像素(6 面)+ env size + cubeSize + mips
+    cacheKey = 14695981039346656037ull;
+    for (const auto& fpx : env_.faces)
+      cacheKey = rd::fnv1a64(fpx.data(), fpx.size(), cacheKey);
+    cacheKey = rd::fnv1a64(uint64_t(env_.size), cacheKey);
+    cacheKey = rd::fnv1a64(uint64_t(cubeSize), cacheKey);
+    cacheKey = rd::fnv1a64(uint64_t(prefilterMips), cacheKey);
+    rd::IblCacheBlob hit;
+    if (rd::iblCacheRead(cacheDir_, cacheKey, hit) &&
+        hit.faces.size() == size_t(prefilterMips) * 6) {
+      for (uint32_t m = 0; m < prefilterMips; ++m)
+        for (uint32_t f = 0; f < 6; ++f)
+          dev.updateTexture(prefilterCube_, m, f, hit.faces[m * 6 + f].data(),
+                            hit.faces[m * 6 + f].size());
+      RD_LOGI("renderer.env", "IBL 缓存命中 key=%016llx", (unsigned long long)cacheKey);
+      return true;
+    }
+  }
+  rd::IblCacheBlob miss;  // 缓存模式收集读回像素
+  if (!cacheDir_.empty()) {
+    miss.size = cubeSize;
+    miss.mips = prefilterMips;
+  }
   // 6. 逐 face × mip 渲染(N=V=R;roughness = mip/(mips-1))
   for (uint32_t mip = 0; mip < prefilterMips; ++mip) {
     const uint32_t sz = std::max(1u, cubeSize >> mip);
@@ -285,9 +314,13 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
       OffscreenTargetDesc td;
       td.width = sz;
       td.height = sz;
-      td.colorFromTexture = prefilterCube_;
-      td.face = face;
-      td.mipLevel = mip;
+      if (cacheDir_.empty()) {
+        td.colorFromTexture = prefilterCube_;
+        td.face = face;
+        td.mipLevel = mip;
+      } else {
+        td.colorFormat = Format::RGBA8_UNORM;  // 缓存模式:自建目标读回后上传
+      }
       auto target = dev.createOffscreenTarget(td);
       if (!target.valid()) return false;
       float u[16] = {};
@@ -305,8 +338,20 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
       cmd->endRenderPass();
       dev.submit(cmd);
       dev.waitIdle();
+      if (!cacheDir_.empty()) {
+        std::vector<uint8_t> px(size_t(sz) * sz * 4);
+        if (!dev.readbackTarget(target, px.data(), px.size())) {
+          dev.destroyTarget(target);
+          return false;
+        }
+        dev.updateTexture(prefilterCube_, mip, face, px.data(), px.size());
+        miss.faces.push_back(std::move(px));
+      }
       dev.destroyTarget(target);
     }
+  }
+  if (!cacheDir_.empty() && miss.faces.size() == size_t(prefilterMips) * 6) {
+    rd::iblCacheWrite(cacheDir_, cacheKey, miss);
   }
   return true;
 }

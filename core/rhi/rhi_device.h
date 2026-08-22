@@ -166,6 +166,11 @@ public:
    */
   virtual bool readbackTarget(TargetHandle target, void* outRGBA8, uint64_t outSize) = 0;
 
+  /// 设置驱动级管线缓存文件路径;空串关闭(默认关)。
+  /// Vulkan:VkPipelineCache 预载/落盘;Metal:MTLBinaryArchive(macOS 11+/iOS 14+);
+  /// GLES:no-op。
+  virtual void setPipelineCachePath(const char* path) { (void)path; }
+
   // ---- SwapChain（上屏渲染）----
   /**
    * @brief 创建交换链。

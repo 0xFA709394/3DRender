@@ -30,9 +30,9 @@ static_assert(sizeof(LightUBOData) == 352, "LightUBO 必须 352B");
 /// 填充 LightUBO:lights 超 4 截断;首盏方向光为阴影投射者(见 shader)。
 inline void fillLightUBO(LightUBOData& out, const std::vector<LightData>& lights,
                          const math::Mat4& lightViewProj, float shadowTexel,
-                         bool shadowOn, bool vFlip) {
+                         bool shadowOn, bool vFlip, float bias = 0.0015f) {
   out.lightViewProj = lightViewProj;
-  out.shadowParams[0] = 0.0015f;
+  out.shadowParams[0] = bias;
   out.shadowParams[1] = shadowTexel;
   out.shadowParams[2] = shadowOn ? 1.0f : 0.0f;
   out.shadowParams[3] = vFlip ? 1.0f : 0.0f;

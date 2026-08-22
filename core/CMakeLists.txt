@@ -7,6 +7,7 @@ add_library(rd_core STATIC
   resource/image_codec.cpp
   resource/ktx2_codec.cpp
   resource/ibl_cache.cpp
+  resource/hdr_env.cpp
   resource/gltf_loader.cpp
   resource/mesh_render_resource.cpp
   resource/mesh_utils.cpp

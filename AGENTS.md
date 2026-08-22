@@ -158,6 +158,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   （tests/common/ktx2_gen,勿提交二进制）;Vulkan 描述符按绑定状态缓存
   （bind 只记状态、draw 时绑定,支持逐 draw 异构绑定）
 - 依赖弱网旁路：`$ENV{RD_DEPS_MIRROR}/ktx|glfw` 指向本地源码副本可跳过 FetchContent 下载
+- iOS 部署目标：**ktx CMakeLists 会强设 `CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=11.0`
+  (CACHE 全局,污染所有目标;std::filesystem 需 13+)**——Deps.cmake 在拉取后覆盖回 16.0;
+  toolchain 的 CMAKE_OSX_DEPLOYMENT_TARGET 须 CACHE FORCE(project() 平台初始化回填普通 set)
 - LightUBO=slot2(352B:lightViewProj|shadowParams|lightCount|lights[4×64B]);
   GLES 块名 LightUBO→2、ShadowUBO→0;阴影纹理=slot 7(比较采样器 sampler2DShadow)
 - 阴影:ShadowPass 在场景 pass 前(endScene 内);depth-only 目标

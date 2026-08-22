@@ -88,6 +88,11 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   `rd_engine_request_render` 手动置脏;新增状态变更 API 须置脏
 - IBL 缓存:`rd_engine_set_cache_dir(path)` 开启(默认关);
   render_test `--cache-dir <path>`;缓存键=env 源像素+size+mips
+- pipeline 缓存(F3D 落地):`Device::setPipelineCachePath`(Vulkan VkPipelineCache
+  blob/Metal MTLBinaryArchive[macOS 11+/iOS 14+ 门控;Apple Silicon 系统 shader 缓存
+  命中时 archive 收集不到二进制,落盘跳过为良性]/GLES no-op);
+  `rd_engine_set_cache_dir` 一旋钮同开 IBL+pipeline(<dir>/pipelines/<backend>.bin);
+  析构落盘;ctest pipeline_cache_* 双跑
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 

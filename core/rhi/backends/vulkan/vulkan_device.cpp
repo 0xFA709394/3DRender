@@ -27,7 +27,9 @@
 #endif
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <map>
 #include <unordered_map>
@@ -243,6 +245,8 @@ public:
   void destroyShaderModule(ShaderModuleHandle module) override;
   PipelineHandle createPipeline(const PipelineDesc& desc) override;
   void destroyPipeline(PipelineHandle pipeline) override;
+  void setPipelineCachePath(const char* path) override;  ///< VkPipelineCache 预载/落盘
+  void savePipelineCache();                              ///< 落盘(析构/切路径时调用)
   TargetHandle createOffscreenTarget(const OffscreenTargetDesc& desc) override;
   void destroyTarget(TargetHandle target) override;
   void targetSize(TargetHandle target, uint32_t& outW, uint32_t& outH) const override {
@@ -353,6 +357,8 @@ private:
   VkPhysicalDevice phys_ = VK_NULL_HANDLE;
   VkSampleCountFlags sampleCountsMask_ = 0;      ///< framebufferColorSampleCounts(snap 用)
   VkDevice device_ = VK_NULL_HANDLE;
+  VkPipelineCache driverPipelineCache_ = VK_NULL_HANDLE;  ///< 驱动级管线缓存(落盘)
+  std::string pipelineCachePath_;
   uint32_t queueFamily_ = 0;
   VkQueue queue_ = VK_NULL_HANDLE;
   VkCommandPool cmdPool_ = VK_NULL_HANDLE;
@@ -766,9 +772,65 @@ VkRenderPass VulkanDevice::findOrCreateRenderPass(VkFormat format, bool withDept
 
 /// 析构：等 GPU 空闲后按依赖逆序销毁（资源句柄表中的对象由调用方先行销毁；
 /// P0 简化：渲染循环退出前调用方应 destroy 全部资源）。
+void VulkanDevice::setPipelineCachePath(const char* path) {
+  // 已有缓存:先落盘销毁
+  savePipelineCache();
+  if (driverPipelineCache_ != VK_NULL_HANDLE) {
+    vkDestroyPipelineCache(device_, driverPipelineCache_, nullptr);
+    driverPipelineCache_ = VK_NULL_HANDLE;
+  }
+  pipelineCachePath_ = path ? path : "";
+  if (pipelineCachePath_.empty()) return;
+  // 预载(存在则;坏文件由驱动 header 校验,不兼容即按空缓存工作)
+  std::vector<uint8_t> blob;
+  if (FILE* f = fopen(pipelineCachePath_.c_str(), "rb")) {
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n > 0) {
+      blob.resize(size_t(n));
+      if (fread(blob.data(), 1, size_t(n), f) != size_t(n)) blob.clear();
+    }
+    fclose(f);
+  }
+  VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+  ci.initialDataSize = blob.size();
+  ci.pInitialData = blob.empty() ? nullptr : blob.data();
+  if (vkCreatePipelineCache(device_, &ci, nullptr, &driverPipelineCache_) == VK_SUCCESS)
+    RD_LOGI("rhi.vk", "管线缓存装载 %s (%zu B)", pipelineCachePath_.c_str(), blob.size());
+  else
+    RD_LOGW("rhi.vk", "管线缓存创建失败(按无缓存工作)");
+}
+
+void VulkanDevice::savePipelineCache() {
+  if (driverPipelineCache_ == VK_NULL_HANDLE || pipelineCachePath_.empty()) return;
+  size_t n = 0;
+  vkGetPipelineCacheData(device_, driverPipelineCache_, &n, nullptr);
+  if (n == 0) return;
+  std::vector<uint8_t> blob(n);
+  vkGetPipelineCacheData(device_, driverPipelineCache_, &n, blob.data());
+  std::error_code ec;
+  std::filesystem::create_directories(
+      std::filesystem::path(pipelineCachePath_).parent_path(), ec);
+  const std::string tmp = pipelineCachePath_ + ".tmp";
+  FILE* f = fopen(tmp.c_str(), "wb");
+  if (!f) return;
+  const bool ok = fwrite(blob.data(), 1, n, f) == n;
+  fclose(f);
+  if (!ok) {
+    std::filesystem::remove(tmp, ec);
+    return;
+  }
+  std::filesystem::rename(tmp, pipelineCachePath_, ec);  // 原子
+  if (!ec) RD_LOGI("rhi.vk", "管线缓存落盘 %s (%zu B)", pipelineCachePath_.c_str(), n);
+}
+
 VulkanDevice::~VulkanDevice() {
   if (!device_) return;
   vkDeviceWaitIdle(device_);
+  savePipelineCache();  // 驱动级管线缓存落盘(设置过路径才动作)
+  if (driverPipelineCache_ != VK_NULL_HANDLE)
+    vkDestroyPipelineCache(device_, driverPipelineCache_, nullptr);
   retire_.flushAll();  // 退休资源在销毁设备前全部释放
   for (auto& kv : pipelineCache_)  // 缓存持有的底层管线统一销毁
     vkDestroyPipeline(device_, kv.second->pipeline, nullptr);
@@ -1108,7 +1170,7 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
                                                  desc.sampleCount);
   VkPipeline pipeline;
   VkResult pipelineResult =
-      vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline);
+      vkCreateGraphicsPipelines(device_, driverPipelineCache_, 1, &gpci, nullptr, &pipeline);
   if (pipelineResult != VK_SUCCESS) {
     RD_LOGE("rhi.vk", "vkCreateGraphicsPipelines 失败 (%d)", int(pipelineResult));
     return {};

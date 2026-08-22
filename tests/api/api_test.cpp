@@ -175,3 +175,33 @@ TEST(Api, CacheDir) {
   rd_engine_set_cache_dir(e, nullptr);  // 关闭
   rd_engine_destroy(e);
 }
+
+// 命令脚本:文件执行/注释空行跳过/错误行停止
+TEST(Api, ExecScript) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  // 写临时脚本
+  const char* path = "/tmp/rd_script_test.rds";
+  FILE* f = fopen(path, "w");
+  ASSERT_NE(f, nullptr);
+  fputs("# 注释行\n\nset render.exposure 2.0\ntoggle quality.fxaa\n", f);
+  fclose(f);
+  EXPECT_EQ(rd_engine_exec_script(e, path), RD_OK);
+  char buf[32];
+  EXPECT_EQ(rd_engine_get_option(e, "render.exposure", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "2.000000");
+  EXPECT_EQ(rd_engine_get_option(e, "quality.fxaa", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "true");
+  // 错误行停止:第 3 行非法
+  fputs("set render.exposure 3.0\n\nnonsense cmd\nset render.exposure 9.0\n", f = fopen(path, "w"));
+  fclose(f);
+  EXPECT_EQ(rd_engine_exec_script(e, path), RD_ERROR_INVALID_ARG);
+  // 错误输出含行号
+  EXPECT_NE(strstr(rd_engine_command_output(e), "3"), nullptr);
+  // 停止:exposure 停在 3.0(第 1 行已执行,第 4 行未到)
+  EXPECT_EQ(rd_engine_get_option(e, "render.exposure", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "3.000000");
+  // 不存在文件
+  EXPECT_EQ(rd_engine_exec_script(e, "/tmp/rd_no_such_script.rds"), RD_ERROR_INVALID_ARG);
+  rd_engine_destroy(e);
+}

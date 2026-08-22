@@ -58,7 +58,23 @@ else()
   target_sources(rd_core PRIVATE ${RD_EMBEDDED_CPP})
 endif()
 
-# 声明式选项:options.json → options_generated(host=build 期;移动端在 Task 3 补 configure 期)
+# 声明式选项:options.json → options_generated(host=build 期;移动端 configure 期)
+if(ANDROID OR IOS)
+  set(RD_OPTIONS_CPP ${CMAKE_BINARY_DIR}/generated/options_generated.cpp)
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -DJSON=${CMAKE_CURRENT_SOURCE_DIR}/api/options.json
+            -DOUT_H=${CMAKE_BINARY_DIR}/generated/options_generated.h
+            -DOUT_CPP=${RD_OPTIONS_CPP}
+            -P ${CMAKE_SOURCE_DIR}/cmake/GenOptions.cmake
+    RESULT_VARIABLE res)
+  if(NOT res EQUAL 0)
+    message(FATAL_ERROR "options 生成失败")
+  endif()
+  target_sources(rd_core PRIVATE ${RD_OPTIONS_CPP})
+  target_include_directories(rd_core PUBLIC ${CMAKE_BINARY_DIR}/generated)
+endif()
+
+# 声明式选项:options.json → options_generated(host=build 期;移动端 configure 期)
 if(NOT ANDROID AND NOT IOS)
   set(RD_OPTIONS_CPP ${CMAKE_BINARY_DIR}/generated/options_generated.cpp)
   add_custom_command(

@@ -54,6 +54,7 @@ add_executable(rd_tests
   api/api_test.cpp
   api/embedded_test.cpp
   api/replay_test.cpp
+  api/options_test.cpp
 )
 target_link_libraries(rd_tests PRIVATE rd_core GTest::gtest_main ktx)
 target_include_directories(rd_tests PRIVATE

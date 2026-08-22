@@ -8,5 +8,5 @@ namespace rd::tool {
 /// playPath 非空:按日志回放(固定 dt,确定性;仅 C API 路径有效)。
 /// 环境变量 RD_INTERACTIVE_FRAMES=N:渲 N 帧后自动退出(冒烟用)。
 int runInteractive(const char* modelPath, const char* sceneName, const char* recordPath,
-                   const char* playPath);
+                   const char* playPath, const char* scriptPath = nullptr);
 } // namespace rd::tool

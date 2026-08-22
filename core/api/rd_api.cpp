@@ -40,6 +40,7 @@ struct rd_engine {
   std::vector<rd::LightData> gltfLights;    ///< glTF 解析灯(load_gltf 时存)
   bool shadowEnabled = true;
   bool lightsDirty = false;
+  bool renderDirty = true;  ///< 按需渲染脏标记(初始 true,首帧必渲)
   rd::Options options;                  ///< 声明式选项(render_frame 映射进 renderer)
   rd::CommandBus bus;                   ///< 命令总线(create 时注册内建命令)
   char cmdOutput[256] = {};             ///< 最近一次命令输出(get 等)
@@ -295,6 +296,9 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
               e ? e->swapChain.value() : 0, e ? int(e->rendererReady) : -1);
     return;
   }
+  // 按需渲染:干净且无动画/惯性时零 GPU 工作(平台 vsync 照常调,省电)
+  if (!e->renderDirty && !e->animator.playing() && !e->orbit.isMoving()) return;
+  e->renderDirty = false;
   e->device->beginFrame();  // 帧括号:驱动资源退休
   rd::TargetHandle target = e->device->acquireSwapChainTarget(e->swapChain);
   if (!target.valid()) {
@@ -370,6 +374,7 @@ rd_result_t rd_engine_set_quality(rd_engine* e, rd_quality_t q) {
     return RD_ERROR_INVALID_ARG;
   e->quality = q;
   applyQuality(e);
+  e->renderDirty = true;
   return RD_OK;
 }
 
@@ -386,6 +391,7 @@ rd_quality_t rd_engine_get_quality(rd_engine* e) {
 void rd_engine_on_pointer(rd_engine* e, rd_pointer_action_t a, int32_t id, float x,
                           float y) {
   if (!e) return;
+  e->renderDirty = true;
   switch (a) {
     case RD_POINTER_DOWN: e->orbit.onPointerDown(int(id), x, y); break;
     case RD_POINTER_MOVE: e->orbit.onPointerMove(int(id), x, y); break;
@@ -393,10 +399,14 @@ void rd_engine_on_pointer(rd_engine* e, rd_pointer_action_t a, int32_t id, float
     case RD_POINTER_CANCEL: e->orbit.onPointerUp(int(id), x, y); break;
   }
 }
-void rd_engine_on_scroll(rd_engine* e, float dy) { if (e) e->orbit.onScroll(dy); }
-void rd_engine_on_pinch(rd_engine* e, float r) { if (e) e->orbit.onPinch(r); }
+void rd_engine_on_scroll(rd_engine* e, float dy) {
+  if (e) { e->renderDirty = true; e->orbit.onScroll(dy); }
+}
+void rd_engine_on_pinch(rd_engine* e, float r) {
+  if (e) { e->renderDirty = true; e->orbit.onPinch(r); }
+}
 void rd_engine_on_double_tap(rd_engine* e, float, float) {
-  if (e) e->orbit.onDoubleTap();
+  if (e) { e->renderDirty = true; e->orbit.onDoubleTap(); }
 }
 
 rd_result_t rd_engine_load_gltf(rd_engine* e, const char* path) {
@@ -438,6 +448,7 @@ rd_result_t rd_engine_load_gltf(rd_engine* e, const char* path) {
     e->animator.bind(e->modelAsset);
     e->animator.play(0);
   }
+  e->renderDirty = true;
   return RD_OK;
 }
 
@@ -503,6 +514,7 @@ void rd_engine_add_spot_light(rd_engine* e, float px, float py, float pz, float 
 void rd_engine_set_shadow_enabled(rd_engine* e, int en) {
   if (!e) return;
   e->shadowEnabled = en != 0;
+  e->renderDirty = true;
   if (e->rendererReady) e->renderer.setShadowEnabled(e->shadowEnabled);
 }
 
@@ -515,9 +527,14 @@ rd_result_t rd_engine_exec_command(rd_engine* e, const char* command) {
     setError(e, out.c_str());
     return RD_ERROR_INVALID_ARG;
   }
+  e->renderDirty = true;  // 命令成功即可能改状态,置脏
   std::strncpy(e->cmdOutput, out.c_str(), sizeof(e->cmdOutput) - 1);
   e->cmdOutput[sizeof(e->cmdOutput) - 1] = '\0';
   return RD_OK;
+}
+
+void rd_engine_request_render(rd_engine* e) {
+  if (e) e->renderDirty = true;
 }
 
 const char* rd_engine_command_output(rd_engine* e) { return e ? e->cmdOutput : ""; }
@@ -534,6 +551,7 @@ rd_result_t rd_engine_set_option(rd_engine* e, const char* name, const char* val
     setError(e, (std::string("选项非法: ") + name).c_str());
     return RD_ERROR_INVALID_ARG;
   }
+  e->renderDirty = true;
   return RD_OK;
 }
 

@@ -48,6 +48,10 @@ public:
   float yaw() const { return yaw_; }
   float pitch() const { return pitch_; }
   float distance() const { return distance_; }
+  /// 是否在动(指针按下或惯性速度非零);按需渲染用。
+  bool isMoving() const {
+    return pointerCount() > 0 || vyaw_ != 0.0f || vpitch_ != 0.0f;
+  }
 
 private:
   struct Pointer {

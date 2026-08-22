@@ -63,6 +63,9 @@ void rd_engine_resize(rd_engine* engine, uint32_t width, uint32_t height);
  */
 void rd_engine_render_frame(rd_engine* engine, float dt_seconds);
 
+/// 手动置脏（下一帧渲染）；按需渲染模式下宿主在状态变更/外部事件时调用。
+void rd_engine_request_render(rd_engine* engine);
+
 /// 画质档位（AUTO=caps 启发式默认，引擎初始状态）。
 typedef enum rd_quality {
   RD_QUALITY_AUTO = 0,

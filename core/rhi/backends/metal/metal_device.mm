@@ -226,7 +226,50 @@ public:
 class MetalDevice final : public Device {
 public:
   /// 析构前等 GPU 空闲，保证资源释放时无在飞命令引用。
-  ~MetalDevice() override { waitIdle(); }
+  ~MetalDevice() override { savePipelineCache(); waitIdle(); }
+
+  /// MTLBinaryArchive 落盘(macOS 11+/iOS 14+;低系统 no-op)。
+  void setPipelineCachePath(const char* path) override {
+    savePipelineCache();
+    archive_ = nil;
+    pipelineCachePath_ = path ? path : "";
+    if (pipelineCachePath_.empty()) return;
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+      auto* d = [MTLBinaryArchiveDescriptor new];
+      NSString* p = [NSString stringWithUTF8String:pipelineCachePath_.c_str()];
+      if ([[NSFileManager defaultManager] fileExistsAtPath:p])
+        d.url = [NSURL fileURLWithPath:p];
+      NSError* err = nil;
+      archive_ = [device_ newBinaryArchiveWithDescriptor:d error:&err];
+      if (archive_)
+        RD_LOGI("rhi.metal", "管线缓存装载 %s", pipelineCachePath_.c_str());
+      else
+        RD_LOGW("rhi.metal", "管线缓存装载失败(按无缓存工作): %s",
+                err ? err.localizedDescription.UTF8String : "unknown");
+    }
+  }
+  /// 落盘(析构/切路径时调用)。
+  void savePipelineCache() {
+    if (!archive_ || pipelineCachePath_.empty()) return;
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+      const std::string tmpPath = pipelineCachePath_ + ".tmp";
+      NSString* tmp = [NSString stringWithUTF8String:tmpPath.c_str()];
+      // 父目录自动创建
+      NSString* parent = [tmp stringByDeletingLastPathComponent];
+      [[NSFileManager defaultManager] createDirectoryAtPath:parent
+                                withIntermediateDirectories:YES attributes:nil error:nil];
+      NSError* err = nil;
+      if ([archive_ serializeToURL:[NSURL fileURLWithPath:tmp] error:&err]) {
+        NSString* dst = [NSString stringWithUTF8String:pipelineCachePath_.c_str()];
+        [[NSFileManager defaultManager] removeItemAtPath:dst error:nil];
+        [[NSFileManager defaultManager] moveItemAtPath:tmp toPath:dst error:nil];
+        RD_LOGI("rhi.metal", "管线缓存落盘 %s", pipelineCachePath_.c_str());
+      } else {
+        RD_LOGW("rhi.metal", "管线缓存落盘失败: %s",
+                err ? err.localizedDescription.UTF8String : "unknown");
+      }
+    }
+  }
 
   /// 初始化：取系统默认 Metal 设备并创建命令队列。失败记日志返回 false。
   bool init(const DeviceDesc&) {
@@ -406,6 +449,9 @@ public:
                                                  : MTLVertexStepFunctionPerVertex;
     }
     pd.vertexDescriptor = vd;
+    // 管线缓存(macOS 11+/iOS 14+;archive 收集本次创建的 pipeline 二进制)
+    if (@available(macOS 11.0, iOS 14.0, *))
+      if (archive_) pd.binaryArchives = @[ archive_ ];
 
     NSError* err = nil;
     id<MTLRenderPipelineState> state =
@@ -907,6 +953,8 @@ public:
 private:
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
+  id<MTLBinaryArchive> archive_ = nil;   ///< 管线缓存(macOS 11+/iOS 14+)
+  std::string pipelineCachePath_;        ///< 管线缓存路径(空=关)
   id<MTLCommandBuffer> lastCmd_ = nil;   ///< 最近提交的命令（waitIdle 等待对象）
   MetalCommandBuffer cmdBuf_{this};      ///< 设备内唯一命令缓冲（单线程模型）
   DeviceCaps caps_;                      ///< 能力表(init 内上报)

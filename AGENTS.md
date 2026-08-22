@@ -52,6 +52,10 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   域驱动 optionsRange/optionsEnumValues)+ 引擎族(load_model/play_animation/...);
   render_frame 干净时零 GPU 跳过(脏源:选项/命令/模型/输入/画质;
   Orbit 惯性或动画播放期间持续渲)
+- IBL 预滤波缓存(F3D 落地):FNV-1a 内容哈希(env 源像素+size+mips);
+  `<cache_dir>/ibl/<hash>.ibc`(原子写/坏文件拒绝);默认关,
+  `rd_engine_set_cache_dir` 开启;缓存模式预滤波走离屏读回+updateTexture
+  (三后端统一);BRDF LUT 为 CPU 纯函数不缓存;ctest ibl_cache_miss/hit/equal 双跑
 - loader 补强:非索引/strip 分解(交替绕序)+ 法线缺失时逐面 flat 生成(Fox 可用)
 - 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
 
@@ -82,6 +86,8 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   + load_model/play_animation/crossfade_animation/pause_animation/quality/reset_view
 - 按需渲染:render_frame 干净(无脏/无动画/无惯性)时零 GPU 跳过;
   `rd_engine_request_render` 手动置脏;新增状态变更 API 须置脏
+- IBL 缓存:`rd_engine_set_cache_dir(path)` 开启(默认关);
+  render_test `--cache-dir <path>`;缓存键=env 源像素+size+mips
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
 

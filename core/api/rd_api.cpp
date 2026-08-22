@@ -9,6 +9,7 @@
 #include "api/command_bus.h"
 #include "api/embedded_shaders.h"
 #include "foundation/log.h"
+#include <filesystem>
 #include "options_generated.h"
 #include "renderer/quality.h"
 #include "renderer/renderer.h"
@@ -540,6 +541,16 @@ void rd_engine_request_render(rd_engine* e) {
 void rd_engine_set_cache_dir(rd_engine* e, const char* path) {
   if (!e) return;
   e->renderer.setCacheDir(path);
+  // pipeline 缓存同目录:<dir>/pipelines/<backend>.bin
+  if (e->device && path && path[0]) {
+    const std::string dir = std::string(path) + "/pipelines";
+    std::filesystem::create_directories(dir);
+    const char* bn = e->device->backend() == rd::Backend::Vulkan ? "vulkan"
+                   : e->device->backend() == rd::Backend::Metal ? "metal" : "gles";
+    e->device->setPipelineCachePath((dir + "/" + bn + ".bin").c_str());
+  } else if (e->device) {
+    e->device->setPipelineCachePath("");
+  }
   e->renderDirty = true;
 }
 

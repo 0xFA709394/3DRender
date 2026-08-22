@@ -38,6 +38,11 @@ else()
     URL https://github.com/KhronosGroup/KTX-Software/archive/refs/tags/v4.3.2.tar.gz)
 endif()
 FetchContent_MakeAvailable(ktx)
+# ktx CMakeLists 会强设 CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=11.0
+# (CACHE 全局,污染所有目标;std::filesystem 需 13+)——iOS 下覆盖回 16.0
+if(IOS)
+  set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "" FORCE)
+endif()
 # astcenc 自带 -Werror 且 AppleClang 下同目标的 -ffp-model/-ffp-contract 冲突会致命,
 # 关掉该告警名(目标名随 ISA 变,逐个存在性检查)
 foreach(astcenc_tgt astcenc-neon-static astcenc-avx2-static astcenc-sse4.1-static

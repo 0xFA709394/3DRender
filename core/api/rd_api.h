@@ -176,6 +176,11 @@ const char* rd_engine_command_output(rd_engine* engine);
 /// 失败输出 "行号: 错误描述"(rd_engine_command_output)。
 rd_result_t rd_engine_exec_script(rd_engine* engine, const char* path);
 
+/// 保存全部选项到 JSON 文件(扁平名值对;原子写 tmp+rename)。
+rd_result_t rd_engine_save_options(rd_engine* engine, const char* path);
+/// 从 JSON 文件加载并应用选项;未知名跳过(向前兼容),文件坏/不存在报错。
+rd_result_t rd_engine_load_options(rd_engine* engine, const char* path);
+
 /**
  * @brief 最近一次错误的可读描述（无错误时为空串）。
  * @note 返回指针由 engine 持有，下次错误时被覆盖；调用方勿释放。

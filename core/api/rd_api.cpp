@@ -618,3 +618,92 @@ rd_result_t rd_engine_get_option(rd_engine* e, const char* name, char* out,
   out[size - 1] = '\0';
   return RD_OK;
 }
+
+rd_result_t rd_engine_save_options(rd_engine* e, const char* path) {
+  if (!e || !path) return RD_ERROR_INVALID_ARG;
+  std::string json = "{\n";
+  const int32_t n = rd::optionsCount();
+  for (int32_t i = 0; i < n; ++i) {
+    const char* name = rd::optionsAllNames()[i];
+    std::string v;
+    rd::optionsGet(e->options, name, v);
+    json += std::string("  \"") + name + "\": \"" + v + "\"";
+    json += (i + 1 < n) ? ",\n" : "\n";
+  }
+  json += "}\n";
+  const std::string tmp = std::string(path) + ".tmp";
+  FILE* f = fopen(tmp.c_str(), "w");
+  if (!f) {
+    setError(e, "选项保存失败: 不可写");
+    return RD_ERROR_INVALID_ARG;
+  }
+  const bool ok = fwrite(json.data(), 1, json.size(), f) == json.size();
+  fclose(f);
+  if (!ok) {
+    std::filesystem::remove(tmp);
+    setError(e, "选项保存失败: 写入截断");
+    return RD_ERROR_INVALID_ARG;
+  }
+  std::error_code ec;
+  std::filesystem::rename(tmp, path, ec);
+  if (ec) {
+    setError(e, "选项保存失败: rename");
+    return RD_ERROR_INVALID_ARG;
+  }
+  return RD_OK;
+}
+
+rd_result_t rd_engine_load_options(rd_engine* e, const char* path) {
+  if (!e || !path) return RD_ERROR_INVALID_ARG;
+  FILE* f = fopen(path, "r");
+  if (!f) {
+    setError(e, (std::string("选项文件不存在: ") + path).c_str());
+    return RD_ERROR_INVALID_ARG;
+  }
+  std::string json;
+  char buf[1024];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) json.append(buf, n);
+  fclose(f);
+  // 扁平 JSON 扫描:"key" : "value"(或裸值);嵌套/数组不支持
+  int applied = 0;
+  size_t p = 0;
+  bool syntaxOk = false;
+  while ((p = json.find('"', p)) != std::string::npos) {
+    const size_t ke = json.find('"', p + 1);
+    if (ke == std::string::npos) break;
+    const std::string key = json.substr(p + 1, ke - p - 1);
+    p = ke + 1;
+    const size_t colon = json.find(':', p);
+    if (colon == std::string::npos) break;
+    syntaxOk = true;
+    p = colon + 1;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) ++p;
+    std::string value;
+    if (p < json.size() && json[p] == '"') {
+      const size_t ve = json.find('"', p + 1);
+      if (ve == std::string::npos) break;
+      value = json.substr(p + 1, ve - p - 1);
+      p = ve + 1;
+    } else {
+      const size_t ve = json.find_first_of(",} \t\r\n", p);
+      value = json.substr(p, ve == std::string::npos ? ve : ve - p);
+      p = ve == std::string::npos ? json.size() : ve;
+    }
+    // 未知名跳过(向前兼容)
+    std::string dummy;
+    if (rd::optionsGet(e->options, key, dummy)) {
+      if (!rd::optionsSet(e->options, key, value)) {
+        setError(e, (std::string("选项值非法: ") + key + "=" + value).c_str());
+        return RD_ERROR_INVALID_ARG;
+      }
+      ++applied;
+    }
+  }
+  if (!syntaxOk) {
+    setError(e, "选项文件格式错误");
+    return RD_ERROR_INVALID_ARG;
+  }
+  if (applied > 0) e->renderDirty = true;
+  return RD_OK;
+}

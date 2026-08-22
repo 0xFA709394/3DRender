@@ -205,3 +205,41 @@ TEST(Api, ExecScript) {
   EXPECT_EQ(rd_engine_exec_script(e, "/tmp/rd_no_such_script.rds"), RD_ERROR_INVALID_ARG);
   rd_engine_destroy(e);
 }
+
+// 选项持久化:save → 改值 → load → 恢复;未知名跳过;坏文件报错
+TEST(Api, OptionsPersistence) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  const char* path = "/tmp/rd_options_save.json";
+  // 改几个值后保存
+  EXPECT_EQ(rd_engine_set_option(e, "render.exposure", "2.5"), RD_OK);
+  EXPECT_EQ(rd_engine_set_option(e, "quality.fxaa", "true"), RD_OK);
+  EXPECT_EQ(rd_engine_set_option(e, "quality.tier", "low"), RD_OK);
+  EXPECT_EQ(rd_engine_save_options(e, path), RD_OK);
+  // 改回去再加载
+  EXPECT_EQ(rd_engine_set_option(e, "render.exposure", "1.0"), RD_OK);
+  EXPECT_EQ(rd_engine_set_option(e, "quality.fxaa", "false"), RD_OK);
+  EXPECT_EQ(rd_engine_set_option(e, "quality.tier", "high"), RD_OK);
+  EXPECT_EQ(rd_engine_load_options(e, path), RD_OK);
+  char buf[64];
+  EXPECT_EQ(rd_engine_get_option(e, "render.exposure", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "2.500000");
+  EXPECT_EQ(rd_engine_get_option(e, "quality.fxaa", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "true");
+  EXPECT_EQ(rd_engine_get_option(e, "quality.tier", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "low");
+  // 未知名跳过(向前兼容):文件含未来选项
+  FILE* f = fopen(path, "w");
+  ASSERT_NE(f, nullptr);
+  fputs("{ \"render.exposure\": \"3.0\", \"future.new_option\": \"x\" }", f);
+  fclose(f);
+  EXPECT_EQ(rd_engine_load_options(e, path), RD_OK);
+  EXPECT_EQ(rd_engine_get_option(e, "render.exposure", buf, sizeof(buf)), RD_OK);
+  EXPECT_STREQ(buf, "3.000000");
+  // 坏文件
+  f = fopen(path, "w");
+  fputs("not json at all", f);
+  fclose(f);
+  EXPECT_EQ(rd_engine_load_options(e, path), RD_ERROR_INVALID_ARG);
+  rd_engine_destroy(e);
+}

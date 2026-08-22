@@ -86,6 +86,10 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   + load_model/play_animation/crossfade_animation/pause_animation/quality/reset_view
 - 按需渲染:render_frame 干净(无脏/无动画/无惯性)时零 GPU 跳过;
   `rd_engine_request_render` 手动置脏;新增状态变更 API 须置脏
+- 命令脚本:`rd_engine_exec_script(path)`(每行一命令,# 注释,错误即停);
+  render_test `--interactive --script <path>`
+- 选项持久化:`rd_engine_save_options/load_options`(扁平 JSON 名值对;
+  原子写;未知名跳过向前兼容)
 - IBL 缓存:`rd_engine_set_cache_dir(path)` 开启(默认关);
   render_test `--cache-dir <path>`;缓存键=env 源像素+size+mips
 - pipeline 缓存(F3D 落地):`Device::setPipelineCachePath`(Vulkan VkPipelineCache

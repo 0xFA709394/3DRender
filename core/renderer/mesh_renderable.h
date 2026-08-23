@@ -20,6 +20,9 @@ public:
 
   /// 网格数据访问(Renderer 填 ItemUBO 用)。
   const std::vector<MeshGpuData>& meshData() const { return mesh_->meshes(); }
+  /// 包围球(视锥剔除用;模型级,world 变换后测试)。
+  const float* boundingCenter() const { return mesh_->boundingCenter(); }
+  float boundingRadius() const { return mesh_->boundingRadius(); }
 
 private:
   std::shared_ptr<MeshRenderResource> mesh_;

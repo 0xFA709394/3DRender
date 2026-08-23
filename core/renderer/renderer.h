@@ -88,6 +88,8 @@ public:
   void setSkyboxEnabled(bool on) { skyboxEnabled_ = on; }
   /// 环境绕 Y 旋转(度;烘进 equirect pass,值变触发环境重建;程序化模式忽略)。
   void setEnvYaw(float deg);
+  /// 视锥剔除开关(默认开;包围球 × world 测 6 平面,蒙皮项跳过)。
+  void setFrustumCulling(bool on) { frustumCulling_ = on; }
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
@@ -168,6 +170,7 @@ private:
   BufferHandle skyboxVb_;          // 3×vec3 视线方向(每帧 CPU 重写,含 yaw)
   bool skyboxEnabled_ = false;
   float envYawDeg_ = 0.0f;
+  bool frustumCulling_ = true;  ///< 视锥剔除(默认开)
   float compositeExposure_ = 1.0f;
   float shadowBias_ = 0.0015f;
   uint32_t shadowMapSizeOverride_ = 0;  ///< 0=按档

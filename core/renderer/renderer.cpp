@@ -10,6 +10,42 @@
 namespace rd {
 namespace {
 
+/// 从 viewProj 提取 6 视锥平面(glm 列主序:plane = row3 ± row0/1/2)。
+struct FrustumPlanes {
+  glm::vec4 p[6];
+};
+FrustumPlanes extractFrustum(const glm::mat4& vp) {
+  auto row = [&](int i) { return glm::vec4(vp[0][i], vp[1][i], vp[2][i], vp[3][i]); };
+  const glm::vec4 r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+  FrustumPlanes f;
+  f.p[0] = r3 + r0;  // left
+  f.p[1] = r3 - r0;  // right
+  f.p[2] = r3 + r1;  // bottom
+  f.p[3] = r3 - r1;  // top
+  f.p[4] = r2;       // near(D3D 约定 z∈[0,1]:plane=z 行)
+  f.p[5] = r3 - r2;  // far
+  for (auto& pl : f.p) {
+    const float l = glm::length(glm::vec3(pl));
+    if (l > 0.0f) pl /= l;
+  }
+  return f;
+}
+/// 包围球 × world 矩阵与视锥测试;true=可见(相交/内部)。
+bool sphereVisible(const FrustumPlanes& f, const glm::mat4& world, const float* center,
+                   float radius) {
+  const glm::vec4 c4 = world * glm::vec4(center[0], center[1], center[2], 1.0f);
+  // 半径随最大轴缩放
+  const float sx = glm::length(glm::vec3(world[0]));
+  const float sy = glm::length(glm::vec3(world[1]));
+  const float sz = glm::length(glm::vec3(world[2]));
+  const float r = radius * std::max(sx, std::max(sy, sz));
+  for (const auto& pl : f.p)
+    if (glm::dot(glm::vec3(pl), glm::vec3(c4)) + pl.w < -r) return false;
+  return true;
+}
+} // namespace
+namespace {
+
 /// 顶点布局(48B 交错):pos3@0|normal3@12|tangent4@24|uv2@40
 void fillVertexLayout(PipelineDesc& pd) {
   pd.vertexBindings = {{0, 48}};
@@ -638,8 +674,67 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     return da > db;
   });
 
-  // 统一填充 per-item ItemUBO(槽位按排序后顺序)
+  // ---- LightUBO 填充(无灯 → 默认 1 方向光,与 2b/2c 现状一致)----
+  std::vector<LightData> effective = lights_;
+  if (effective.empty()) {
+    LightData d;
+    d.type = LightType::Directional;    const float n = std::sqrt(0.5f * 0.5f + 0.8f * 0.8f + 0.3f * 0.3f);
+    d.direction[0] = -0.5f / n;
+    d.direction[1] = 0.8f / n;
+    d.direction[2] = 0.3f / n;
+    d.color[0] = 0.8f;
+    d.color[1] = 0.75f;
+    d.color[2] = 0.7f;
+    effective.push_back(d);
+  }
+  const LightData* dirLight = nullptr;
+  for (const auto& l : effective)
+    if (l.type == LightType::Directional) {
+      dirLight = &l;
+      break;
+    }
+  // 阴影激活:手动开 + 画质档非 0 + 有方向光 + 目标就绪
+  const bool shadowActive = shadowManual_ && shadowMapSize_ > 0 && dirLight != nullptr &&
+                            ensureShadowTarget();
+  math::Mat4 lvp{1.0f};
+  if (dirLight) lvp = makeLightViewProj(*dirLight, framingCenter_, framingRadius_);
+  LightUBOData lu{};
+  fillLightUBO(lu, effective, lvp,
+               shadowMapSize_ ? 1.0f / float(shadowMapSize_) : 0.0f, shadowActive,
+               dev_->backend() == Backend::GLES, shadowBias_);
+  lu.lightCount[1] = postEnabled_ ? 1.0f : 0.0f;  // hdrMode(post 开输出线性 HDR)
+  dev_->updateBuffer(lightUbo_, &lu, sizeof(lu), 0);
+
+
+  // ---- 视锥剔除(相机 VP 场景 pass / 光源 VP 阴影 pass;蒙皮项跳过)----
+  const FrustumPlanes camFrustum = extractFrustum(viewProj_);
+  const FrustumPlanes lightFrustum = extractFrustum(lvp);
+  auto culledBy = [&](uint32_t idx, const FrustumPlanes& f) {
+    if (!frustumCulling_ || jointSlot_[idx] >= 0) return false;  // 蒙皮不剔除
+    const auto* r = static_cast<const MeshRenderable*>(queue_[idx].get());
+    if (r->meshData().empty()) return false;
+    return !sphereVisible(f, worldStack_[idx], r->boundingCenter(), r->boundingRadius());
+  };
+  std::vector<uint32_t> camVis, lightVis;
+  for (uint32_t i : order) {
+    if (!culledBy(i, camFrustum)) camVis.push_back(i);
+  }
+  if (shadowActive)
+    for (uint32_t i : order) {
+      if (!culledBy(i, lightFrustum)) lightVis.push_back(i);
+    }
+  // ItemUBO 槽位 = 两可见集并集(保序),阴影/场景 pass 共用
+  std::vector<int32_t> slotOf(count, -1);
+  uint32_t slotCount = 0;
+  auto assignSlot = [&](uint32_t idx) {
+    if (slotOf[idx] < 0) slotOf[idx] = int32_t(slotCount++);
+  };
+  for (uint32_t i : camVis) assignSlot(i);
+  for (uint32_t i : lightVis) assignSlot(i);
+
+  // 统一填充 per-item ItemUBO(槽位 = 可见并集序号 slotOf)
   for (uint32_t i = 0; i < count; ++i) {
+    if (slotOf[order[i]] < 0) continue;  // 剔除项不占 UBO 槽
     const auto* renderable = static_cast<const MeshRenderable*>(queue_[order[i]].get());
     const auto& meshes = renderable->meshData();
     // ItemUBO 按 mesh 首个材质填(多 mesh 模型共享 item 槽——简化:逐 item 一个 UBO,
@@ -672,40 +767,8 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       iu.metallicRough[2] = 1.0f;
       iu.uvTransform[2] = iu.uvTransform[3] = 1.0f;
     }
-    dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(i) * kUboStride);
+    dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(slotOf[order[i]]) * kUboStride);
   }
-
-  // ---- LightUBO 填充(无灯 → 默认 1 方向光,与 2b/2c 现状一致)----
-  std::vector<LightData> effective = lights_;
-  if (effective.empty()) {
-    LightData d;
-    d.type = LightType::Directional;
-    const float n = std::sqrt(0.5f * 0.5f + 0.8f * 0.8f + 0.3f * 0.3f);
-    d.direction[0] = -0.5f / n;
-    d.direction[1] = 0.8f / n;
-    d.direction[2] = 0.3f / n;
-    d.color[0] = 0.8f;
-    d.color[1] = 0.75f;
-    d.color[2] = 0.7f;
-    effective.push_back(d);
-  }
-  const LightData* dirLight = nullptr;
-  for (const auto& l : effective)
-    if (l.type == LightType::Directional) {
-      dirLight = &l;
-      break;
-    }
-  // 阴影激活:手动开 + 画质档非 0 + 有方向光 + 目标就绪
-  const bool shadowActive = shadowManual_ && shadowMapSize_ > 0 && dirLight != nullptr &&
-                            ensureShadowTarget();
-  math::Mat4 lvp{1.0f};
-  if (dirLight) lvp = makeLightViewProj(*dirLight, framingCenter_, framingRadius_);
-  LightUBOData lu{};
-  fillLightUBO(lu, effective, lvp,
-               shadowMapSize_ ? 1.0f / float(shadowMapSize_) : 0.0f, shadowActive,
-               dev_->backend() == Backend::GLES, shadowBias_);
-  lu.lightCount[1] = postEnabled_ ? 1.0f : 0.0f;  // hdrMode(post 开输出线性 HDR)
-  dev_->updateBuffer(lightUbo_, &lu, sizeof(lu), 0);
 
   // ---- ShadowPass(场景 pass 之前)----
   if (shadowActive) {
@@ -717,12 +780,12 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     sctx.shadowPipe = shadowPipeline_;
     sctx.skinnedShadowPipe = skinnedShadowPipeline_;
     sctx.jointUbo = jointUbo_;
-    for (uint32_t i = 0; i < count; ++i) {
-      sctx.itemOffset = uint64_t(i) * kUboStride;
-      sctx.jointOffset = jointSlot_[order[i]] >= 0
-                             ? uint64_t(jointSlot_[order[i]]) * kJointItemStride
+    for (uint32_t idx : lightVis) {
+      sctx.itemOffset = uint64_t(slotOf[idx]) * kUboStride;
+      sctx.jointOffset = jointSlot_[idx] >= 0
+                             ? uint64_t(jointSlot_[idx]) * kJointItemStride
                              : 0;
-      queue_[order[i]]->record(cmd, sctx);
+      queue_[idx]->record(cmd, sctx);
     }
     cmd->endRenderPass();
   }
@@ -775,13 +838,13 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.skinnedShadowPipe = skinnedShadowPipeline_;
   ctx.blendPipeline = blendPipeline_;
   ctx.jointUbo = jointUbo_;
-  for (uint32_t i = 0; i < count; ++i) {
-    queue_[order[i]]->prepass(cmd);  // 2b 钩子(默认空)
-    ctx.itemOffset = uint64_t(i) * kUboStride;
-    ctx.jointOffset = jointSlot_[order[i]] >= 0
-                          ? uint64_t(jointSlot_[order[i]]) * kJointItemStride
+  for (uint32_t idx : camVis) {
+    queue_[idx]->prepass(cmd);  // 2b 钩子(默认空)
+    ctx.itemOffset = uint64_t(slotOf[idx]) * kUboStride;
+    ctx.jointOffset = jointSlot_[idx] >= 0
+                          ? uint64_t(jointSlot_[idx]) * kJointItemStride
                           : 0;
-    queue_[order[i]]->record(cmd, ctx);
+    queue_[idx]->record(cmd, ctx);
   }
   cmd->endRenderPass();
   if (scene != target) {

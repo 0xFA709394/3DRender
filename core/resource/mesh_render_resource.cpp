@@ -3,6 +3,7 @@
 // emissive 缺省绑黑(0 贡献);normal 缺省绑平面法线(0.5,0.5,1)。
 #include "resource/mesh_render_resource.h"
 #include "foundation/log.h"
+#include <cstring>
 
 namespace rd {
 namespace {
@@ -41,6 +42,8 @@ std::shared_ptr<MeshRenderResource> MeshRenderResource::upload(Device& dev,
                                                                const ModelAsset& model) {
   if (!model.valid()) return nullptr;
   auto res = std::shared_ptr<MeshRenderResource>(new MeshRenderResource());
+  memcpy(res->boundingCenter_, model.boundingCenter, sizeof(res->boundingCenter_));
+  res->boundingRadius_ = model.boundingRadius;
   res->fallbackWhite_ = makePixel(dev, 255, 255, 255);
   res->fallbackBlack_ = makePixel(dev, 0, 0, 0);
   res->fallbackNormal_ = makePixel(dev, 128, 128, 255);

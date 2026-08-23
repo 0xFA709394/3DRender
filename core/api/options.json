@@ -32,6 +32,7 @@
     "domain": {"style": "range", "min": 0.0001, "max": 0.01, "step": 0.0001},
     "doc": "阴影 bias"
   },
+  "render.frustum_culling": {"type": "bool", "default": true, "doc": "视锥剔除开关"},
   "env.skybox": {"type": "bool", "default": false, "doc": "天空盒背景开关"},
   "env.yaw_deg": {
     "type": "float", "default": 0.0,

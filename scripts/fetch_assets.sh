@@ -12,6 +12,12 @@ dl() {  # dl <本地名> <远端路径>
 }
 dl CesiumMan.glb CesiumMan/glTF-Binary/CesiumMan.glb
 dl Fox.glb Fox/glTF-Binary/Fox.glb
+# P4 打磨新增(iOS demo 模型集;均验证可渲染)
+dl Duck.glb Duck/glTF-Binary/Duck.glb
+dl BoomBox.glb BoomBox/glTF-Binary/BoomBox.glb
+dl WaterBottle.glb WaterBottle/glTF-Binary/WaterBottle.glb
+dl Corset.glb Corset/glTF-Binary/Corset.glb
+dl Lantern.glb Lantern/glTF-Binary/Lantern.glb
 
 # Sponza(无 glb 形态):glTF 主文件 + 全部外链纹理到 assets/sponza/
 if [ -f assets/sponza/Sponza.gltf ]; then

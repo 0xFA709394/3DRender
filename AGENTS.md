@@ -92,6 +92,10 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   render_test `--interactive --script <path>`
 - 选项持久化:`rd_engine_save_options/load_options`(扁平 JSON 名值对;
   原子写;未知名跳过向前兼容)
+- 视锥剔除(P4 性能):endScene 排序后按包围球×world 测 6 平面;
+  场景 pass 用相机 VP、阴影 pass 用光源 VP(屏外物体可向屏内投影);
+  ItemUBO 槽位=两可见集并集 slotOf 映射;蒙皮项跳过(动态包围);
+  选项 render.frustum_culling(默认开);perf sponza 基准场景(fetch_assets 下载,缺失跳过)
 - IBL 缓存:`rd_engine_set_cache_dir(path)` 开启(默认关);
   render_test `--cache-dir <path>`;缓存键=env 源像素+size+mips
 - HDR 环境+天空盒:.hdr equirect(stb float)→ equirect_to_cube pass(RGBA16F)

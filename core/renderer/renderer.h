@@ -35,6 +35,7 @@ struct RendererShaderDesc {
   std::vector<uint8_t> skinnedVs;        ///< pbr_forward_skinned.vert(蒙皮管线)
   std::vector<uint8_t> skinnedShadowVs;  ///< shadow_depth_skinned.vert(蒙皮阴影)
   std::vector<uint8_t> equirectFs;       ///< equirect_to_cube.frag(HDR 环境;空=无 HDR)
+  std::vector<uint8_t> skyboxVs, skyboxFs;  ///< 天空盒(空=不支持)
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
 };
@@ -83,6 +84,10 @@ public:
   /// HDR 环境源切换(立即重建环境;nullptr=程序化;失败回退程序化并返回 false)。
   /// 指针有效期须覆盖到下次切换。
   bool setHdrEnvironment(const HdrEnv* env);
+  /// 天空盒开关(默认关;场景 pass 内首画,采样 prefilterCube mip0)。
+  void setSkyboxEnabled(bool on) { skyboxEnabled_ = on; }
+  /// 环境绕 Y 旋转(度;烘进 equirect pass/程序化方向,重建级生效)。
+  void setEnvYaw(float deg) { envYawDeg_ = deg; }
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
@@ -135,6 +140,7 @@ private:
   TextureHandle shadowFallbackTex_;  // 1x1 D32(1.0,无阴影时的占位绑定)
   // ---- 蒙皮 ----
   ShaderModuleHandle skvs_, sdsvs_;   // skinned pbr/shadow 顶点模块(管线重建用)
+  ShaderModuleHandle skyVs_, skyFs_;  // 天空盒模块(空码=不建)
   ShaderModuleHandle sfs_;            // shadow_depth.frag(蒙皮阴影管线重建用)
   PipelineHandle skinnedPipeline_;
   PipelineHandle skinnedShadowPipeline_;
@@ -158,6 +164,10 @@ private:
   TargetHandle fxaaTarget_;      // RGBA8 自建(fxaa 中间目标,final 尺寸)
   BufferHandle blurUbo1_, blurUbo2_, blurUbo3_, fxaaUbo_;  // 各 16B:x=vFlip,yz=texel
   BufferHandle compositeUbo_;    // composite 参数 UBO:x=vFlip,w=exposure
+  PipelineHandle skyboxPipeline_;  // 天空盒(场景 pass 首画;depthTest/Write 关)
+  BufferHandle skyboxVb_;          // 3×vec3 视线方向(每帧 CPU 重写,含 yaw)
+  bool skyboxEnabled_ = false;
+  float envYawDeg_ = 0.0f;
   float compositeExposure_ = 1.0f;
   float shadowBias_ = 0.0015f;
   uint32_t shadowMapSizeOverride_ = 0;  ///< 0=按档

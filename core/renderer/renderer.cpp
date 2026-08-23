@@ -95,6 +95,11 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   // 蒙皮 shader 模块(管线随 SceneTarget 重建时复用)
   skvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skinnedVs, desc.entry});
   sdsvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skinnedShadowVs, desc.entry});
+  if (!desc.skyboxVs.empty() && !desc.skyboxFs.empty()) {
+    skyVs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skyboxVs, desc.entry});
+    skyFs_ = dev.createShaderModule({ShaderStage::Fragment, desc.skyboxFs, desc.entry});
+  }
+  skyboxVb_ = dev.createBuffer({36, BufferUsage::Vertex, true, false, nullptr});
   jointUbo_ = dev.createBuffer({uint64_t(kJointItemStride) * kMaxJointItems,
                                 BufferUsage::Uniform, true, false, nullptr});
 
@@ -267,6 +272,21 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
   skinnedShadowPipeline_ = dev_->createPipeline(ssd);
   if (!skinnedPipeline_.valid() || !skinnedShadowPipeline_.valid())
     RD_LOGE("renderer", "蒙皮管线重建失败(fmt=%d samples=%u)", int(fmt), samples);
+  // 天空盒管线(depthTest/Write 关,场景 pass 首画;物体后画覆盖)
+  if (skyVs_.valid() && skyFs_.valid()) {
+    PipelineDesc skyd;
+    skyd.vertexShader = skyVs_;
+    skyd.fragmentShader = skyFs_;
+    skyd.vertexBindings = {{0, 12}};
+    skyd.attributes = {{0, Format::R32G32B32_FLOAT, 0, 0}};
+    skyd.cullMode = CullMode::None;
+    skyd.depthTest = false;
+    skyd.depthWrite = false;
+    skyd.colorFormat = fmt;
+    skyd.sampleCount = samples;
+    if (skyboxPipeline_.valid()) dev_->destroyPipeline(skyboxPipeline_);
+    skyboxPipeline_ = dev_->createPipeline(skyd);
+  }
   pipeFmt_ = fmt;
   pipeSamples_ = samples;
 }
@@ -340,6 +360,10 @@ void Renderer::shutdown() {
   if (sdsvs_.valid()) dev_->destroyShaderModule(sdsvs_);
   if (skinnedPipeline_.valid()) dev_->destroyPipeline(skinnedPipeline_);
   if (skinnedShadowPipeline_.valid()) dev_->destroyPipeline(skinnedShadowPipeline_);
+  if (skyboxPipeline_.valid()) dev_->destroyPipeline(skyboxPipeline_);
+  if (skyVs_.valid()) dev_->destroyShaderModule(skyVs_);
+  if (skyFs_.valid()) dev_->destroyShaderModule(skyFs_);
+  if (skyboxVb_.valid()) dev_->destroyBuffer(skyboxVb_);
   if (jointUbo_.valid()) dev_->destroyBuffer(jointUbo_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
@@ -370,6 +394,10 @@ void Renderer::shutdown() {
   sdsvs_ = {};
   skinnedPipeline_ = {};
   skinnedShadowPipeline_ = {};
+  skyboxPipeline_ = {};
+  skyVs_ = {};
+  skyFs_ = {};
+  skyboxVb_ = {};
   jointUbo_ = {};
   pipeSamples_ = 0;
   frameUbo_ = {};
@@ -700,6 +728,27 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     ensureScenePipelines(colorFormat_, 1);
   }
   cmd->beginRenderPass(scene, clear_);
+  // 天空盒:场景 pass 首画(depthTest/Write 关;后续物体正常覆盖)
+  if (skyboxEnabled_ && skyboxPipeline_.valid() && skyboxVb_.valid() &&
+      env_.prefilterCube().valid()) {
+    // 3 角视线方向:invViewProj × NDC 角(z=1 远平面)→ rotY(yaw)
+    const glm::mat4 invVP = glm::inverse(viewProj_);
+    const float yawR = envYawDeg_ * 0.0174532925f;
+    const glm::mat4 rotY = glm::rotate(glm::mat4(1.0f), yawR, glm::vec3(0, 1, 0));
+    const glm::vec2 ndc[3] = {{-1, -1}, {3, -1}, {-1, 3}};  // 与 skybox.vert 一致
+    float vb[9];
+    for (int i = 0; i < 3; ++i) {
+      const glm::vec4 w = invVP * glm::vec4(ndc[i], 1.0f, 1.0f);
+      const glm::vec3 d = glm::normalize(glm::vec3(rotY * glm::vec4(glm::vec3(w) / w.w, 0.0f)));
+      vb[i * 3 + 0] = d.x; vb[i * 3 + 1] = d.y; vb[i * 3 + 2] = d.z;
+    }
+    dev_->updateBuffer(skyboxVb_, vb, sizeof(vb), 0);
+    cmd->bindPipeline(skyboxPipeline_);
+    cmd->bindVertexBuffer(0, skyboxVb_, 0);
+    cmd->bindUniformBuffer(2, lightUbo_, 0, 352);  // hdrMode(lightCount.y)
+    cmd->bindTexture(5, env_.prefilterCube(), env_.cubeSampler());
+    cmd->draw(3, 0);
+  }
   RenderContext ctx;
   ctx.frameUbo = frameUbo_;
   ctx.itemUbo = itemUbo_;

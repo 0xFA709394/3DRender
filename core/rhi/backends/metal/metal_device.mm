@@ -42,6 +42,7 @@ MTLPixelFormat toMTLPixelFormat(Format f) {
     case Format::D32_FLOAT:   return MTLPixelFormatDepth32Float;
     case Format::ASTC_4x4_UNORM: return MTLPixelFormatASTC_4x4_LDR;
     case Format::R16G16B16A16_FLOAT: return MTLPixelFormatRGBA16Float;
+    case Format::R32G32B32A32_FLOAT: return MTLPixelFormatRGBA32Float;  // HDR equirect 源
     case Format::ETC2_RGBA8_UNORM: return MTLPixelFormatInvalid;  // Metal 不支持 ETC2
     default:                  return MTLPixelFormatInvalid;
   }

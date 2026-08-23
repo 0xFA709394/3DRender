@@ -36,8 +36,14 @@ public:
   /// 释放全部 GPU 资源(持有方在不再使用时调用;句柄 destroy 后本对象不可再用)。
   void destroy(Device& dev);
 
+  /// 包围球(模型级,来自 ModelAsset;视锥剔除用)。
+  const float* boundingCenter() const { return boundingCenter_; }
+  float boundingRadius() const { return boundingRadius_; }
+
 private:
   std::vector<MeshGpuData> meshes_;
+  float boundingCenter_[3] = {0, 0, 0};
+  float boundingRadius_ = 1.0f;
   SamplerHandle sampler_;
   TextureHandle fallbackWhite_;   // 1x1 白
   TextureHandle fallbackBlack_;   // 1x1 黑

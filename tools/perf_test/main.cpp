@@ -44,7 +44,8 @@ struct BenchResult {
   int frames = 0;
 };
 
-const char* kScenes[] = {"helmet_high", "helmet_low", "skinned_anim", "items_64"};
+const char* kScenes[] = {"helmet_high", "helmet_low", "skinned_anim", "items_64",
+                         "sponza"};  // sponza 需 assets/(fetch_assets.sh),缺失自动跳过
 
 rd::scene::Camera defaultCam(const rd::ModelAsset& m) {
   rd::scene::Camera cam;
@@ -93,6 +94,25 @@ bool buildScene(const std::string& name, rd::Device& dev, rd::Renderer& renderer
     ctx.animated = true;
     ctx.cam.lookAt({0, 1.2f, 3}, {0, 1, 0}, {0, 1, 0});
     ctx.cam.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+    return true;
+  }
+  if (name == "sponza") {
+    // 重量级场景(~26 万三角形;assets/sponza,fetch_assets.sh 下载;不存在则跳过)
+    auto model = rd::loadGltf((assetsDir + "/../../assets/sponza/Sponza.gltf").c_str());
+    if (!model.valid()) return false;
+    ctx.model = rd::MeshRenderResource::upload(dev, model);
+    if (!ctx.model) return false;
+    renderer.setQuality(rd::qualityPreset(rd::QualityTier::High));
+    rd::LightData light;
+    light.type = rd::LightType::Directional;
+    const float dl = std::sqrt(0.5f * 0.5f + 0.8f * 0.8f + 0.3f * 0.3f);
+    light.direction[0] = 0.5f / dl;
+    light.direction[1] = 0.8f / dl;
+    light.direction[2] = 0.3f / dl;
+    light.color[0] = light.color[1] = light.color[2] = 3.0f;
+    renderer.setLights({light});
+    renderer.setLightFraming(model.boundingCenter, model.boundingRadius);
+    ctx.cam = defaultCam(model);
     return true;
   }
   if (name == "items_64") {
@@ -290,6 +310,13 @@ int main(int argc, char** argv) {
       }
       SceneCtx ctx;
       if (!buildScene(sceneName, *device, renderer, ctx, assetsDir)) {
+        // 可选场景(下载资产)缺失:跳过;内置场景失败:整跑失败
+        if (strcmp(sceneName, "sponza") == 0) {
+          fprintf(stderr, "场景构建失败(%s)(可选资产缺失,跳过)\n", sceneName);
+          renderer.shutdown();
+          device->destroyTarget(target);
+          continue;
+        }
         fprintf(stderr, "场景构建失败(%s)\n", sceneName);
         return 1;
       }

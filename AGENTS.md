@@ -92,6 +92,14 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   原子写;未知名跳过向前兼容)
 - IBL 缓存:`rd_engine_set_cache_dir(path)` 开启(默认关);
   render_test `--cache-dir <path>`;缓存键=env 源像素+size+mips
+- HDR 环境+天空盒:.hdr equirect(stb float)→ equirect_to_cube pass(RGBA16F)
+  → SH9(equirect 立体角加权投影)+ 16F 预滤波;程序化模式保持 RGBA8 零回归;
+  HDR 模式 v1 无磁盘缓存(readbackTarget 仅 RGBA8,v2 待 readback16F);
+  天空盒=场景 pass 内首画(depthTest/Write 关,slot5 prefilterCube mip0,
+  LDR Reinhard 与 pbr 一致);选项 env.skybox(默认关)/env.yaw_deg(烘进 equirect pass,
+  值变触发环境重建;程序化模式忽略);
+  `rd_engine_set_environment_hdri(path)`/`set_environment_procedural()`;
+  golden: hdr_env_{metal,vulkan}.png(运行时生成渐变 hdr)
 - pipeline 缓存(F3D 落地):`Device::setPipelineCachePath`(Vulkan VkPipelineCache
   blob/Metal MTLBinaryArchive[macOS 11+/iOS 14+ 门控;Apple Silicon 系统 shader 缓存
   命中时 archive 收集不到二进制,落盘跳过为良性]/GLES no-op);

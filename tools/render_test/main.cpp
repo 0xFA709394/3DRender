@@ -106,6 +106,7 @@ int main(int argc, char** argv) {
     auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
     auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
     auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
+    auto eqFs = load("equirect_to_cube.frag");
     auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
     auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
     auto sdsVs = load("shadow_depth_skinned.vert");
@@ -119,7 +120,7 @@ int main(int argc, char** argv) {
                               pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                               sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                               cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                              unlitVs.entry, rd::Format::RGBA8_UNORM};
+                              eqFs.code,   unlitVs.entry, rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;
     td.height = kH;
@@ -184,6 +185,7 @@ int main(int argc, char** argv) {
     auto unlitVs = load("unlit.vert"), unlitFs = load("unlit.frag");
     auto pbrVs = load("pbr_forward.vert"), pbrFs = load("pbr_forward.frag");
     auto pfVs = load("prefilter.vert"), pfFs = load("prefilter.frag");
+    auto eqFs = load("equirect_to_cube.frag");
     auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
   auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
   auto exFs = load("bloom_extract.frag");
@@ -195,7 +197,7 @@ int main(int argc, char** argv) {
     rd::Renderer renderer;
     rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                               pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
-                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
+                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,   eqFs.code,
                               unlitVs.entry, rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;

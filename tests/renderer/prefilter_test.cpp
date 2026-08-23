@@ -55,7 +55,7 @@ void runCase(rd::Backend b) {
   auto pfVs = rd::test::loadShaderCode(b, RD_SHADER_DIR, "prefilter.vert");
   auto pfFs = rd::test::loadShaderCode(b, RD_SHADER_DIR, "prefilter.frag");
   rd::renderer::Environment env;
-  ASSERT_TRUE(env.build(*dev, pfVs.code, pfFs.code, pfVs.entry, rd::Format::RGBA8_UNORM));
+  ASSERT_TRUE(env.build(*dev, pfVs.code, pfFs.code, {}, pfVs.entry, rd::Format::RGBA8_UNORM));
 
   // mip0(roughness≈0):GPU 预滤波 ≈ CPU 直采原环境(偏心方向,非面心)
   glm::vec3 dirA = glm::normalize(glm::vec3(1.0f, 0.3f, -0.2f));

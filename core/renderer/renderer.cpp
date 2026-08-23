@@ -39,6 +39,7 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   entry_ = desc.entry;
   pfVsCode_ = desc.prefilterVs;
   pfFsCode_ = desc.prefilterFs;
+  eqFsCode_ = desc.equirectFs;
 
   // unlit 管线(shader 模块持有,场景管线随 SceneTarget 重建用)
   uvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.unlitVs, desc.entry});
@@ -98,8 +99,8 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
                                 BufferUsage::Uniform, true, false, nullptr});
 
   // 环境(SH/LUT/GPU 预滤波,init 期一次性;尺寸/级数按画质档,默认现状 64/5)
-  const bool envOk = env_.build(dev, desc.prefilterVs, desc.prefilterFs, desc.entry,
-                                desc.colorFormat, iblSize_, iblMips_);
+  const bool envOk = env_.build(dev, desc.prefilterVs, desc.prefilterFs, desc.equirectFs,
+                                desc.entry, desc.colorFormat, iblSize_, iblMips_);
 
   // 多光源 + 阴影资源
   lightUbo_ = dev.createBuffer({352, BufferUsage::Uniform, true, false, nullptr});
@@ -377,6 +378,24 @@ void Renderer::shutdown() {
   dev_ = nullptr;
 }
 
+bool Renderer::setHdrEnvironment(const HdrEnv* env) {
+  if (!dev_) return false;
+  env_.destroy(*dev_);
+  env_.setHdrSource(env);
+  if (!env_.build(*dev_, pfVsCode_, pfFsCode_, eqFsCode_, entry_, colorFormat_, iblSize_,
+                  iblMips_)) {
+    RD_LOGW("renderer", "HDR 环境构建失败,回退程序化");
+    env_.destroy(*dev_);
+    env_.setHdrSource(nullptr);
+    if (!env_.build(*dev_, pfVsCode_, pfFsCode_, eqFsCode_, entry_, colorFormat_,
+                    iblSize_, iblMips_))
+      RD_LOGE("renderer", "程序化环境恢复失败");
+    return false;  // HDR 失败(程序化兜底已尽力恢复)
+  }
+  RD_LOGI("renderer", "HDR 环境已%s", env ? "应用" : "切回程序化");
+  return true;
+}
+
 void Renderer::setQuality(const QualityPreset& q) {
   renderScale_ = q.renderScale;
   msaa_ = q.msaa;
@@ -391,7 +410,8 @@ void Renderer::setQuality(const QualityPreset& q) {
     iblSize_ = q.iblPrefilterSize;
     iblMips_ = q.iblPrefilterMips;
     env_.destroy(*dev_);
-    if (!env_.build(*dev_, pfVsCode_, pfFsCode_, entry_, colorFormat_, iblSize_, iblMips_))
+    if (!env_.build(*dev_, pfVsCode_, pfFsCode_, eqFsCode_, entry_, colorFormat_,
+                    iblSize_, iblMips_))
       RD_LOGE("renderer", "IBL 环境重建失败(size=%u mips=%u)", iblSize_, iblMips_);
   }
 }

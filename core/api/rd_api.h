@@ -69,6 +69,12 @@ void rd_engine_request_render(rd_engine* engine);
 /// 设置 IBL 预滤波磁盘缓存目录；NULL/空串关闭（默认关）。目录自动创建。
 void rd_engine_set_cache_dir(rd_engine* engine, const char* path);
 
+/// 加载 .hdr equirect 环境（替换程序化环境；需 surface 就绪）。
+/// 失败回退程序化并返回错误码。
+rd_result_t rd_engine_set_environment_hdri(rd_engine* engine, const char* path);
+/// 恢复程序化环境。
+void rd_engine_set_environment_procedural(rd_engine* engine);
+
 /// 画质档位（AUTO=caps 启发式默认，引擎初始状态）。
 typedef enum rd_quality {
   RD_QUALITY_AUTO = 0,

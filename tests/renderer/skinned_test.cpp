@@ -46,7 +46,7 @@ rd::test::Image renderSkinned(rd::Backend b) {
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            {}, unlitVs.entry, rd::Format::RGBA8_UNORM};
   if (!(renderer.init(*device, sd))) return {};
 
   auto res = rd::MeshRenderResource::upload(*device, model);
@@ -122,7 +122,7 @@ TEST(Skinned, FoxSmoke) {
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            {}, unlitVs.entry, rd::Format::RGBA8_UNORM};
   ASSERT_TRUE(renderer.init(*device, sd));
   auto res = rd::MeshRenderResource::upload(*device, model);
   ASSERT_TRUE((res) != (nullptr));

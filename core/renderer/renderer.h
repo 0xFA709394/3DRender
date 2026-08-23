@@ -34,6 +34,7 @@ struct RendererShaderDesc {
   std::vector<uint8_t> extractFs, blurFs, compositeFs, fxaaFs;  ///< post 链(vert 复用 blitVs)
   std::vector<uint8_t> skinnedVs;        ///< pbr_forward_skinned.vert(蒙皮管线)
   std::vector<uint8_t> skinnedShadowVs;  ///< shadow_depth_skinned.vert(蒙皮阴影)
+  std::vector<uint8_t> equirectFs;       ///< equirect_to_cube.frag(HDR 环境;空=无 HDR)
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
 };
@@ -79,6 +80,9 @@ public:
   void setShadowMapSizeOverride(uint32_t size) { shadowMapSizeOverride_ = size; }
   /// IBL 预滤波磁盘缓存目录(空=关,默认关;下次环境重建生效)。
   void setCacheDir(const char* dir) { env_.setCacheDir(dir); }
+  /// HDR 环境源切换(立即重建环境;nullptr=程序化;失败回退程序化并返回 false)。
+  /// 指针有效期须覆盖到下次切换。
+  bool setHdrEnvironment(const HdrEnv* env);
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
@@ -112,7 +116,7 @@ private:
   uint32_t maxTextureDim_ = 4096;  ///< 纹理解码尺寸上限(加载链读取)
   uint32_t iblSize_ = 64, iblMips_ = 5;       ///< 当前 IBL prefilter 参数
   Format colorFormat_ = Format::RGBA8_UNORM;  ///< init 记录(endScene 目标格式须一致)
-  std::vector<uint8_t> pfVsCode_, pfFsCode_;  ///< env 重建暂存
+  std::vector<uint8_t> pfVsCode_, pfFsCode_, eqFsCode_;  ///< env 重建暂存
   std::string entry_;
   PipelineHandle blitPipeline_;
   BufferHandle blitUbo_;        // 16B:vec4(vFlip,0,0,0)

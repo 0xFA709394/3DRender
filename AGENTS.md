@@ -72,7 +72,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   CI 噪声大用 `--no-gate` 只采集
 - 场景示例：`./build/tools/render_test/render_test --scene <name> --out x.png`
   (5 程序场景 + sponza/cesium_man);交互 `--interactive --scene <name>`;
-  知名资产 `./scripts/fetch_assets.sh` 下载(assets/ gitignore 不入库)
+  知名资产 `./scripts/fetch_assets.sh` 下载(assets/ gitignore 不入库):
+  CesiumMan/Fox/Duck/BoomBox/WaterBottle/Corset/Lantern/sponza;
+  iOS demo bundle 自动收编已下载 glb(状态机 bundle 动态扫描轮换)
 - golden 判据 = SSIM(`compareSSIM`,阈值默认 0.05);pixel diffRatio 仅辅助日志;
   golden 用例一律 `RD_GOLDEN_TEST` 宏;新增场景只写 renderFn(Image 返回)
 - 输入回放:`./build/tools/render_test/render_test --interactive --play

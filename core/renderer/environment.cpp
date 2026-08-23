@@ -144,6 +144,50 @@ std::vector<std::array<float, 3>> projectToSH(
   return out;
 }
 
+/// equirect HDR 源 → SH9(立体角加权 sinθ;与 cube 版同基函数/同 Ã 折叠)。
+std::vector<std::array<float, 3>> projectToSHEquirect(const float* px, uint32_t w,
+                                                      uint32_t h) {
+  float coeff[9][3] = {};
+  const float kPi = 3.14159265f;
+  for (uint32_t y = 0; y < h; ++y) {
+    const float v = (float(y) + 0.5f) / float(h);
+    const float theta = v * kPi;  // 0..π(顶=0)
+    const float sinT = sinf(theta);
+    for (uint32_t x = 0; x < w; ++x) {
+      const float u = (float(x) + 0.5f) / float(w);
+      const float phi = (u - 0.5f) * 2.0f * kPi;  // -π..π
+      // dir 与 equirect_to_cube.frag 的逆映射一致:
+      // u = atan2(z,x)/(2π)+0.5 → phi = atan2(z,x);v = acos(y)/π → y = cos(θ)
+      glm::vec3 d(cosf(phi) * sinT, cosf(theta), sinf(phi) * sinT);
+      const float* p = &px[(size_t(y) * w + x) * 4];
+      glm::vec3 L(p[0], p[1], p[2]);
+      const float yb[9] = {0.282095f,
+                           0.488603f * d.y,
+                           0.488603f * d.z,
+                           0.488603f * d.x,
+                           1.092548f * d.x * d.y,
+                           1.092548f * d.y * d.z,
+                           1.092548f * d.x * d.z,
+                           0.546274f * (d.x * d.x - d.y * d.y),
+                           0.315392f * (3.0f * d.z * d.z - 1.0f)};
+      // 立体角:dω = sinθ·Δθ·Δφ;归一权重 = sinT · (4π / ΣsinT) 在末尾统一
+      for (int i = 0; i < 9; ++i)
+        for (int c = 0; c < 3; ++c) coeff[i][c] += L[c] * yb[i] * sinT;
+    }
+  }
+  // 归一:Σ texel sinT ≈ (w·h/2π²)·π?——直接:权重和 = ΣsinT,目标总和 4π
+  double sumSin = 0;
+  for (uint32_t y = 0; y < h; ++y) sumSin += sinf(((float(y) + 0.5f) / float(h)) * kPi);
+  sumSin *= w;  // 每行 w 个 texel
+  const float norm = sumSin > 0 ? float(4.0 * 3.14159265358979 / sumSin) : 0.0f;
+  const float A[9] = {3.141593f, 2.094395f, 2.094395f, 2.094395f,
+                      0.785398f, 0.785398f, 0.785398f, 0.785398f, 0.785398f};
+  std::vector<std::array<float, 3>> out(9);
+  for (int i = 0; i < 9; ++i)
+    for (int c = 0; c < 3; ++c) out[i][c] = coeff[i][c] * norm * A[i];
+  return out;
+}
+
 float evalSH(const std::vector<std::array<float, 3>>& sh, float nx, float ny, float nz) {
   float yb[9] = {0.282095f,
                  0.488603f * ny,
@@ -219,22 +263,100 @@ const float kFaceBasis[6][9] = {
 } // namespace
 
 bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
-                        const std::vector<uint8_t>& pfFsCode, const std::string& entry,
+                        const std::vector<uint8_t>& pfFsCode,
+                        const std::vector<uint8_t>& eqFsCode, const std::string& entry,
                         Format colorFormat, uint32_t cubeSize, uint32_t prefilterMips) {
-  // 1. 程序化环境 + 上传
-  env_ = buildEnvCubemap(cubeSize);
-  auto packed = packFaces(env_);
-  TextureDesc etd;
-  etd.type = TextureType::Cube;
-  etd.width = cubeSize;
-  etd.height = cubeSize;
-  etd.data = packed.data();
-  etd.dataSize = uint64_t(packed.size());
-  envTex_ = dev.createTexture(etd);
-  if (!envTex_.valid()) return false;
+  // 环境格式:HDR 模式 RGBA16F;程序化保持 RGBA8(零回归)
+  const Format envFormat = hdrSrc_ ? Format::R16G16B16A16_FLOAT : Format::RGBA8_UNORM;
+  if (hdrSrc_) {
+    // ---- HDR 模式:equirect 2D 上传 → 逐面 pass 渲入 16F cube ----
+    TextureDesc etd;
+    etd.width = hdrSrc_->width;
+    etd.height = hdrSrc_->height;
+    etd.format = Format::R32G32B32A32_FLOAT;
+    etd.data = hdrSrc_->pixels.data();
+    etd.dataSize = uint64_t(hdrSrc_->pixels.size() * sizeof(float));
+    TextureHandle eqTex = dev.createTexture(etd);
+    if (!eqTex.valid()) return false;
+    // 目标 cube(16F,RenderTarget)
+    TextureDesc ctd;
+    ctd.type = TextureType::Cube;
+    ctd.width = cubeSize;
+    ctd.height = cubeSize;
+    ctd.format = Format::R16G16B16A16_FLOAT;
+    ctd.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
+    envTex_ = dev.createTexture(ctd);
+    if (!envTex_.valid()) { dev.destroyTexture(eqTex); return false; }
+    // equirect→cube 逐面 pass(复用 prefilter.vert + equirect_to_cube.frag)
+    auto vsm = dev.createShaderModule({ShaderStage::Vertex, pfVsCode, entry});
+    auto fsm = dev.createShaderModule({ShaderStage::Fragment, eqFsCode, entry});
+    PipelineDesc pd;
+    pd.vertexShader = vsm;
+    pd.fragmentShader = fsm;
+    pd.colorFormat = Format::R16G16B16A16_FLOAT;
+    PipelineHandle eqPipe = dev.createPipeline(pd);
+    BufferHandle eqUbo = dev.createBuffer({256, BufferUsage::Uniform, true, false, nullptr});
+    SamplerDesc lsd0;  // 线性采样 equirect
+    SamplerHandle eqSmp = dev.createSampler(lsd0);
+    dev.destroyShaderModule(vsm);
+    dev.destroyShaderModule(fsm);
+    if (!eqPipe.valid() || !eqUbo.valid() || !eqSmp.valid()) {
+      dev.destroyTexture(eqTex);
+      return false;
+    }
+    for (uint32_t face = 0; face < 6; ++face) {
+      OffscreenTargetDesc td;
+      td.width = cubeSize;
+      td.height = cubeSize;
+      td.colorFormat = Format::R16G16B16A16_FLOAT;
+      td.colorFromTexture = envTex_;
+      td.face = face;
+      td.mipLevel = 0;
+      auto target = dev.createOffscreenTarget(td);
+      if (!target.valid()) {
+        dev.destroyTexture(eqTex);
+        return false;
+      }
+      float u[16] = {};
+      u[0] = kFaceBasis[face][0]; u[1] = kFaceBasis[face][1]; u[2] = kFaceBasis[face][2];
+      u[4] = kFaceBasis[face][3]; u[5] = kFaceBasis[face][4]; u[6] = kFaceBasis[face][5];
+      u[8] = kFaceBasis[face][6]; u[9] = kFaceBasis[face][7]; u[10] = kFaceBasis[face][8];
+      dev.updateBuffer(eqUbo, u, sizeof(u), 0);
+      auto* cmd = dev.acquireCommandBuffer();
+      cmd->beginRenderPass(target, {0, 0, 0, 1});
+      cmd->bindPipeline(eqPipe);
+      cmd->bindUniformBuffer(0, eqUbo, 0, 64);
+      cmd->bindTexture(0, eqTex, eqSmp);
+      cmd->draw(3, 0);
+      cmd->endRenderPass();
+      dev.submit(cmd);
+      dev.waitIdle();
+      dev.destroyTarget(target);
+    }
+    dev.destroyTexture(eqTex);
+    dev.destroyPipeline(eqPipe);
+    dev.destroyBuffer(eqUbo);
+    dev.destroySampler(eqSmp);
+  } else {
+    // ---- 程序化模式(现状,RGBA8)----
+    env_ = buildEnvCubemap(cubeSize);
+    auto packed = packFaces(env_);
+    TextureDesc etd;
+    etd.type = TextureType::Cube;
+    etd.width = cubeSize;
+    etd.height = cubeSize;
+    etd.data = packed.data();
+    etd.dataSize = uint64_t(packed.size());
+    envTex_ = dev.createTexture(etd);
+    if (!envTex_.valid()) return false;
+  }
 
-  // 2. SH9(CPU)
-  auto sh = projectToSH(env_.faces, env_.size);
+  // 2. SH9:HDR 从 equirect 源投影;程序化从 faces 投影
+  std::vector<std::array<float, 3>> sh;
+  if (hdrSrc_)
+    sh = projectToSHEquirect(hdrSrc_->pixels.data(), hdrSrc_->width, hdrSrc_->height);
+  else
+    sh = projectToSH(env_.faces, env_.size);
   for (int i = 0; i < 9; ++i)
     for (int c = 0; c < 3; ++c) sh_[i * 3 + c] = sh[i][c];
 
@@ -255,11 +377,12 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
   cubeSampler_ = dev.createSampler({});
   if (!brdfLutTex_.valid() || !lutSampler_.valid() || !cubeSampler_.valid()) return false;
 
-  // 4. 预滤波 cubemap(RenderTargetAttachment,prefilterMips 级 mip)
+  // 4. 预滤波 cubemap(RenderTargetAttachment,prefilterMips 级 mip;格式随模式)
   TextureDesc ptd;
   ptd.type = TextureType::Cube;
   ptd.width = cubeSize;
   ptd.height = cubeSize;
+  ptd.format = envFormat;
   ptd.mipLevels = prefilterMips;
   ptd.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
   prefilterCube_ = dev.createTexture(ptd);
@@ -271,9 +394,9 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
   PipelineDesc pd;
   pd.vertexShader = vsm;
   pd.fragmentShader = fsm;
-  // 预滤波目标是 RGBA8 环境纹理(与渲染目标格式无关;BGRA8 swapchain 场景下
-  // 若误用 colorFormat 会撞 Metal 管线/帧缓冲格式校验)
-  pd.colorFormat = Format::RGBA8_UNORM;
+  // 预滤波目标格式 = 环境格式(与渲染目标格式无关;BGRA8 swapchain 场景下
+  // 若误用 colorFormat 会撞 Metal 管线/帧缓冲格式校验);HDR 模式 16F
+  pd.colorFormat = envFormat;
   prefilterPipeline_ = dev.createPipeline(pd);
   prefilterUbo_ = dev.createBuffer({256, BufferUsage::Uniform, true, false, nullptr});
   dev.destroyShaderModule(vsm);
@@ -281,8 +404,9 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
   if (!prefilterPipeline_.valid() || !prefilterUbo_.valid()) return false;
 
   // 6. 预滤波(缓存开启:命中直接上传;未命中渲到离屏目标读回+写盘+上传)
+  // HDR 模式跳过磁盘缓存(readbackTarget 仅 RGBA8;v2 待 readback16F)
   uint64_t cacheKey = 0;
-  if (!cacheDir_.empty()) {
+  if (!cacheDir_.empty() && !hdrSrc_) {
     // 键:env 源像素(6 面)+ env size + cubeSize + mips
     cacheKey = 14695981039346656037ull;
     for (const auto& fpx : env_.faces)
@@ -302,7 +426,7 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
     }
   }
   rd::IblCacheBlob miss;  // 缓存模式收集读回像素
-  if (!cacheDir_.empty()) {
+  if (!cacheDir_.empty() && !hdrSrc_) {
     miss.size = cubeSize;
     miss.mips = prefilterMips;
   }
@@ -314,7 +438,7 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
       OffscreenTargetDesc td;
       td.width = sz;
       td.height = sz;
-      if (cacheDir_.empty()) {
+      if (cacheDir_.empty() || hdrSrc_) {
         td.colorFromTexture = prefilterCube_;
         td.face = face;
         td.mipLevel = mip;
@@ -338,7 +462,7 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
       cmd->endRenderPass();
       dev.submit(cmd);
       dev.waitIdle();
-      if (!cacheDir_.empty()) {
+      if (!cacheDir_.empty() && !hdrSrc_) {
         std::vector<uint8_t> px(size_t(sz) * sz * 4);
         if (!dev.readbackTarget(target, px.data(), px.size())) {
           dev.destroyTarget(target);
@@ -350,7 +474,7 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
       dev.destroyTarget(target);
     }
   }
-  if (!cacheDir_.empty() && miss.faces.size() == size_t(prefilterMips) * 6) {
+  if (!cacheDir_.empty() && !hdrSrc_ && miss.faces.size() == size_t(prefilterMips) * 6) {
     rd::iblCacheWrite(cacheDir_, cacheKey, miss);
   }
   return true;

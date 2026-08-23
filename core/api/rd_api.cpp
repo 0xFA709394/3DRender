@@ -14,6 +14,7 @@
 #include "renderer/quality.h"
 #include "renderer/renderer.h"
 #include "resource/gltf_loader.h"
+#include "resource/hdr_env.h"
 #include "resource/mesh_render_resource.h"
 #include "rhi/rhi_device.h"
 #include "scene/animator.h"
@@ -43,6 +44,7 @@ struct rd_engine {
   bool lightsDirty = false;
   bool renderDirty = true;  ///< 按需渲染脏标记(初始 true,首帧必渲)
   rd::Options options;                  ///< 声明式选项(render_frame 映射进 renderer)
+  rd::HdrEnv hdrEnv;                    ///< HDR 环境源(引擎持有,重建期指针有效)
   rd::CommandBus bus;                   ///< 命令总线(create 时注册内建命令)
   char cmdOutput[256] = {};             ///< 最近一次命令输出(get 等)
   rd::ModelAsset modelAsset;            ///< 当前模型 CPU 资产(Animator 绑定源)
@@ -250,6 +252,7 @@ rd_result_t rd_engine_set_surface(rd_engine* e, void* nativeWindow, uint32_t wid
         !get("pbr_forward", rd::ShaderStage::Fragment, sd.pbrFs) ||
         !get("prefilter", rd::ShaderStage::Vertex, sd.prefilterVs) ||
         !get("prefilter", rd::ShaderStage::Fragment, sd.prefilterFs) ||
+        !get("equirect_to_cube", rd::ShaderStage::Fragment, sd.equirectFs) ||
         !get("blit", rd::ShaderStage::Vertex, sd.blitVs) ||
         !get("blit", rd::ShaderStage::Fragment, sd.blitFs) ||
         !get("shadow_depth", rd::ShaderStage::Vertex, sd.shadowVs) ||
@@ -551,6 +554,34 @@ void rd_engine_set_cache_dir(rd_engine* e, const char* path) {
   } else if (e->device) {
     e->device->setPipelineCachePath("");
   }
+  e->renderDirty = true;
+}
+
+rd_result_t rd_engine_set_environment_hdri(rd_engine* e, const char* path) {
+  if (!e || !path) return RD_ERROR_INVALID_ARG;
+  if (!e->rendererReady) {
+    setError(e, "HDR 环境需 surface 就绪后设置");
+    return RD_ERROR_SCENE;
+  }
+  rd::HdrEnv env;
+  if (!rd::loadHdrEnv(path, env)) {
+    setError(e, (std::string("HDR 加载失败: ") + path).c_str());
+    return RD_ERROR_ASSET;
+  }
+  e->hdrEnv = std::move(env);  // 引擎持有(重建期指针有效)
+  if (!e->renderer.setHdrEnvironment(&e->hdrEnv)) {
+    e->hdrEnv = rd::HdrEnv();
+    setError(e, "HDR 环境构建失败(GPU)");
+    return RD_ERROR_SCENE;
+  }
+  e->renderDirty = true;
+  return RD_OK;
+}
+
+void rd_engine_set_environment_procedural(rd_engine* e) {
+  if (!e) return;
+  if (e->rendererReady) e->renderer.setHdrEnvironment(nullptr);
+  e->hdrEnv = rd::HdrEnv();
   e->renderDirty = true;
 }
 

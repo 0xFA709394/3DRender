@@ -5,6 +5,7 @@
  * +X:(1,-v,-u);-X:(-1,-v,u);+Y:(u,1,v);-Y:(u,-1,-v);+Z:(u,-v,1);-Z:(-u,-v,-1)。
  */
 #pragma once
+#include "resource/hdr_env.h"
 #include "rhi/rhi_types.h"
 #include <array>
 #include <cstdint>
@@ -39,10 +40,12 @@ std::vector<float> integrateBrdfLut(uint32_t size);
 class Environment {
 public:
   /// 生成全部资源;失败返回 false(pfVsCode/pfFsCode 为 prefilter shader 字节)。
+  /// eqFsCode 为 equirect_to_cube.frag(HDR 模式用;空=无 HDR 支持)。
   /// cubeSize/prefilterMips 控制 prefilter 精度(画质档旋钮)。
   bool build(Device& dev, const std::vector<uint8_t>& pfVsCode,
-             const std::vector<uint8_t>& pfFsCode, const std::string& entry,
-             Format colorFormat, uint32_t cubeSize = 64, uint32_t prefilterMips = 5);
+             const std::vector<uint8_t>& pfFsCode, const std::vector<uint8_t>& eqFsCode,
+             const std::string& entry, Format colorFormat, uint32_t cubeSize = 64,
+             uint32_t prefilterMips = 5);
   void destroy(Device& dev);
 
   TextureHandle prefilterCube() const { return prefilterCube_; }
@@ -53,10 +56,13 @@ public:
   const EnvCubemap& cubemap() const { return env_; }
   /// IBL 预滤波磁盘缓存目录(空=关,默认关;下次 build 生效)。
   void setCacheDir(const char* dir) { cacheDir_ = dir ? dir : ""; }
+  /// HDR 环境源(build 前设置;nullptr=程序化)。指针有效期须覆盖下次 build。
+  void setHdrSource(const HdrEnv* env) { hdrSrc_ = env; }
 
 private:
   EnvCubemap env_;
   std::string cacheDir_;  ///< IBL 缓存目录(空=关)
+  const HdrEnv* hdrSrc_ = nullptr;  ///< HDR equirect 源(空=程序化)
   TextureHandle envTex_;
   TextureHandle prefilterCube_;
   TextureHandle brdfLutTex_;

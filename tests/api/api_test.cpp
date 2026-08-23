@@ -243,3 +243,12 @@ TEST(Api, OptionsPersistence) {
   EXPECT_EQ(rd_engine_load_options(e, path), RD_ERROR_INVALID_ARG);
   rd_engine_destroy(e);
 }
+
+// HDR 环境 API:无 surface 拒绝;procedural 切换不崩
+TEST(Api, HdrEnvApi) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(rd_engine_set_environment_hdri(e, "/tmp/nope.hdr"), RD_ERROR_SCENE);
+  rd_engine_set_environment_procedural(e);  // 不崩
+  rd_engine_destroy(e);
+}

@@ -321,6 +321,7 @@ bool Environment::build(Device& dev, const std::vector<uint8_t>& pfVsCode,
       u[0] = kFaceBasis[face][0]; u[1] = kFaceBasis[face][1]; u[2] = kFaceBasis[face][2];
       u[4] = kFaceBasis[face][3]; u[5] = kFaceBasis[face][4]; u[6] = kFaceBasis[face][5];
       u[8] = kFaceBasis[face][6]; u[9] = kFaceBasis[face][7]; u[10] = kFaceBasis[face][8];
+      u[13] = yawDeg_ * 0.0174532925f / 6.28318530718f;  // yaw → equirect u 偏移
       dev.updateBuffer(eqUbo, u, sizeof(u), 0);
       auto* cmd = dev.acquireCommandBuffer();
       cmd->beginRenderPass(target, {0, 0, 0, 1});

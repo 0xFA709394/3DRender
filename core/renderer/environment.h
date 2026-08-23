@@ -58,11 +58,16 @@ public:
   void setCacheDir(const char* dir) { cacheDir_ = dir ? dir : ""; }
   /// HDR 环境源(build 前设置;nullptr=程序化)。指针有效期须覆盖下次 build。
   void setHdrSource(const HdrEnv* env) { hdrSrc_ = env; }
+  /// 当前是否 HDR 模式。
+  const HdrEnv* hdrSource() const { return hdrSrc_; }
+  /// 环境绕 Y 旋转(度;HDR 模式烘进 equirect 采样 u 偏移;程序化模式忽略)。
+  void setYawDeg(float deg) { yawDeg_ = deg; }
 
 private:
   EnvCubemap env_;
   std::string cacheDir_;  ///< IBL 缓存目录(空=关)
   const HdrEnv* hdrSrc_ = nullptr;  ///< HDR equirect 源(空=程序化)
+  float yawDeg_ = 0.0f;             ///< 环境绕 Y 旋转(HDR 模式烘焙)
   TextureHandle envTex_;
   TextureHandle prefilterCube_;
   TextureHandle brdfLutTex_;

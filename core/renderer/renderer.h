@@ -86,8 +86,8 @@ public:
   bool setHdrEnvironment(const HdrEnv* env);
   /// 天空盒开关(默认关;场景 pass 内首画,采样 prefilterCube mip0)。
   void setSkyboxEnabled(bool on) { skyboxEnabled_ = on; }
-  /// 环境绕 Y 旋转(度;烘进 equirect pass/程序化方向,重建级生效)。
-  void setEnvYaw(float deg) { envYawDeg_ = deg; }
+  /// 环境绕 Y 旋转(度;烘进 equirect pass,值变触发环境重建;程序化模式忽略)。
+  void setEnvYaw(float deg);
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍

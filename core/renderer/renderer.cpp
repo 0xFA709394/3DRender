@@ -406,6 +406,19 @@ void Renderer::shutdown() {
   dev_ = nullptr;
 }
 
+void Renderer::setEnvYaw(float deg) {
+  if (deg == envYawDeg_) return;
+  envYawDeg_ = deg;
+  // HDR 模式:yaw 烘进 equirect pass,值变重建环境(IBL 与天空盒一致)
+  if (dev_ && env_.hdrSource()) {
+    env_.setYawDeg(deg);
+    env_.destroy(*dev_);
+    if (!env_.build(*dev_, pfVsCode_, pfFsCode_, eqFsCode_, entry_, colorFormat_, iblSize_,
+                    iblMips_))
+      RD_LOGE("renderer", "yaw 环境重建失败");
+  }
+}
+
 bool Renderer::setHdrEnvironment(const HdrEnv* env) {
   if (!dev_) return false;
   env_.destroy(*dev_);

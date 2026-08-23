@@ -2,7 +2,8 @@ enable_language(Swift)
 
 # 演示模型资产(bundle Resources;源码树内复用 tests 资产,勿重复存储)
 set(DEMO_ASSET ${CMAKE_SOURCE_DIR}/tests/assets/DamagedHelmet.glb)
-set(DEMO_EXTRA ${CMAKE_SOURCE_DIR}/assets/CesiumMan.glb)  # 下载存在时一并入包
+# 可选模型集(scripts/fetch_assets.sh 下载后自动入包;不入库)
+set(DEMO_OPTIONAL CesiumMan Fox Duck BoomBox WaterBottle Corset Lantern)
 add_executable(RdDemo MACOSX_BUNDLE
   RdDemo/AppDelegate.swift
   RdDemo/dummy.cpp
@@ -11,11 +12,13 @@ add_executable(RdDemo MACOSX_BUNDLE
 )
 set_source_files_properties(${DEMO_ASSET} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources)
-if(EXISTS ${DEMO_EXTRA})
-  target_sources(RdDemo PRIVATE ${DEMO_EXTRA})
-  set_source_files_properties(${DEMO_EXTRA} PROPERTIES
-    MACOSX_PACKAGE_LOCATION Resources)
-endif()
+foreach(m ${DEMO_OPTIONAL})
+  if(EXISTS ${CMAKE_SOURCE_DIR}/assets/${m}.glb)
+    target_sources(RdDemo PRIVATE ${CMAKE_SOURCE_DIR}/assets/${m}.glb)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/assets/${m}.glb PROPERTIES
+      MACOSX_PACKAGE_LOCATION Resources)
+  endif()
+endforeach()
 target_link_libraries(RdDemo PRIVATE rd_core "-framework UIKit" "-framework QuartzCore")
 set_target_properties(RdDemo PROPERTIES
   MACOSX_BUNDLE_BUNDLE_NAME RdDemo

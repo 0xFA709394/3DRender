@@ -7,18 +7,29 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     private var renderView: RenderView?
     private var stateIndex = 0
 
-    /// 状态机:画质档轮换 + 模型轮换(cesium_man 存在时)。
+    /// 状态机:画质档轮换(helmet 三档)+ 模型轮换(bundle 内全部 glb,High 档)。
     private struct DemoState {
         let quality: Int      // 1=High,2=Mid,3=Low
         let model: String     // bundle 资源名
         let label: String
     }
+    /// 模型友好名(bundle 扫描顺序即轮换顺序)。
+    private static let modelLabels: [String: String] = [
+        "CesiumMan": "骨骼动画", "Fox": "Fox 骨骼动画", "Duck": "Duck",
+        "BoomBox": "BoomBox", "WaterBottle": "WaterBottle", "Corset": "Corset",
+        "Lantern": "Lantern",
+    ]
     private func states() -> [DemoState] {
         var s = [DemoState(quality: 1, model: "DamagedHelmet", label: "High"),
                  DemoState(quality: 2, model: "DamagedHelmet", label: "Mid"),
                  DemoState(quality: 3, model: "DamagedHelmet", label: "Low")]
-        if Bundle.main.path(forResource: "CesiumMan", ofType: "glb") != nil {
-            s.append(DemoState(quality: 1, model: "CesiumMan", label: "High+骨骼动画"))
+        // bundle 内全部 glb(除 helmet)按 High 档追加
+        let extras = Bundle.main.paths(forResourcesOfType: "glb", inDirectory: nil)
+            .map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension }
+            .sorted()
+        for name in extras where name != "DamagedHelmet" {
+            s.append(DemoState(quality: 1, model: name,
+                               label: AppDelegate.modelLabels[name] ?? name))
         }
         return s
     }

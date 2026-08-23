@@ -32,6 +32,12 @@
     "domain": {"style": "range", "min": 0.0001, "max": 0.01, "step": 0.0001},
     "doc": "阴影 bias"
   },
+  "env.skybox": {"type": "bool", "default": false, "doc": "天空盒背景开关"},
+  "env.yaw_deg": {
+    "type": "float", "default": 0.0,
+    "domain": {"style": "range", "min": -180.0, "max": 180.0, "step": 1.0},
+    "doc": "环境绕 Y 旋转(度；烘进 equirect pass,重建级)"
+  },
   "shadow.map_size": {
     "type": "int", "default": 0,
     "domain": {"style": "range", "min": 0, "max": 4096, "step": 128},

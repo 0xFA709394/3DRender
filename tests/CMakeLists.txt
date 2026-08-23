@@ -42,6 +42,7 @@ add_executable(rd_tests
   renderer/post_test.cpp
   renderer/skinned_test.cpp
   renderer/demo_scenes_test.cpp
+  renderer/hdr_env_test.cpp
   ${CMAKE_SOURCE_DIR}/tools/render_test/scenes.cpp
   common/image.cpp
   common/image_test.cpp

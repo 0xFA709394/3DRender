@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
                               pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                               sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                               cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                              eqFs.code,   unlitVs.entry, rd::Format::RGBA8_UNORM};
+                              eqFs.code,{}, {},   unlitVs.entry, rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;
     td.height = kH;
@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
     rd::Renderer renderer;
     rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                               pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
-                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,   eqFs.code,
+                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,   eqFs.code,{}, {},
                               unlitVs.entry, rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;

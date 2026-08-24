@@ -96,6 +96,10 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   场景 pass 用相机 VP、阴影 pass 用光源 VP(屏外物体可向屏内投影);
   ItemUBO 槽位=两可见集并集 slotOf 映射;蒙皮项跳过(动态包围);
   选项 render.frustum_culling(默认开);perf sponza 基准场景(fetch_assets 下载,缺失跳过)
+- 自动实例化(P4 性能):场景 pass 同 MeshRenderResource 相邻可见项(非蒙皮/非 blend,
+  组≥2)合并 drawIndexedInstanced;shader=pbr_forward_instanced.vert/.frag
+  (ItemUBO 声明为 items[64] 数组,gl_InstanceIndex 索引;宿主 bind 组首槽偏移+组大小);
+  desc.instancedVs/Fs 空=不启用;阴影 pass 不分组(v2);golden 像素与逐项一致
 - IBL 缓存:`rd_engine_set_cache_dir(path)` 开启(默认关);
   render_test `--cache-dir <path>`;缓存键=env 源像素+size+mips
 - HDR 环境+天空盒:.hdr equirect(stb float)→ equirect_to_cube pass(RGBA16F)

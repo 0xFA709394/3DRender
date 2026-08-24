@@ -62,7 +62,7 @@ struct ItemUBOData {
   math::Mat4 normalMatrix;
   float baseColorFactor[4];
   float emissiveOcc[4];     // rgb=emissiveFactor, a=occlusionStrength
-  float metallicRough[4];   // x=metallic, y=roughness, z=normalScale
+  float metallicRough[4];   // x=metallic, y=roughness, z=normalScale, w=alphaCutoff
   float uvTransform[4];     // xy=offset, zw=scale
 };
 static_assert(sizeof(ItemUBOData) == 256, "ItemUBO 必须 256B");
@@ -754,6 +754,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       iu.metallicRough[0] = m.metallicFactor;
       iu.metallicRough[1] = m.roughnessFactor;
       iu.metallicRough[2] = m.normalScale;
+      iu.metallicRough[3] = m.alphaCutoff;  // MASK 裁剪阈值(0=非 MASK)
       iu.uvTransform[0] = m.uvOffset[0];
       iu.uvTransform[1] = m.uvOffset[1];
       iu.uvTransform[2] = m.uvScale[0];

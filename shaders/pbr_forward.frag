@@ -81,6 +81,8 @@ vec3 ggxSpec(vec3 n, vec3 l, vec3 v, float roughness, vec3 f0) {
 
 void main() {
   vec4 baseColor = texture(texBaseColor, vUV) * baseColorFactor;
+  // alphaMode=MASK:cutoff(metallicRoughness.w)> 0 时按阈值裁剪
+  if (metallicRoughness.w > 0.0 && baseColor.a < metallicRoughness.w) discard;
   vec2 mr = texture(texMR, vUV).bg;   // glTF: G=roughness, B=metallic
   float metallic = clamp(mr.y * metallicRoughness.x, 0.0, 1.0);
   float roughness = clamp(mr.x * metallicRoughness.y, 0.03, 1.0);

@@ -48,15 +48,26 @@ elseif(IOS)
   target_sources(rd_core PRIVATE ${CMAKE_BINARY_DIR}/generated/embedded_shaders.cpp)
 else()
   set(RD_EMBEDDED_CPP ${CMAKE_BINARY_DIR}/generated/embedded_shaders.cpp)
+  # 文件级 DEPENDS:逐 shader 产物追踪(改 shader 即重生成;之前按伪目标名只排序不追踪,
+  # 新增 shader 会导致内嵌缺失——已有教训)
+  include(${CMAKE_SOURCE_DIR}/cmake/ShaderList.cmake)
+  set(RD_EMBED_DEPS ${CMAKE_SOURCE_DIR}/cmake/GenEmbedded.cmake)
+  foreach(S ${RD_EMBED_SHADERS})
+    # 侧别按源码存在性(frag-only: bloom/composite 等;vert-only: *_skinned/shadow_inst)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/shaders/${S}.vert)
+      list(APPEND RD_EMBED_DEPS ${RD_SHADER_OUT}/${S}.vert.spv)
+    endif()
+    if(EXISTS ${CMAKE_SOURCE_DIR}/shaders/${S}.frag)
+      list(APPEND RD_EMBED_DEPS ${RD_SHADER_OUT}/${S}.frag.spv)
+    endif()
+  endforeach()
   add_custom_command(
     OUTPUT ${RD_EMBEDDED_CPP}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
     COMMAND ${CMAKE_COMMAND} -DOUT=${RD_EMBEDDED_CPP} -DDIR=${RD_SHADER_OUT}
             -DDIR_IOS=${RD_SHADER_OUT}_ios -DDIR_IOSSIM=${RD_SHADER_OUT}_iossim
             -P ${CMAKE_SOURCE_DIR}/cmake/GenEmbedded.cmake
-    DEPENDS shader_cube.vert shader_cube.frag shader_unlit.vert shader_unlit.frag
-            shader_pbr_forward.vert shader_pbr_forward.frag shader_prefilter.vert
-            shader_prefilter.frag shader_blit.vert shader_blit.frag
+    DEPENDS ${RD_EMBED_DEPS}
     COMMENT "生成 embedded_shaders.cpp")
   target_sources(rd_core PRIVATE ${RD_EMBEDDED_CPP})
 endif()

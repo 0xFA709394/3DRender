@@ -364,3 +364,60 @@ TEST(Gltf, AlphaBlendMode) {
   ASSERT_TRUE(box.valid());
   EXPECT_FALSE(box.meshes[0].material.alphaBlend);
 }
+
+// alphaMode=MASK 解析:cutoff 读取/默认 0.5
+TEST(Gltf, AlphaMask) {
+  // 复用 BLEND 测试的三角 glTF 骨架,改 alphaMode=MASK + alphaCutoff
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{"alphaMode": "MASK", "alphaCutoff": 0.25,
+      "pbrMetallicRoughness": {"baseColorFactor": [1, 1, 1, 1]}}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_mask").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f); fclose(f); }
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  ASSERT_FALSE(model.meshes.empty());
+  EXPECT_FALSE(model.meshes[0].material.alphaBlend);
+  EXPECT_FLOAT_EQ(model.meshes[0].material.alphaCutoff, 0.25f);
+  // 默认 cutoff(不写 alphaCutoff)= 0.5
+  const std::string g2 = std::string(gltf);  // 改:去 alphaCutoff 字段
+  const std::string g2s = "{\"alphaMode\": \"MASK\"}";
+  // 直接拼第二个文件
+  const char* gltf2 = R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{"alphaMode": "MASK"}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  { FILE* f = fopen((dir + "/tri2.gltf").c_str(), "w"); fputs(gltf2, f); fclose(f); }
+  auto model2 = rd::loadGltf((dir + "/tri2.gltf").c_str());
+  ASSERT_TRUE(model2.valid());
+  EXPECT_FLOAT_EQ(model2.meshes[0].material.alphaCutoff, 0.5f);  // glTF 默认
+  (void)g2; (void)g2s;
+}

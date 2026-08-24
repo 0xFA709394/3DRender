@@ -42,7 +42,8 @@ struct MaterialData {
   float uvOffset[2] = {0, 0};     // KHR_texture_transform(baseColor 通道;其余贴图同变换)
   float uvScale[2] = {1, 1};
   bool unlit = false;             // KHR_materials_unlit
-  bool alphaBlend = false;        // alphaMode=BLEND(MASK 暂按 OPAQUE 处理)
+  bool alphaBlend = false;        // alphaMode=BLEND
+  float alphaCutoff = 0.0f;       // alphaMode=MASK 阈值(0=非 MASK;glTF 默认 0.5)
 };
 
 /// 单个 mesh 的 CPU 数据。

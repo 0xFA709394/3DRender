@@ -225,6 +225,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   stb 解码→maxDim 1024 降采样→libktx CompressAstcEx→全量重排 BIN+JSON;
   **无收益图像保留原样**;BoomBox 10.1→3.3MB,demo 包 49→22MB);
   iOS demo 优先 `<m>.ktx2.glb`;loader 内嵌 KTX2 bufferView 走 magic 嗅探(无需扩展声明)
+- 移动端缓存接线:双端 demo RenderView 建引擎后 `set_cache_dir(<app cache>/rd_cache)`
+  (Android 经 `nativeSetCacheDir` JNI);二次启动 IBL+pipeline 双命中;
+  Android demo assets 为仓根 assets symlink(KTX2 优先,免重复入库)
 - loader:非索引图元顺序生成索引;triangle_strip 分解为三角形列表(交替绕序);
   法线缺失时逐面 flat 生成(须在索引生成之后)
 

@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include "scene/orbit_controller.h"
 #include <cmath>
+#include <cmath>
 
 namespace {
 constexpr float kEps = 1e-4f;
@@ -120,4 +121,26 @@ TEST(Orbit, IsMoving) {
   EXPECT_TRUE(c.isMoving());    // 惯性
   for (int i = 0; i < 600; ++i) c.update(0.016f);
   EXPECT_FALSE(c.isMoving());   // 收敛停止
+}
+
+// 缩放主导:双指张开(指距变化)时不平移(无漂移);指距不变的同向移动仍平移
+TEST(Orbit, PinchDominatesOverPan) {
+  rd::scene::OrbitController c;
+  c.frameModel((const float[]){0, 0, 0}, 1.0f);
+  const float d0 = c.distance();
+  rd::scene::Camera cam0;
+  c.applyTo(cam0);
+  c.onPointerDown(0, 100, 100);
+  c.onPointerDown(1, 200, 100);
+  // 张开:指距 100→200(质心也在动:+25)
+  c.onPointerMove(1, 250, 100);
+  c.onPointerMove(1, 300, 100);
+  // 距离缩小(zoom in)
+  EXPECT_LT(c.distance(), d0 * 0.6f);
+  // 质心平移被抑制(张开期间不平移):eye 位移与视轴(target=原点)共线
+  rd::scene::Camera cam1;
+  c.applyTo(cam1);
+  const auto disp = glm::normalize(cam1.eye() - cam0.eye());
+  const auto axis = glm::normalize(cam0.eye());  // target=(0,0,0) 未平移
+  EXPECT_NEAR(std::fabs(glm::dot(disp, axis)), 1.0f, 0.01f);  // 共线即无平移漂移
 }

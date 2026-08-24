@@ -59,6 +59,11 @@ if(ANDROID)
 endif()
 
 if(NOT ANDROID AND NOT IOS)
+  # nlohmann/json:仅 glb_ktx2 工具用(单头;header-only)
+  FetchContent_Declare(nlohmann_json
+    URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz)
+  FetchContent_MakeAvailable(nlohmann_json)
+
   FetchContent_Declare(googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz)
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)

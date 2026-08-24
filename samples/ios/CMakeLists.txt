@@ -13,10 +13,14 @@ add_executable(RdDemo MACOSX_BUNDLE
 set_source_files_properties(${DEMO_ASSET} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources)
 foreach(m ${DEMO_OPTIONAL})
-  if(EXISTS ${CMAKE_SOURCE_DIR}/assets/${m}.glb)
-    target_sources(RdDemo PRIVATE ${CMAKE_SOURCE_DIR}/assets/${m}.glb)
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/assets/${m}.glb PROPERTIES
-      MACOSX_PACKAGE_LOCATION Resources)
+  # KTX2 压缩版优先(glb_ktx2 产物,包体积减半);缺失回退原 glb
+  set(f ${CMAKE_SOURCE_DIR}/assets/${m}.ktx2.glb)
+  if(NOT EXISTS ${f})
+    set(f ${CMAKE_SOURCE_DIR}/assets/${m}.glb)
+  endif()
+  if(EXISTS ${f})
+    target_sources(RdDemo PRIVATE ${f})
+    set_source_files_properties(${f} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
   endif()
 endforeach()
 target_link_libraries(RdDemo PRIVATE rd_core "-framework UIKit" "-framework QuartzCore")

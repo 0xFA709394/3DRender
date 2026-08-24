@@ -23,6 +23,10 @@ public:
   /// 包围球(视锥剔除用;模型级,world 变换后测试)。
   const float* boundingCenter() const { return mesh_->boundingCenter(); }
   float boundingRadius() const { return mesh_->boundingRadius(); }
+  /// 资源标识(instancing 分组用;同一 MeshRenderResource 恒等)。
+  const void* resourceId() const { return mesh_.get(); }
+  /// 网格共享采样器(instancing 路径用)。
+  SamplerHandle meshSampler() const { return mesh_->sampler(); }
 
 private:
   std::shared_ptr<MeshRenderResource> mesh_;

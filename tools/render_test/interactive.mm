@@ -111,7 +111,7 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {},{}, {}, unlitVs.entry, scFmt};
+                            {},{}, {},{}, {}, unlitVs.entry, scFmt};
   if (!renderer.init(*device, sd)) return 1;
   rd::ModelAsset storage;
   rd::tool::DemoScene scene;

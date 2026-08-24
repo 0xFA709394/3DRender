@@ -245,6 +245,8 @@ bool initRenderer(rd::Backend b, std::unique_ptr<rd::Device>& device,
   auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
   auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
   auto sdsVs = load("shadow_depth_skinned.vert");
+  auto instVs = load("pbr_forward_instanced.vert");
+  auto instFs = load("pbr_forward_instanced.frag");
   auto exFs = load("bloom_extract.frag");
   auto bbFs = load("bloom_blur.frag");
   auto cpFs = load("composite.frag");
@@ -253,7 +255,7 @@ bool initRenderer(rd::Backend b, std::unique_ptr<rd::Device>& device,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {},{}, {}, unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            {}, {}, {}, instVs.code, instFs.code, unlitVs.entry, rd::Format::RGBA8_UNORM};
   rd::OffscreenTargetDesc td;
   td.width = kW;
   td.height = kH;

@@ -30,12 +30,15 @@ rd::test::Image renderScene(rd::Backend b, const char* name, rd::ModelAsset& sto
   auto bbFs = load("bloom_blur.frag");
   auto cpFs = load("composite.frag");
   auto fxFs = load("fxaa.frag");
+  auto instVs = load("pbr_forward_instanced.vert");
+  auto instFs = load("pbr_forward_instanced.frag");
   rd::Renderer renderer;
+  // instanced_field 场景走实例化路径(instanced shader 加载 → 分组生效;golden 应不变)
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {},{}, {}, unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            {},{}, {}, instVs.code, instFs.code, unlitVs.entry, rd::Format::RGBA8_UNORM};
   rd::OffscreenTargetDesc td;
   td.width = kW;
   td.height = kH;

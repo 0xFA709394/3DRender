@@ -60,7 +60,7 @@ rd::test::Image renderHdrEnv(rd::Backend b) {
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            eqFs.code,   skyVs.code,  skyFs.code,  unlitVs.entry,
+                            eqFs.code,   skyVs.code,  skyFs.code,{}, {},  unlitVs.entry,
                             rd::Format::RGBA8_UNORM};
   rd::OffscreenTargetDesc td;
   td.width = kW;

@@ -135,6 +135,10 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
     skyVs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skyboxVs, desc.entry});
     skyFs_ = dev.createShaderModule({ShaderStage::Fragment, desc.skyboxFs, desc.entry});
   }
+  if (!desc.instancedVs.empty() && !desc.instancedFs.empty()) {
+    instVs_ = dev.createShaderModule({ShaderStage::Vertex, desc.instancedVs, desc.entry});
+    instFs_ = dev.createShaderModule({ShaderStage::Fragment, desc.instancedFs, desc.entry});
+  }
   skyboxVb_ = dev.createBuffer({36, BufferUsage::Vertex, true, false, nullptr});
   jointUbo_ = dev.createBuffer({uint64_t(kJointItemStride) * kMaxJointItems,
                                 BufferUsage::Uniform, true, false, nullptr});
@@ -323,6 +327,20 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
     if (skyboxPipeline_.valid()) dev_->destroyPipeline(skyboxPipeline_);
     skyboxPipeline_ = dev_->createPipeline(skyd);
   }
+  // 实例化管线(与 pbr 同布局/格式/采样数)
+  if (instVs_.valid() && instFs_.valid()) {
+    PipelineDesc ipd;
+    ipd.vertexShader = instVs_;
+    ipd.fragmentShader = instFs_;
+    fillVertexLayout(ipd);
+    ipd.cullMode = CullMode::None;
+    ipd.depthTest = true;
+    ipd.depthWrite = true;
+    ipd.colorFormat = fmt;
+    ipd.sampleCount = samples;
+    if (instancedPipeline_.valid()) dev_->destroyPipeline(instancedPipeline_);
+    instancedPipeline_ = dev_->createPipeline(ipd);
+  }
   pipeFmt_ = fmt;
   pipeSamples_ = samples;
 }
@@ -400,6 +418,9 @@ void Renderer::shutdown() {
   if (skyVs_.valid()) dev_->destroyShaderModule(skyVs_);
   if (skyFs_.valid()) dev_->destroyShaderModule(skyFs_);
   if (skyboxVb_.valid()) dev_->destroyBuffer(skyboxVb_);
+  if (instancedPipeline_.valid()) dev_->destroyPipeline(instancedPipeline_);
+  if (instVs_.valid()) dev_->destroyShaderModule(instVs_);
+  if (instFs_.valid()) dev_->destroyShaderModule(instFs_);
   if (jointUbo_.valid()) dev_->destroyBuffer(jointUbo_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
@@ -434,6 +455,9 @@ void Renderer::shutdown() {
   skyVs_ = {};
   skyFs_ = {};
   skyboxVb_ = {};
+  instancedPipeline_ = {};
+  instVs_ = {};
+  instFs_ = {};
   jointUbo_ = {};
   pipeSamples_ = 0;
   frameUbo_ = {};
@@ -839,13 +863,60 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.skinnedShadowPipe = skinnedShadowPipeline_;
   ctx.blendPipeline = blendPipeline_;
   ctx.jointUbo = jointUbo_;
-  for (uint32_t idx : camVis) {
+  for (uint32_t vi = 0; vi < camVis.size();) {
+    const uint32_t idx = camVis[vi];
+    auto* r = static_cast<MeshRenderable*>(queue_[idx].get());
+    // 实例化分组:同资源 + 非蒙皮 + 非 blend 的相邻可见项(组 ≥2 才合并)
+    uint32_t groupEnd = vi + 1;
+    const void* rid = r && !r->meshData().empty() && !r->meshData()[0].skinned &&
+                              !r->meshData()[0].material.alphaBlend
+                          ? r->resourceId()
+                          : nullptr;
+    if (rid && instancedPipeline_.valid())
+      while (groupEnd < camVis.size()) {
+        auto* n = static_cast<MeshRenderable*>(queue_[camVis[groupEnd]].get());
+        if (!n || n->resourceId() != rid || n->meshData().empty() ||
+            n->meshData()[0].skinned || n->meshData()[0].material.alphaBlend)
+          break;
+        ++groupEnd;
+      }
+    const uint32_t groupSize = groupEnd - vi;
+    if (rid && groupSize >= 2) {
+      // 实例化路径:bind UBO 组偏移 + 一次 drawIndexedInstanced
+      const uint32_t slotBase = uint32_t(slotOf[idx]);
+      cmd->bindPipeline(instancedPipeline_);
+      cmd->bindUniformBuffer(0, frameUbo_, 0, 256);
+      cmd->bindUniformBuffer(1, itemUbo_, uint64_t(slotBase) * kUboStride,
+                           uint64_t(groupSize) * kUboStride);
+      cmd->bindUniformBuffer(2, lightUbo_, 0, 352);
+      // 纹理/缓冲取组首项资源(同资源全组共享)
+      const auto& meshes = r->meshData();
+      auto sampler = r->meshSampler();
+      for (const auto& g : meshes) {
+        cmd->bindTexture(0, g.baseColorTex, sampler);
+        cmd->bindTexture(1, g.mrTex, sampler);
+        cmd->bindTexture(2, g.normalTex, sampler);
+        cmd->bindTexture(3, g.emissiveTex, sampler);
+        cmd->bindTexture(4, g.occlusionTex, sampler);
+        if (env_.prefilterCube().valid()) {
+          cmd->bindTexture(5, env_.prefilterCube(), env_.cubeSampler());
+          cmd->bindTexture(6, env_.brdfLut(), env_.lutSampler());
+        }
+        if (shadowActive) cmd->bindTexture(7, shadowDepthTex_, shadowSampler_);
+        cmd->bindVertexBuffer(0, g.vbo, 0);
+        cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
+        cmd->drawIndexedInstanced(g.indexCount, 0, 0, groupSize, 0);
+      }
+      vi = groupEnd;
+      continue;
+    }
     queue_[idx]->prepass(cmd);  // 2b 钩子(默认空)
     ctx.itemOffset = uint64_t(slotOf[idx]) * kUboStride;
     ctx.jointOffset = jointSlot_[idx] >= 0
                           ? uint64_t(jointSlot_[idx]) * kJointItemStride
                           : 0;
     queue_[idx]->record(cmd, ctx);
+    ++vi;
   }
   cmd->endRenderPass();
   if (scene != target) {

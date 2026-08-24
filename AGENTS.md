@@ -211,6 +211,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 混合:glTF alphaMode=BLEND → MaterialData.alphaBlend;混合管线(BlendDesc srcAlpha/
   oneMinusSrcAlpha,depthWrite 关);endScene opaque 先、blend 按视距远→近;
   blend 项不参与蒙皮路径(按 opaque 处理)
+- MASK cutout:glTF alphaMode=MASK → MaterialData.alphaCutoff(默认 0.5)→
+  ItemUBO metallicRough.w;pbr.frag `if (w>0 && alpha<w) discard`;
+  走 opaque 路径(depthWrite 开);阴影 pass 不做纹理裁剪(v2)
 - loader:非索引图元顺序生成索引;triangle_strip 分解为三角形列表(交替绕序);
   法线缺失时逐面 flat 生成(须在索引生成之后)
 

@@ -30,33 +30,37 @@ class MainActivity : Activity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
-        // assets → filesDir(内核 v1 只支持文件路径);surface 就绪后 loadModel 内部投递
-        val dst = File(filesDir, "DamagedHelmet.glb")
-        try {
-            if (!dst.exists()) assets.open("DamagedHelmet.glb").use { input ->
+        // assets → filesDir(内核 v1 只支持文件路径);遍历全部 glb(泛化模型集)
+        fun copyAsset(name: String): File? = try {
+            val dst = File(filesDir, name)
+            if (!dst.exists()) assets.open(name).use { input ->
                 dst.outputStream().use { input.copyTo(it) }
             }
-            renderView.loadModel(dst.absolutePath)
-        } catch (t: Throwable) {
-            Log.w("RdSample", "演示模型缺失,仅显示清屏背景", t)
-        }
-        // cesium_man 资产存在时(开发者经 fetch_assets.sh 下载并拷贝)一并入队
-        val cesium = File(filesDir, "CesiumMan.glb")
-        val hasCesium = try {
-            if (!cesium.exists()) assets.open("CesiumMan.glb").use { input ->
-                cesium.outputStream().use { input.copyTo(it) }
-            }
-            true
-        } catch (_: Throwable) { cesium.exists() }
+            dst
+        } catch (_: Throwable) { null }
+        val models = (assets.list("") ?: emptyArray())
+            .filter { it.endsWith(".glb") }
+            .sorted()
+            .mapNotNull { name -> copyAsset(name)?.let { name.removeSuffix(".glb") to it } }
+        val helmet = models.firstOrNull { it.first == "DamagedHelmet" }?.second
+        helmet?.let { renderView.loadModel(it.absolutePath) }
 
-        // 「切换」按钮:画质档轮换(High→Mid→Low)+ 模型轮换(cesium_man 存在时)
+        // 「切换」按钮:画质档轮换(helmet 三档)+ 全部模型轮换(High 档)
         data class DemoState(val quality: Int, val model: File, val label: String)
-        val states = mutableListOf(
-            DemoState(1, dst, "High"),
-            DemoState(2, dst, "Mid"),
-            DemoState(3, dst, "Low"),
-        )
-        if (hasCesium) states.add(DemoState(1, cesium, "High+骨骼动画"))
+        val states = mutableListOf<DemoState>()
+        helmet?.let {
+            states += DemoState(1, it, "High")
+            states += DemoState(2, it, "Mid")
+            states += DemoState(3, it, "Low")
+        }
+        for ((name, f) in models) {
+            if (name == "DamagedHelmet") continue
+            val label = when (name) {
+                "CesiumMan", "Fox" -> "$name 骨骼动画"
+                else -> name
+            }
+            states += DemoState(1, f, label)
+        }
         var index = 0
         var recording = false
         val button = Button(this).apply {

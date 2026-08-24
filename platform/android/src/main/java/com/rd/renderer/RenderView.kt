@@ -77,6 +77,7 @@ class RenderView @JvmOverloads constructor(
         renderHandler.post {
             if (enginePtr == 0L) {
                 enginePtr = nativeCreate(backend.value)
+                nativeSetCacheDir(enginePtr, context.cacheDir.absolutePath + "/rd_cache")
                 if (enginePtr != 0L &&
                     nativeSetSurface(enginePtr, surface, width, height) == 0) {
                     running = true
@@ -208,6 +209,7 @@ class RenderView @JvmOverloads constructor(
 
     // ---- JNI native 方法（实现在 platform/android/jni/rd_jni.cpp）----
     private external fun nativeCreate(backend: Int): Long
+    private external fun nativeSetCacheDir(ptr: Long, path: String)
     private external fun nativeDestroy(ptr: Long)
     private external fun nativeSetSurface(ptr: Long, surface: Surface, width: Int, height: Int): Int
     private external fun nativeClearSurface(ptr: Long)

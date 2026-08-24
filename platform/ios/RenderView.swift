@@ -64,6 +64,11 @@ import UIKit
         let w = UInt32(max(1, bounds.width * scale))
         let h = UInt32(max(1, bounds.height * scale))
         let layerPtr = Unmanaged.passUnretained(metalLayer).toOpaque()
+        // 缓存目录:Library/Caches/rd_cache(IBL 预滤波 + pipeline 缓存,二次启动提速)
+        if let caches = FileManager.default.urls(for: .cachesDirectory,
+                                                 in: .userDomainMask).first {
+            rd_engine_set_cache_dir(created, caches.appendingPathComponent("rd_cache").path)
+        }
         let result = rd_engine_set_surface(created, layerPtr, w, h)
         print("RD: set_surface \(w)x\(h) -> \(result)")
         guard result == RD_OK else {

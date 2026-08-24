@@ -36,8 +36,26 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return s
     }
     @objc private func onSwitchTap() {
-        stateIndex = (stateIndex + 1) % states().count
-        applyCurrentState()
+        // 弹出场景菜单:列出全部状态(画质档×helmet + 各模型),点击直达
+        let all = states()
+        let sheet = UIAlertController(title: "场景", message: nil,
+                                      preferredStyle: .actionSheet)
+        for (i, st) in all.enumerated() {
+            sheet.addAction(UIAlertAction(title: "\(st.label) / \(st.model)",
+                                          style: .default) { [weak self] _ in
+                self?.stateIndex = i
+                self?.applyCurrentState()
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        // iPad actionSheet 需要锚点
+        if let pop = sheet.popoverPresentationController,
+           let rootView = window?.rootViewController?.view {
+            pop.sourceView = rootView
+            pop.sourceRect = CGRect(x: rootView.bounds.maxX - 108,
+                                    y: rootView.bounds.maxY - 80, width: 88, height: 36)
+        }
+        window?.rootViewController?.present(sheet, animated: true)
     }
 
     private var recording = false
@@ -71,9 +89,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // RenderView 的 surface/渲染生命周期由其自身 didMoveToWindow 驱动
         let renderView = RenderView(frame: UIScreen.main.bounds)
         window.rootViewController?.view = renderView
-        // 「切换」按钮:画质档轮换(High→Mid→Low)+ 模型轮换(helmet↔cesium_man 若在包内)
+        // 「切换」按钮:弹出场景菜单(画质档 + 模型直达);长按 2s = 输入录制
         let button = UIButton(type: .system)
-        button.setTitle("切换", for: .normal)
+        button.setTitle("场景", for: .normal)
         button.backgroundColor = UIColor(white: 0, alpha: 0.35)
         button.setTitleColor(.white, for: .normal)
         button.layer.cornerRadius = 8

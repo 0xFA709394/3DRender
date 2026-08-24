@@ -100,3 +100,11 @@ JNIEXPORT void JNICALL Java_com_rd_renderer_RenderView_nativeSetQuality(JNIEnv*,
 }
 
 } // extern "C"
+
+/// 设置缓存目录(IBL 预滤波 + pipeline 二进制缓存;二次启动提速)。
+JNIEXPORT void JNICALL Java_com_rd_renderer_RenderView_nativeSetCacheDir(
+    JNIEnv* env, jobject, jlong ptr, jstring path) {
+  const char* p = env->GetStringUTFChars(path, nullptr);
+  rd_engine_set_cache_dir(reinterpret_cast<rd_engine*>(ptr), p);
+  env->ReleaseStringUTFChars(path, p);
+}

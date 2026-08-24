@@ -37,6 +37,8 @@ struct RendererShaderDesc {
   std::vector<uint8_t> equirectFs;       ///< equirect_to_cube.frag(HDR 环境;空=无 HDR)
   std::vector<uint8_t> skyboxVs, skyboxFs;  ///< 天空盒(空=不支持)
   std::vector<uint8_t> instancedVs, instancedFs;  ///< 实例化 pbr(空=不启用分组)
+  std::vector<uint8_t> shadowMaskVs, shadowMaskFs;  ///< cutout 阴影(空=阴影不裁剪)
+  std::vector<uint8_t> shadowInstVs;  ///< 实例化阴影 vert(frag 复用空 shadow_depth.frag)
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
 };
@@ -146,6 +148,8 @@ private:
   ShaderModuleHandle skyVs_, skyFs_;  // 天空盒模块(空码=不建)
   ShaderModuleHandle instVs_, instFs_;  // 实例化 pbr 模块(空码=不分组)
   PipelineHandle instancedPipeline_;    // 实例化管线(随场景管线重建)
+  PipelineHandle shadowMaskPipeline_;  // cutout 阴影(init 期固定;depthOnly+mask frag)
+  PipelineHandle shadowInstPipeline_;  // 实例化阴影(init 期固定;depthOnly)
   ShaderModuleHandle sfs_;            // shadow_depth.frag(蒙皮阴影管线重建用)
   PipelineHandle skinnedPipeline_;
   PipelineHandle skinnedShadowPipeline_;

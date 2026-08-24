@@ -260,6 +260,9 @@ rd_result_t rd_engine_set_surface(rd_engine* e, void* nativeWindow, uint32_t wid
         !get("skybox", rd::ShaderStage::Fragment, sd.skyboxFs) ||
         !get("pbr_forward_instanced", rd::ShaderStage::Vertex, sd.instancedVs) ||
         !get("pbr_forward_instanced", rd::ShaderStage::Fragment, sd.instancedFs) ||
+        !get("shadow_depth_mask", rd::ShaderStage::Vertex, sd.shadowMaskVs) ||
+        !get("shadow_depth_mask", rd::ShaderStage::Fragment, sd.shadowMaskFs) ||
+        !get("shadow_depth_instanced", rd::ShaderStage::Vertex, sd.shadowInstVs) ||
         !get("blit", rd::ShaderStage::Vertex, sd.blitVs) ||
         !get("blit", rd::ShaderStage::Fragment, sd.blitFs) ||
         !get("shadow_depth", rd::ShaderStage::Vertex, sd.shadowVs) ||

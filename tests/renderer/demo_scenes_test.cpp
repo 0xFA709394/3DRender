@@ -38,7 +38,7 @@ rd::test::Image renderScene(rd::Backend b, const char* name, rd::ModelAsset& sto
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {},{}, {}, instVs.code, instFs.code, unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            {},{}, {}, instVs.code, instFs.code,{}, {}, {}, unlitVs.entry, rd::Format::RGBA8_UNORM};
   rd::OffscreenTargetDesc td;
   td.width = kW;
   td.height = kH;

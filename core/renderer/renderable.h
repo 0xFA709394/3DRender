@@ -28,6 +28,8 @@ struct RenderContext {
   /// 蒙皮管线(同匹配规则)
   PipelineHandle skinnedPipeline;
   PipelineHandle skinnedShadowPipe;
+  /// cutout 阴影管线(材质 alphaCutoff>0;frag 采样 baseColor discard)
+  PipelineHandle shadowMaskPipe;
   /// 混合管线(alphaBlend 材质用;pbr 布局,blend 开 depthWrite 关)
   PipelineHandle blendPipeline;
   /// 共享 JointUBO(slot3;per-item 偏移)

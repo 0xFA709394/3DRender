@@ -134,14 +134,6 @@ class RenderView @JvmOverloads constructor(
         w.flush()
     }
 
-    private val scaleDetector = ScaleGestureDetector(context,
-        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScale(d: ScaleGestureDetector): Boolean {
-                val ratio = d.scaleFactor
-                renderHandler.post { if (enginePtr != 0L) nativeOnPinch(enginePtr, ratio) }
-                return true
-            }
-        })
 
     private val gestureDetector = GestureDetector(context,
         object : GestureDetector.SimpleOnGestureListener() {
@@ -156,7 +148,6 @@ class RenderView @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
-        scaleDetector.onTouchEvent(e)
         gestureDetector.onTouchEvent(e)
         val action = when (e.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> 0

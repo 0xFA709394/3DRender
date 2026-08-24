@@ -61,10 +61,13 @@ void OrbitController::onPointerMove(int id, float x, float y) {
   p->y = y;
   const float pinchDist = std::hypot(p1_.x - p0_.x, p1_.y - p0_.y);
   const float cx = (p0_.x + p1_.x) * 0.5f, cy = (p0_.y + p1_.y) * 0.5f;
-  if (lastPinchDist_ > 1e-3f && pinchDist > 1e-3f) onPinch(pinchDist / lastPinchDist_);
-  // 质心平移:沿相机 right/up 移动 target
+  // 缩放主导:指距在变(|ratio-1|>1%)→ 只缩放不平移(避免双指张开时模型漂移)
+  const float ratio = lastPinchDist_ > 1e-3f ? pinchDist / lastPinchDist_ : 1.0f;
+  const bool pinching = std::fabs(ratio - 1.0f) > 0.01f;
+  if (lastPinchDist_ > 1e-3f && pinchDist > 1e-3f) onPinch(ratio);
+  // 质心平移:沿相机 right/up 移动 target(仅在非缩放帧)
   const float ddx = cx - lastCentroidX_, ddy = cy - lastCentroidY_;
-  if (ddx != 0 || ddy != 0) {
+  if (!pinching && (ddx != 0 || ddy != 0)) {
     const float s = distance_ * params_.panFactor;
     const float cyaw = std::cos(yaw_), syaw = std::sin(yaw_);
     // 相机 right = (cyaw, 0, -syaw);up 近似取世界 +Y 分量方向

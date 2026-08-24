@@ -6,12 +6,17 @@ namespace rd {
 
 void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
   const bool skinned = !mesh_->meshes().empty() && mesh_->meshes()[0].skinned;
-  if (ctx.shadowPass) {  // 阴影:只写深度(位置语义)
-    cmd->bindPipeline(skinned ? ctx.skinnedShadowPipe : ctx.shadowPipe);
+  if (ctx.shadowPass) {  // 阴影:只写深度(位置语义;mask 材质采样 baseColor discard)
+    const bool mask0 = !mesh_->meshes().empty() && mesh_->meshes()[0].material.alphaCutoff > 0.0f;
+    const PipelineHandle pipe =
+        skinned ? ctx.skinnedShadowPipe : (mask0 ? ctx.shadowMaskPipe : ctx.shadowPipe);
+    cmd->bindPipeline(pipe);
     cmd->bindUniformBuffer(0, ctx.lightUbo, 0, 64);  // lightViewProj(LightUBO 前 64B)
     cmd->bindUniformBuffer(1, ctx.itemUbo, ctx.itemOffset, 256);
     if (skinned) cmd->bindUniformBuffer(3, ctx.jointUbo, ctx.jointOffset, 8192);
     for (const auto& g : mesh_->meshes()) {
+      if (mask0 && !skinned)
+        cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());  // cutout alpha
       cmd->bindVertexBuffer(0, g.vbo, 0);
       cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
       cmd->drawIndexed(g.indexCount, 0, 0);

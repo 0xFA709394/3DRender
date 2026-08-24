@@ -110,6 +110,8 @@ int main(int argc, char** argv) {
     auto instVs = load("pbr_forward_instanced.vert");
     auto instFs = load("pbr_forward_instanced.frag");
     auto skyVs = load("skybox.vert"), skyFs = load("skybox.frag");
+    auto smVs = load("shadow_depth_mask.vert"), smFs = load("shadow_depth_mask.frag");
+    auto siVs = load("shadow_depth_instanced.vert");
     auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
     auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
     auto sdsVs = load("shadow_depth_skinned.vert");
@@ -123,7 +125,7 @@ int main(int argc, char** argv) {
                               pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                               sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                               cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                              eqFs.code, skyVs.code, skyFs.code, instVs.code, instFs.code, unlitVs.entry, rd::Format::RGBA8_UNORM};
+                              eqFs.code, skyVs.code, skyFs.code, instVs.code, instFs.code, smVs.code, smFs.code, siVs.code, unlitVs.entry, rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;
     td.height = kH;
@@ -192,6 +194,8 @@ int main(int argc, char** argv) {
     auto instVs = load("pbr_forward_instanced.vert");
     auto instFs = load("pbr_forward_instanced.frag");
     auto skyVs = load("skybox.vert"), skyFs = load("skybox.frag");
+    auto smVs = load("shadow_depth_mask.vert"), smFs = load("shadow_depth_mask.frag");
+    auto siVs = load("shadow_depth_instanced.vert");
     auto blitVs = load("blit.vert"), blitFs = load("blit.frag");
   auto sdVs = load("shadow_depth.vert"), sdFs = load("shadow_depth.frag");
   auto exFs = load("bloom_extract.frag");
@@ -203,7 +207,7 @@ int main(int argc, char** argv) {
     rd::Renderer renderer;
     rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                               pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
-                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code, eqFs.code, skyVs.code, skyFs.code, instVs.code, instFs.code, unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code, eqFs.code, skyVs.code, skyFs.code, instVs.code, instFs.code, smVs.code, smFs.code, siVs.code, unlitVs.entry, rd::Format::RGBA8_UNORM};
     rd::OffscreenTargetDesc td;
     td.width = kW;
     td.height = kH;

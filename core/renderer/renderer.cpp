@@ -162,6 +162,25 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   spd.depthOnly = true;
   shadowPipeline_ = dev.createPipeline(spd);
   dev.destroyShaderModule(svs);
+  // cutout 阴影管线(mask 材质;同布局 + vUV;invalid=不裁剪)
+  if (!desc.shadowMaskVs.empty() && !desc.shadowMaskFs.empty()) {
+    auto mvs = dev.createShaderModule({ShaderStage::Vertex, desc.shadowMaskVs, desc.entry});
+    auto mfs = dev.createShaderModule({ShaderStage::Fragment, desc.shadowMaskFs, desc.entry});
+    PipelineDesc mpd = spd;
+    mpd.vertexShader = mvs;
+    mpd.fragmentShader = mfs;
+    shadowMaskPipeline_ = dev.createPipeline(mpd);
+    dev.destroyShaderModule(mvs);
+    dev.destroyShaderModule(mfs);
+  }
+  // 实例化阴影管线(frag 复用空 shadow_depth.frag)
+  if (!desc.shadowInstVs.empty()) {
+    auto ivs = dev.createShaderModule({ShaderStage::Vertex, desc.shadowInstVs, desc.entry});
+    PipelineDesc ipd = spd;
+    ipd.vertexShader = ivs;
+    shadowInstPipeline_ = dev.createPipeline(ipd);
+    dev.destroyShaderModule(ivs);
+  }
   SamplerDesc csd;
   csd.compareEnable = true;
   csd.wrapU = WrapMode::Clamp;
@@ -421,6 +440,8 @@ void Renderer::shutdown() {
   if (instancedPipeline_.valid()) dev_->destroyPipeline(instancedPipeline_);
   if (instVs_.valid()) dev_->destroyShaderModule(instVs_);
   if (instFs_.valid()) dev_->destroyShaderModule(instFs_);
+  if (shadowMaskPipeline_.valid()) dev_->destroyPipeline(shadowMaskPipeline_);
+  if (shadowInstPipeline_.valid()) dev_->destroyPipeline(shadowInstPipeline_);
   if (jointUbo_.valid()) dev_->destroyBuffer(jointUbo_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
@@ -458,6 +479,8 @@ void Renderer::shutdown() {
   instancedPipeline_ = {};
   instVs_ = {};
   instFs_ = {};
+  shadowMaskPipeline_ = {};
+  shadowInstPipeline_ = {};
   jointUbo_ = {};
   pipeSamples_ = 0;
   frameUbo_ = {};
@@ -804,13 +827,48 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     sctx.itemUbo = itemUbo_;
     sctx.shadowPipe = shadowPipeline_;
     sctx.skinnedShadowPipe = skinnedShadowPipeline_;
+    sctx.shadowMaskPipe = shadowMaskPipeline_;
     sctx.jointUbo = jointUbo_;
-    for (uint32_t idx : lightVis) {
+    // 阴影实例化:lightVis 同资源相邻项(非蒙皮/非 mask,组≥2)合并
+    for (uint32_t li = 0; li < lightVis.size();) {
+      const uint32_t idx = lightVis[li];
+      auto* r = static_cast<MeshRenderable*>(queue_[idx].get());
+      uint32_t groupEnd = li + 1;
+      const void* rid =
+          r && !r->meshData().empty() && jointSlot_[idx] < 0 &&
+                  r->meshData()[0].material.alphaCutoff <= 0.0f
+              ? r->resourceId()
+              : nullptr;
+      if (rid && shadowInstPipeline_.valid())
+        while (groupEnd < lightVis.size()) {
+          auto* n = static_cast<MeshRenderable*>(queue_[lightVis[groupEnd]].get());
+          if (!n || n->resourceId() != rid || n->meshData().empty() ||
+              jointSlot_[lightVis[groupEnd]] >= 0 ||
+              n->meshData()[0].material.alphaCutoff > 0.0f)
+            break;
+          ++groupEnd;
+        }
+      const uint32_t groupSize = groupEnd - li;
+      if (rid && groupSize >= 2) {
+        const uint32_t slotBase = uint32_t(slotOf[idx]);
+        cmd->bindPipeline(shadowInstPipeline_);
+        cmd->bindUniformBuffer(0, lightUbo_, 0, 64);  // lightViewProj
+        cmd->bindUniformBuffer(1, itemUbo_, uint64_t(slotBase) * kUboStride,
+                               uint64_t(groupSize) * kUboStride);
+        for (const auto& g : r->meshData()) {
+          cmd->bindVertexBuffer(0, g.vbo, 0);
+          cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
+          cmd->drawIndexedInstanced(g.indexCount, 0, 0, groupSize, 0);
+        }
+        li = groupEnd;
+        continue;
+      }
       sctx.itemOffset = uint64_t(slotOf[idx]) * kUboStride;
       sctx.jointOffset = jointSlot_[idx] >= 0
                              ? uint64_t(jointSlot_[idx]) * kJointItemStride
                              : 0;
       queue_[idx]->record(cmd, sctx);
+      ++li;
     }
     cmd->endRenderPass();
   }

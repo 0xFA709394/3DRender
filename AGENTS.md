@@ -228,6 +228,11 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 移动端缓存接线:双端 demo RenderView 建引擎后 `set_cache_dir(<app cache>/rd_cache)`
   (Android 经 `nativeSetCacheDir` JNI);二次启动 IBL+pipeline 双命中;
   Android demo assets 为仓根 assets symlink(KTX2 优先,免重复入库)
+- pinch 缩放(修复):OrbitController 双指帧内 |指距变化率|>1% 时只缩放不平移
+  (消除张开时质心漂移);Android 不再用 ScaleGestureDetector(与指针路径重复=双倍缩放);
+  iOS demo「场景」按钮弹 actionSheet 菜单(全状态直达,长按录制保留)
+- embedded_shaders 生成:**DEPENDS 按产物文件追踪**(ShaderList.cmake 名单单一来源);
+  新增 shader 只注册 rd_compile_shader + ShaderList 即可(勿再手改 DEPENDS)
 - loader:非索引图元顺序生成索引;triangle_strip 分解为三角形列表(交替绕序);
   法线缺失时逐面 flat 生成(须在索引生成之后)
 

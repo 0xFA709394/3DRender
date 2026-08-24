@@ -24,12 +24,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                  DemoState(quality: 2, model: "DamagedHelmet", label: "Mid"),
                  DemoState(quality: 3, model: "DamagedHelmet", label: "Low")]
         // bundle 内全部 glb(除 helmet)按 High 档追加
+        // 双扩展剥离(BoomBox.ktx2.glb → BoomBox.ktx2,显示名再去 .ktx2)
         let extras = Bundle.main.paths(forResourcesOfType: "glb", inDirectory: nil)
             .map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension }
             .sorted()
         for name in extras where name != "DamagedHelmet" {
+            let base = name.hasSuffix(".ktx2") ? String(name.dropLast(5)) : name
             s.append(DemoState(quality: 1, model: name,
-                               label: AppDelegate.modelLabels[name] ?? name))
+                               label: AppDelegate.modelLabels[base] ?? base))
         }
         return s
     }

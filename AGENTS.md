@@ -217,7 +217,14 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   blend 项不参与蒙皮路径(按 opaque 处理)
 - MASK cutout:glTF alphaMode=MASK → MaterialData.alphaCutoff(默认 0.5)→
   ItemUBO metallicRough.w;pbr.frag `if (w>0 && alpha<w) discard`;
-  走 opaque 路径(depthWrite 开);阴影 pass 不做纹理裁剪(v2)
+  走 opaque 路径(depthWrite 开);**阴影 pass 支持裁剪**(shadow_depth_mask 管线:
+  采样 baseColor alpha discard;mask 材质不参与阴影实例化分组)
+- 阴影实例化:lightVis 同资源相邻组(非蒙皮/非 mask,≥2)→ shadow_depth_instanced.vert
+  + drawIndexedInstanced(ItemUBO 组偏移绑定)
+- 包体积(P4):`tools/glb_ktx2`(glb→ASTC 4x2 KTX2:cgltf/nlohmann 解析,逐图像
+  stb 解码→maxDim 1024 降采样→libktx CompressAstcEx→全量重排 BIN+JSON;
+  **无收益图像保留原样**;BoomBox 10.1→3.3MB,demo 包 49→22MB);
+  iOS demo 优先 `<m>.ktx2.glb`;loader 内嵌 KTX2 bufferView 走 magic 嗅探(无需扩展声明)
 - loader:非索引图元顺序生成索引;triangle_strip 分解为三角形列表(交替绕序);
   法线缺失时逐面 flat 生成(须在索引生成之后)
 

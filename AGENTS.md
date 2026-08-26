@@ -235,6 +235,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   新增 shader 只注册 rd_compile_shader + ShaderList 即可(勿再手改 DEPENDS)
 - loader:非索引图元顺序生成索引;triangle_strip 分解为三角形列表(交替绕序);
   法线缺失时逐面 flat 生成(须在索引生成之后)
+- **glTF 节点世界变换烘焙**(loader 尾部):非蒙皮 mesh 顶点按节点世界矩阵烘焙
+  (pos/normal/tangent;matrix 节点经 cgltf_node_transform_world 全支持);
+  蒙皮 mesh 跳过(glTF 语义:蒙皮忽略节点变换)但计入包围;golden 因此重生成过一次
 
 ## 提交规范
 - 小步提交，每任务一个 commit；格式 `<type>(<scope>): 描述`

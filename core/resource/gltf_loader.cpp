@@ -127,6 +127,11 @@ MaterialData readMaterial(const cgltf_primitive& prim, const char* gltfDir,
   if (mat->emissive_texture.texture)
     m.emissive = decodeImage(mat->emissive_texture.texture, gltfDir, pref);
   memcpy(m.emissiveFactor, mat->emissive_factor, sizeof(m.emissiveFactor));
+  // KHR_materials_emissive_strength:emissive 强度 >1(HDR bloom 提亮)
+  if (mat->has_emissive_strength) {
+    const float es = float(mat->emissive_strength.emissive_strength);
+    for (int c = 0; c < 3; ++c) m.emissiveFactor[c] *= es;
+  }
   if (mat->occlusion_texture.texture) {
     m.occlusion = decodeImage(mat->occlusion_texture.texture, gltfDir, pref);
     m.occlusionStrength = mat->occlusion_texture.scale;

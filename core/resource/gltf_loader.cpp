@@ -3,6 +3,7 @@
 #include "resource/gltf_loader.h"
 #include "resource/mesh_utils.h"
 #include "foundation/log.h"
+#include "foundation/math.h"
 
 // cgltf 是单头库:实现宏只能在一个编译单元定义(本文件即该单元)
 #define CGLTF_IMPLEMENTATION
@@ -442,6 +443,57 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
     out.innerCone = l->spot_inner_cone_angle;
     out.outerCone = l->spot_outer_cone_angle;
     model.lights.push_back(out);
+  }
+  // ---- 节点世界变换烘焙(非蒙皮 mesh;glTF 语义:蒙皮 mesh 忽略其节点变换)----
+  // 修复:此前节点 TRS/matrix 完全未生效(DamagedHelmet 应立起、BoomBox 应转身、
+  // Lantern 多部件应各就其位)。烘焙进顶点,运行时零成本。
+  {
+    // 每节点世界矩阵(层级递归;cgltf 直接给 world)
+    std::vector<math::Mat4> nodeWorld(model.nodes.size(), math::Mat4(1.0f));
+    bool anyTransform = false;
+    for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+      cgltf_float wm[16];
+      cgltf_node_transform_world(&data->nodes[ni], wm);
+      math::Mat4 m;
+      memcpy(&m, wm, sizeof(m));
+      nodeWorld[ni] = m;
+      // 非恒等判定
+      const math::Mat4 I(1.0f);
+      for (int c = 0; c < 16 && !anyTransform; ++c)
+        if (std::fabs(reinterpret_cast<const float*>(&m)[c] -
+                      reinterpret_cast<const float*>(&I)[c]) > 1e-6f)
+          anyTransform = true;
+    }
+    if (anyTransform) {
+      // 重置包围累积(烘焙后重算;蒙皮 mesh 未烘焙但也须计入)
+      bmin[0] = bmin[1] = bmin[2] = 1e30f;
+      bmax[0] = bmax[1] = bmax[2] = -1e30f;
+      for (auto& mesh : model.meshes) {
+        const bool bake = !mesh.skinned && mesh.nodeIndex >= 0 &&
+                          size_t(mesh.nodeIndex) < nodeWorld.size();
+        const glm::mat4* wp = bake ? &nodeWorld[size_t(mesh.nodeIndex)] : nullptr;
+        glm::mat3 nm(1.0f);
+        if (wp) nm = glm::transpose(glm::inverse(glm::mat3(*wp)));
+        const uint32_t strideF = mesh.skinned ? 20 : 12;
+        const size_t nv = mesh.vertices.size() / strideF;
+        for (size_t vi = 0; vi < nv; ++vi) {
+          float* p = &mesh.vertices[vi * strideF];
+          if (wp) {
+            const math::Vec4 tp = (*wp) * math::Vec4(p[0], p[1], p[2], 1.0f);
+            p[0] = tp.x; p[1] = tp.y; p[2] = tp.z;
+            const math::Vec3 tn = glm::normalize(nm * math::Vec3(p[3], p[4], p[5]));
+            p[3] = tn.x; p[4] = tn.y; p[5] = tn.z;
+            const math::Vec3 tt = glm::normalize(nm * math::Vec3(p[6], p[7], p[8]));
+            p[6] = tt.x; p[7] = tt.y; p[8] = tt.z;  // w(手性)保持
+          }
+          // 包围重算(全部 mesh,烘焙与否都计入)
+          for (int c = 0; c < 3; ++c) {
+            if (p[c] < bmin[c]) bmin[c] = p[c];
+            if (p[c] > bmax[c]) bmax[c] = p[c];
+          }
+        }
+      }
+    }
   }
   cgltf_free(data);
   if (!model.valid()) {

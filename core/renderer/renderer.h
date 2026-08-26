@@ -96,7 +96,9 @@ public:
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
-  static constexpr uint32_t kMaxItems = 64;     // 动态 UBO 容量(超出记警告截断)
+  static constexpr uint32_t kMaxItems = 64;     // 渲染项(模型)容量
+  static constexpr uint32_t kMaxItemSlots = 128;  // ItemUBO 槽位(per-mesh;32KB,
+                                                  // GLES 3.x 实机普遍 64KB 支持)
 
   /// 按 (目标尺寸×renderScale_, msaa_) 确保内部场景目标可用,参数变化时重建。
   TargetHandle ensureSceneTarget(uint32_t targetW, uint32_t targetH);
@@ -155,6 +157,8 @@ private:
   PipelineHandle skinnedShadowPipeline_;
   BufferHandle jointUbo_;             // 64KB 共享 JointUBO(8 项 × 8192B)
   std::vector<int32_t> jointSlot_;    // 与 queue_ 平行:JointUBO 槽位(-1=非蒙皮)
+  std::vector<uint32_t> meshCount_;   // 与 queue_ 平行:每 item mesh 数(≥1)
+  std::vector<uint32_t> slotBase_;    // 与 queue_ 平行:ItemUBO 起始槽(endScene 填)
   static constexpr uint32_t kJointItemStride = 8192;  // 128 骨 × 64B
   static constexpr uint32_t kMaxJointItems = 8;
 

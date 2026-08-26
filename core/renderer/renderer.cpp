@@ -105,7 +105,7 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
 
   // 双层 UBO
   frameUbo_ = dev.createBuffer({256, BufferUsage::Uniform, true, false, nullptr});
-  itemUbo_ = dev.createBuffer({uint64_t(kUboStride) * kMaxItems, BufferUsage::Uniform, true,
+  itemUbo_ = dev.createBuffer({uint64_t(kUboStride) * kMaxItemSlots, BufferUsage::Uniform, true,
                                false, nullptr});
 
   // blit 管线(无顶点缓冲:gl_VertexIndex 全屏三角形)
@@ -683,6 +683,8 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
   queue_.push_back(std::make_unique<MeshRenderable>(mesh));
   worldStack_.push_back(world);
   jointSlot_.push_back(-1);
+  const auto& md = mesh ? mesh->meshes() : std::vector<MeshGpuData>();
+  meshCount_.push_back(uint32_t(std::max<size_t>(1, md.size())));
 }
 
 void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
@@ -701,6 +703,8 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
   queue_.push_back(std::make_unique<MeshRenderable>(mesh));
   worldStack_.push_back(world);
   jointSlot_.push_back(int32_t(slot));
+  const auto& md2 = mesh ? mesh->meshes() : std::vector<MeshGpuData>();
+  meshCount_.push_back(uint32_t(std::max<size_t>(1, md2.size())));
 }
 
 void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
@@ -770,52 +774,66 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     for (uint32_t i : order) {
       if (!culledBy(i, lightFrustum)) lightVis.push_back(i);
     }
-  // ItemUBO 槽位 = 两可见集并集(保序),阴影/场景 pass 共用
+  // ItemUBO 槽位 = 两可见集并集;per-item 分配 meshCount 个连续槽(per-mesh 材质)
   std::vector<int32_t> slotOf(count, -1);
   uint32_t slotCount = 0;
   auto assignSlot = [&](uint32_t idx) {
-    if (slotOf[idx] < 0) slotOf[idx] = int32_t(slotCount++);
+    if (slotOf[idx] >= 0) return;
+    const uint32_t mc = meshCount_[idx];
+    if (slotCount + mc > kMaxItemSlots) {  // 容量截断:mesh0 槽兜底(退化旧行为)
+      slotOf[idx] = int32_t(slotCount);  // 后续 mesh 全落同槽
+      return;
+    }
+    slotOf[idx] = int32_t(slotCount);
+    slotCount += mc;
   };
   for (uint32_t i : camVis) assignSlot(i);
   for (uint32_t i : lightVis) assignSlot(i);
+  slotBase_ = std::vector<uint32_t>(count, 0);
+  for (uint32_t i = 0; i < count; ++i)
+    slotBase_[i] = slotOf[i] < 0 ? 0 : uint32_t(slotOf[i]);
 
-  // 统一填充 per-item ItemUBO(槽位 = 可见并集序号 slotOf)
+  // 统一填充 per-mesh ItemUBO(item 内 meshCount 个连续槽;截断时 mesh0 兜底)
   for (uint32_t i = 0; i < count; ++i) {
     if (slotOf[order[i]] < 0) continue;  // 剔除项不占 UBO 槽
     const auto* renderable = static_cast<const MeshRenderable*>(queue_[order[i]].get());
     const auto& meshes = renderable->meshData();
-    // ItemUBO 按 mesh 首个材质填(多 mesh 模型共享 item 槽——简化:逐 item 一个 UBO,
-    // 多 mesh 差异材质归 P2 拆 item)
-    ItemUBOData iu{};
+    const uint32_t base = uint32_t(slotOf[order[i]]);
     const auto& world = worldStack_[order[i]];
-    iu.mvp = viewProj_ * world;
-    iu.world = world;
-    iu.normalMatrix = glm::transpose(glm::inverse(world));
-    if (!meshes.empty()) {
-      const auto& m = meshes[0].material;
-      memcpy(iu.baseColorFactor, m.baseColorFactor, sizeof(iu.baseColorFactor));
-      iu.emissiveOcc[0] = m.emissiveFactor[0];
-      iu.emissiveOcc[1] = m.emissiveFactor[1];
-      iu.emissiveOcc[2] = m.emissiveFactor[2];
-      iu.emissiveOcc[3] = m.occlusionStrength;
-      iu.metallicRough[0] = m.metallicFactor;
-      iu.metallicRough[1] = m.roughnessFactor;
-      iu.metallicRough[2] = m.normalScale;
-      iu.metallicRough[3] = m.alphaCutoff;  // MASK 裁剪阈值(0=非 MASK)
-      iu.uvTransform[0] = m.uvOffset[0];
-      iu.uvTransform[1] = m.uvOffset[1];
-      iu.uvTransform[2] = m.uvScale[0];
-      iu.uvTransform[3] = m.uvScale[1];
-    } else {
-      iu.baseColorFactor[0] = iu.baseColorFactor[1] = iu.baseColorFactor[2] =
-          iu.baseColorFactor[3] = 1.0f;
-      iu.emissiveOcc[3] = 1.0f;
-      iu.metallicRough[0] = 1.0f;
-      iu.metallicRough[1] = 1.0f;
-      iu.metallicRough[2] = 1.0f;
-      iu.uvTransform[2] = iu.uvTransform[3] = 1.0f;
+    const uint32_t mc = meshCount_[order[i]];
+    for (uint32_t mi = 0; mi < mc; ++mi) {
+      const uint32_t slot = base + mi;
+      if (slot >= kMaxItemSlots) break;  // 容量截断:后续 mesh 复用 mesh0 槽
+      ItemUBOData iu{};
+      iu.mvp = viewProj_ * world;
+      iu.world = world;
+      iu.normalMatrix = glm::transpose(glm::inverse(world));
+      if (!meshes.empty() && mi < meshes.size()) {
+        const auto& m = meshes[mi].material;  // per-mesh 材质(此前全模型共享 mesh0)
+        memcpy(iu.baseColorFactor, m.baseColorFactor, sizeof(iu.baseColorFactor));
+        iu.emissiveOcc[0] = m.emissiveFactor[0];
+        iu.emissiveOcc[1] = m.emissiveFactor[1];
+        iu.emissiveOcc[2] = m.emissiveFactor[2];
+        iu.emissiveOcc[3] = m.occlusionStrength;
+        iu.metallicRough[0] = m.metallicFactor;
+        iu.metallicRough[1] = m.roughnessFactor;
+        iu.metallicRough[2] = m.normalScale;
+        iu.metallicRough[3] = m.alphaCutoff;  // MASK 裁剪阈值(0=非 MASK)
+        iu.uvTransform[0] = m.uvOffset[0];
+        iu.uvTransform[1] = m.uvOffset[1];
+        iu.uvTransform[2] = m.uvScale[0];
+        iu.uvTransform[3] = m.uvScale[1];
+      } else {
+        iu.baseColorFactor[0] = iu.baseColorFactor[1] = iu.baseColorFactor[2] =
+            iu.baseColorFactor[3] = 1.0f;
+        iu.emissiveOcc[3] = 1.0f;
+        iu.metallicRough[0] = 1.0f;
+        iu.metallicRough[1] = 1.0f;
+        iu.metallicRough[2] = 1.0f;
+        iu.uvTransform[2] = iu.uvTransform[3] = 1.0f;
+      }
+      dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(slot) * kUboStride);
     }
-    dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(slotOf[order[i]]) * kUboStride);
   }
 
   // ---- ShadowPass(场景 pass 之前)----
@@ -835,7 +853,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       auto* r = static_cast<MeshRenderable*>(queue_[idx].get());
       uint32_t groupEnd = li + 1;
       const void* rid =
-          r && !r->meshData().empty() && jointSlot_[idx] < 0 &&
+          r && r->meshData().size() == 1 && jointSlot_[idx] < 0 &&
                   r->meshData()[0].material.alphaCutoff <= 0.0f
               ? r->resourceId()
               : nullptr;

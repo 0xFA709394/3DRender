@@ -38,7 +38,8 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   + render_test --scene + interactive --scene 直驱 + 移动 demo 画质/模型切换
 - 场景库扩充:新增 emissive_bloom/normal_map_wall(程序化法线贴图)/shadow_gallery/
   ktx2_gallery(KTX2 vs PNG 对比)/alpha_blend(glTF alphaMode BLEND 混合管线+排序)/
-  fox_anim(真骨骼动画)
+  fox_anim(真骨骼动画);**glTF 节点世界变换已烘焙**(非蒙皮,loader 尾部);
+  KHR_materials_emissive_strength(emissiveFactor × strength)
 - golden 三件套(F3D 学习落地):SSIM 主判据(compareSSIM,阈值 0.05)+
   RD_GOLDEN_TEST 声明式宏 + 输入注入回放(render_test --record/--play +
   tests/recordings/orbit_drag.log 手势回归);移动端录制同格式(demo 长按「切换」)
@@ -146,7 +147,8 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - 顶点布局约定（glTF 模型）：pos(3f)@0 | normal(3f)@12 | tangent(4f)@24 | uv(2f)@40，
   交错 stride 48，location 0/1/2/3
 - UBO 约定：slot0=FrameUBO(256B:viewProj|cameraPos|lightDir|lightColor|sh[9])，
-  slot1=ItemUBO(256B 步进:mvp|world|normalMatrix|factors|uvTransform)；
+  slot1=ItemUBO(256B 步进:**per-(item,mesh)**——item 占 meshCount 个连续槽,
+  容量 128 槽(32KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源)；
   GLES uniform block 名表：UBO/FrameUBO→0，ItemUBO→1
 - 纹理槽位：0=baseColor，1=MR，2=normal，3=emissive，4=occlusion，5=prefilterCube，
   6=brdfLut(nearest 采样)

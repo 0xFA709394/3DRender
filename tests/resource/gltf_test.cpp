@@ -421,3 +421,35 @@ TEST(Gltf, AlphaMask) {
   EXPECT_FLOAT_EQ(model2.meshes[0].material.alphaCutoff, 0.5f);  // glTF 默认
   (void)g2; (void)g2s;
 }
+
+// KHR_materials_emissive_strength:emissiveFactor × strength
+TEST(Gltf, EmissiveStrength) {
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "extensionsUsed": ["KHR_materials_emissive_strength"],
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{"emissiveFactor": [1.0, 0.5, 0.0],
+      "extensions": {"KHR_materials_emissive_strength": {"emissiveStrength": 4.0}}}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_ems").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f); fclose(f); }
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  EXPECT_FLOAT_EQ(model.meshes[0].material.emissiveFactor[0], 4.0f);   // 1.0 × 4
+  EXPECT_FLOAT_EQ(model.meshes[0].material.emissiveFactor[1], 2.0f);   // 0.5 × 4
+}

@@ -172,7 +172,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   (msaa≥4 且 max_texture_size≥8192→High;msaa≥2→Mid;否则 Low)；
   预设表 renderer/quality.h(renderScale/msaa/IBL 尺寸/纹理上限)
 - 输入 C API：`rd_engine_on_pointer/on_scroll/on_pinch/on_double_tap`（像素坐标,左上 origin）；
-  `rd_engine_load_gltf` 同步加载并 Orbit 自动取景（v1 同步,异步归 P2）
+  `rd_engine_load_gltf` 同步加载并 Orbit 自动取景;
+  `rd_engine_load_gltf_async(path, cb, ud)` 异步(工作线程解析+渲染线程安装,
+  完成队列由 render_frame 驱动——**无 surface 也须周期调 render_frame 收回调**)
 - KTX2：glTF `KHR_texture_basisu` + 外链 URI（相对 gltf 目录）;转码目标
   astc>etc2>rgba32 由 caps 推导（pickTranscodeTarget）;测试资产运行时生成
   （tests/common/ktx2_gen,勿提交二进制）;Vulkan 描述符按绑定状态缓存

@@ -9,7 +9,10 @@
 #include "api/command_bus.h"
 #include "api/embedded_shaders.h"
 #include "foundation/log.h"
+#include <atomic>
 #include <filesystem>
+#include <thread>
+#include "foundation/task_queue.h"
 #include "options_generated.h"
 #include "renderer/quality.h"
 #include "renderer/renderer.h"
@@ -51,6 +54,11 @@ struct rd_engine {
   rd::scene::Animator animator;
   bool hasAnimation = false;
   char lastError[256] = {};             ///< 最近错误描述（rd_get_last_error 返回）
+  // 异步加载:工作线程解析;完成队列由 render_frame 消费(含无 surface 早退前)
+  rd::TaskQueue loadWork;               ///< 渲染线程投递 → 工作线程消费
+  rd::TaskQueue loadDone;               ///< 工作线程投递 → 渲染线程消费
+  std::unique_ptr<std::thread> loadThread;
+  std::atomic<bool> loadQuit{false};
 };
 
 namespace {
@@ -85,6 +93,34 @@ void applyCamera(rd_engine* e, float vw, float vh) {
                           std::max(0.01f, e->orbit.distance() * 0.02f),
                           e->orbit.distance() * 20.0f);
 }
+/// 安装模型:GPU 上传 + 场景重建 + 取景 + 灯光 + 动画(渲染线程)。
+void installModel(rd_engine* e, rd::ModelAsset&& model) {
+  e->device->waitIdle();  // 防旧模型在飞引用
+  auto res = rd::MeshRenderResource::upload(*e->device, model);
+  if (!res) {
+    setError(e, "模型 GPU 上传失败");
+    return;
+  }
+  if (e->model) e->model->destroy(*e->device);
+  e->model = res;
+  auto scene = std::make_unique<rd::scene::Scene>();
+  auto node = std::make_unique<rd::scene::MeshNode>();
+  node->mesh = res;
+  scene->root().addChild(std::move(node));
+  e->scene = std::move(scene);
+  e->orbit.frameModel(model.boundingCenter, model.boundingRadius);
+  e->gltfLights = model.lights;
+  e->lightsDirty = true;
+  e->renderer.setLightFraming(model.boundingCenter, model.boundingRadius);
+  e->modelAsset = std::move(model);
+  e->hasAnimation = !e->modelAsset.animations.empty() && !e->modelAsset.skins.empty();
+  if (e->hasAnimation) {
+    e->animator.bind(e->modelAsset);
+    e->animator.play(0);
+  }
+  e->renderDirty = true;
+}
+
 /// 把 options 映射进 renderer(每帧开头;幂等——setQuality/setShadow* 内部按值去重)。
 void applyOptions(rd_engine* e) {
   if (!e->rendererReady) return;
@@ -208,6 +244,12 @@ rd_engine* rd_engine_create(rd_backend_t backend) {
 
 void rd_engine_destroy(rd_engine* e) {
   if (!e) return;
+  // 停异步加载工作线程(置退标志 + 投递哨兵唤醒 + join;完成队列直接丢弃)
+  if (e->loadThread) {
+    e->loadQuit = true;
+    e->loadWork.post([] {});
+    e->loadThread->join();
+  }
   if (e->device) {
     e->device->waitIdle();  // 先等 GPU 空闲，再按依赖逆序释放
     if (e->model) e->model->destroy(*e->device);
@@ -302,6 +344,7 @@ void rd_engine_resize(rd_engine* e, uint32_t width, uint32_t height) {
 }
 
 void rd_engine_render_frame(rd_engine* e, float dt) {
+  if (e) while (e->loadDone.tryPop()) {}  // 异步加载完成队列(回调在渲染线程)
   // 无表面/渲染器未就绪：安全跳过（节流日志，约每 300 次记一次避免刷屏）
   if (!e || !e->swapChain.valid() || !e->rendererReady) {
     static int skipLog = 0;
@@ -436,33 +479,56 @@ rd_result_t rd_engine_load_gltf(rd_engine* e, const char* path) {
     setError(e, (std::string("glTF 加载失败: ") + path).c_str());
     return RD_ERROR_ASSET;
   }
-  e->device->waitIdle();  // 防旧模型在飞引用
-  auto res = rd::MeshRenderResource::upload(*e->device, model);
-  if (!res) {
-    setError(e, "模型 GPU 上传失败");
-    return RD_ERROR_ASSET;
+  installModel(e, std::move(model));
+  return std::string(e->lastError).find("GPU 上传失败") != std::string::npos
+             ? RD_ERROR_ASSET
+             : RD_OK;
+}
+
+/// 异步加载:工作线程解析+解码,完成队列由 render_frame(渲染线程)消费安装。
+rd_result_t rd_engine_load_gltf_async(rd_engine* e, const char* path,
+                                      rd_load_callback_t cb, void* userdata) {
+  if (!e || !path) return RD_ERROR_INVALID_ARG;
+  // 懒启动工作线程
+  if (!e->loadThread) {
+    e->loadQuit = false;
+    e->loadThread = std::make_unique<std::thread>([e]() {
+      struct Req {
+        std::string path;
+        rd_load_callback_t cb;
+        void* userdata;
+      };
+      while (!e->loadQuit.load()) {
+        // waitAndPop 阻塞;退出由 destroy 投递哨兵
+        // 任务体 = 解析 + 回投完成
+        // (waitAndPop 在当前线程执行任务——即本工作线程)
+        e->loadWork.waitAndPop();
+        if (e->loadQuit.load()) break;
+      }
+    });
   }
-  if (e->model) e->model->destroy(*e->device);
-  e->model = res;
-  // 重建场景:单 MeshNode
-  auto scene = std::make_unique<rd::scene::Scene>();
-  auto node = std::make_unique<rd::scene::MeshNode>();
-  node->mesh = res;
-  scene->root().addChild(std::move(node));
-  e->scene = std::move(scene);
-  e->orbit.frameModel(model.boundingCenter, model.boundingRadius);
-  // 灯光 + 阴影取景(setLights/setLightFraming 只存 CPU 状态,随时可调)
-  e->gltfLights = model.lights;
-  e->lightsDirty = true;
-  e->renderer.setLightFraming(model.boundingCenter, model.boundingRadius);
-  // 动画:CPU 资产持久持有(Animator 绑定源),自动播放 clip 0
-  e->modelAsset = std::move(model);
-  e->hasAnimation = !e->modelAsset.animations.empty() && !e->modelAsset.skins.empty();
-  if (e->hasAnimation) {
-    e->animator.bind(e->modelAsset);
-    e->animator.play(0);
-  }
-  e->renderDirty = true;
+  const std::string p = path;
+  rd::TextureLoadPref pref;
+  pref.ktx2Target = rd::pickTranscodeTarget(
+      e->device->caps().supports(rd::Capability::texture_compression_astc),
+      e->device->caps().supports(rd::Capability::texture_compression_etc2));
+  pref.maxDim = 4096;  // 解析期 renderer 未必就绪;上传时 renderer 不动纹理尺寸
+  e->loadWork.post([e, p, pref, cb, userdata]() {
+    if (e->loadQuit.load()) return;
+    auto model = rd::loadGltf(p.c_str(), pref);  // CPU 解析/解码(线程安全)
+    e->loadDone.post([e, m = std::move(model), cb, userdata]() mutable {
+      rd_result_t r = RD_OK;
+      if (!m.valid()) {
+        setError(e, "异步加载失败");
+        r = RD_ERROR_ASSET;
+      } else {
+        installModel(e, std::move(m));
+        if (std::string(e->lastError).find("GPU 上传失败") != std::string::npos)
+          r = RD_ERROR_ASSET;
+      }
+      if (cb) cb(r, userdata);
+    });
+  });
   return RD_OK;
 }
 

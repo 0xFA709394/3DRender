@@ -69,6 +69,14 @@ void rd_engine_request_render(rd_engine* engine);
 /// 设置 IBL 预滤波磁盘缓存目录；NULL/空串关闭（默认关）。目录自动创建。
 void rd_engine_set_cache_dir(rd_engine* engine, const char* path);
 
+/// 异步加载回调（在渲染线程、render_frame 内调用）。
+typedef void (*rd_load_callback_t)(rd_result_t result, void* userdata);
+
+/// 异步加载 glTF：解析/纹理解码在工作线程，GPU 上传与场景安装在渲染线程
+/// （render_frame 驱动完成队列；无 surface 也会到达）。返回值仅表示入队成败。
+rd_result_t rd_engine_load_gltf_async(rd_engine* engine, const char* path,
+                                      rd_load_callback_t cb, void* userdata);
+
 /// 加载 .hdr equirect 环境（替换程序化环境；需 surface 就绪）。
 /// 失败回退程序化并返回错误码。
 rd_result_t rd_engine_set_environment_hdri(rd_engine* engine, const char* path);

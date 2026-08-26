@@ -2,6 +2,9 @@
 // host 上仅 Metal 后端可用（macOS），故用例以 Metal 为主。
 #include <gtest/gtest.h>
 #include "api/rd_api.h"
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 // Metal 引擎可正常创建销毁
 TEST(Api, CreateDestroyMetal) {
@@ -250,5 +253,46 @@ TEST(Api, HdrEnvApi) {
   ASSERT_NE(e, nullptr);
   EXPECT_EQ(rd_engine_set_environment_hdri(e, "/tmp/nope.hdr"), RD_ERROR_SCENE);
   rd_engine_set_environment_procedural(e);  // 不崩
+  rd_engine_destroy(e);
+}
+
+
+// 异步加载:工作线程解析 → 渲染线程安装;回调到达
+TEST(Api, AsyncLoad) {
+  rd_engine* e = rd_engine_create(RD_BACKEND_METAL);
+  ASSERT_NE(e, nullptr);
+  std::atomic<int> fired{0};
+  std::atomic<int> resultCode{-1};
+  const rd_result_t r = rd_engine_load_gltf_async(
+      e, RD_TEST_DATA_DIR "/assets/DamagedHelmet.glb",
+      [](rd_result_t result, void* ud) {
+        *static_cast<std::atomic<int>*>(ud) = int(result);
+      },
+      &resultCode);
+  EXPECT_EQ(r, RD_OK);
+  (void)fired;
+  // 轮询 render_frame 驱动完成队列(无 surface 时 render_frame 早退……
+  // 完成回调必须在无 surface 时也到达——故放 render_frame 最早处)
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (resultCode.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+    rd_engine_render_frame(e, 0.016f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_EQ(resultCode.load(), int(RD_OK));
+  // 错误路径:不存在文件 → 回调带错误码
+  resultCode = -1;
+  EXPECT_EQ(rd_engine_load_gltf_async(
+                e, "/tmp/rd_no_such_model.glb",
+                [](rd_result_t result, void* ud) {
+                  *static_cast<std::atomic<int>*>(ud) = int(result);
+                },
+                &resultCode),
+            RD_OK);
+  const auto dl2 = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (resultCode.load() < 0 && std::chrono::steady_clock::now() < dl2) {
+    rd_engine_render_frame(e, 0.016f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_EQ(resultCode.load(), int(RD_ERROR_ASSET));
   rd_engine_destroy(e);
 }

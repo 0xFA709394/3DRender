@@ -4,7 +4,9 @@
 layout(location = 0) in vec3 vDir;
 layout(binding = 2) uniform LightUBO {
   mat4 lightViewProj;
+  mat4 spotViewProj;
   vec4 shadowParams;
+  vec4 spotShadowParams;
   vec4 lightCount;  // x=数量 y=hdrMode
   vec4 lights[16];
 } lu;

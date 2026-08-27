@@ -26,8 +26,10 @@ layout(binding = 1) uniform ItemUBO {
 };
 layout(binding = 2) uniform LightUBO {
   mat4 lightViewProj;
+  mat4 spotViewProj;   // 首盏聚光阴影 VP
   vec4 shadowParams;   // x=bias, y=1/shadowMapSize, z=shadowOn, w=vFlip
-  vec4 lightCount;     // x=count
+  vec4 spotShadowParams;  // 聚光同构
+  vec4 lightCount;     // x=count, y=hdrMode, z=首盏聚光下标(-1=无)
   vec4 lights[16];     // 4 盏 × 4 vec4(dirType|posRange|color|spot)
 };
 
@@ -39,6 +41,7 @@ layout(binding = 8) uniform sampler2D texOcclusion;
 layout(binding = 9) uniform samplerCube texPrefilter;
 layout(binding = 10) uniform sampler2D texBrdfLut;
 layout(binding = 11) uniform sampler2DShadow texShadow;
+layout(binding = 12) uniform sampler2DShadow texShadowSpot;  // slot8:聚光阴影
 
 layout(location = 0) out vec4 outColor;
 
@@ -157,6 +160,25 @@ void main() {
         }
       }
       term *= shadow;
+    }
+    // 聚光阴影:首盏聚光(lightCount.z)投影,PCF 3x3
+    if (int(lightCount.z + 0.5) == i && spotShadowParams.z > 0.5) {
+      vec4 lp = spotViewProj * vec4(vWorldPos, 1.0);
+      vec3 ndc = lp.xyz / lp.w;
+      vec2 suv;
+      suv.x = ndc.x * 0.5 + 0.5;
+      suv.y = spotShadowParams.w > 0.5 ? ndc.y * 0.5 + 0.5 : 0.5 - ndc.y * 0.5;
+      float bias = max(spotShadowParams.x * (1.0 - ndl), spotShadowParams.x * 0.2);
+      float refZ = ndc.z - bias;
+      if (suv.x >= 0.0 && suv.x <= 1.0 && suv.y >= 0.0 && suv.y <= 1.0 &&
+          ndc.z >= 0.0 && ndc.z <= 1.0) {
+        float sum = 0.0;
+        for (int x = -1; x <= 1; ++x)
+          for (int y = -1; y <= 1; ++y)
+            sum += texture(texShadowSpot,
+                           vec3(suv + vec2(float(x), float(y)) * spotShadowParams.y, refZ));
+        term *= sum / 9.0;
+      }
     }
     direct += term;
   }

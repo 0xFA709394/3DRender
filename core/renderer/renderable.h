@@ -17,8 +17,10 @@ struct RenderContext {
   BufferHandle itemUbo;                     ///< slot1:ItemUBO(per-item 256B 步进)
   uint64_t itemOffset = 0;                  ///< 本项在 itemUbo 中的偏移
   const renderer::Environment* env = nullptr;  ///< 环境纹理(prefilter/LUT)
-  BufferHandle lightUbo;                    ///< slot2:LightUBO(352B,多光源+阴影)
+  BufferHandle lightUbo;                    ///< slot2:LightUBO(432B,多光源+阴影)
+  uint64_t lightUboOffset = 0;              ///< 阴影 pass 取 VP:dir=0 / spot=64
   TextureHandle shadowMap;                  ///< slot7:阴影深度图(Renderer 保证恒有效)
+  TextureHandle shadowSpotMap;              ///< slot8:聚光阴影(无效则不绑)
   SamplerHandle shadowSampler;              ///< 比较采样器
   PipelineHandle shadowPipe;                ///< shadowPass 时使用的深度管线
   bool shadowPass = false;                  ///< true=只写深度(shadow_depth.vert)

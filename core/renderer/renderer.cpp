@@ -148,7 +148,7 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
                                 desc.entry, desc.colorFormat, iblSize_, iblMips_);
 
   // 多光源 + 阴影资源
-  lightUbo_ = dev.createBuffer({352, BufferUsage::Uniform, true, false, nullptr});
+  lightUbo_ = dev.createBuffer({sizeof(LightUBOData), BufferUsage::Uniform, true, false, nullptr});
   auto svs = dev.createShaderModule({ShaderStage::Vertex, desc.shadowVs, desc.entry});
   auto sfs = dev.createShaderModule({ShaderStage::Fragment, desc.shadowFs, desc.entry});
   sfs_ = sfs;  // 持有(蒙皮阴影管线重建用;shutdown 释放)
@@ -364,6 +364,30 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
   pipeSamples_ = samples;
 }
 
+bool Renderer::ensureSpotShadowTarget() {
+  if (shadowMapSize_ == 0) {
+    if (spotShadowTarget_.valid()) dev_->destroyTarget(spotShadowTarget_);
+    if (spotShadowDepthTex_.valid()) dev_->destroyTexture(spotShadowDepthTex_);
+    spotShadowTarget_ = {};
+    spotShadowDepthTex_ = {};
+    return false;
+  }
+  if (spotShadowTarget_.valid()) return true;  // 尺寸跟随 dir 档,简化不重建
+  TextureDesc td;
+  td.width = shadowMapSize_;
+  td.height = shadowMapSize_;
+  td.format = Format::D32_FLOAT;
+  td.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
+  spotShadowDepthTex_ = dev_->createTexture(td);
+  if (!spotShadowDepthTex_.valid()) return false;
+  OffscreenTargetDesc od;
+  od.width = shadowMapSize_;
+  od.height = shadowMapSize_;
+  od.depthFromTexture = spotShadowDepthTex_;
+  spotShadowTarget_ = dev_->createOffscreenTarget(od);
+  return spotShadowTarget_.valid();
+}
+
 bool Renderer::ensureShadowTarget() {
   if (shadowMapSize_ == 0) {  // 关档:释放旧阴影资源
     if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
@@ -375,8 +399,12 @@ bool Renderer::ensureShadowTarget() {
   }
   if (shadowTarget_.valid() && shadowTargetSize_ == shadowMapSize_) return true;
   if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
+  if (spotShadowTarget_.valid()) dev_->destroyTarget(spotShadowTarget_);
+  if (spotShadowDepthTex_.valid()) dev_->destroyTexture(spotShadowDepthTex_);
   if (shadowDepthTex_.valid()) dev_->destroyTexture(shadowDepthTex_);
   shadowTarget_ = {};
+  spotShadowTarget_ = {};
+  spotShadowDepthTex_ = {};
   shadowDepthTex_ = {};
   shadowTargetSize_ = 0;
   TextureDesc td;
@@ -413,6 +441,8 @@ void Renderer::shutdown() {
     if (p.valid()) dev_->destroyPipeline(p);
   if (shadowTarget_.valid()) dev_->destroyTarget(shadowTarget_);
   if (shadowDepthTex_.valid()) dev_->destroyTexture(shadowDepthTex_);
+  if (spotShadowTarget_.valid()) dev_->destroyTarget(spotShadowTarget_);
+  if (spotShadowDepthTex_.valid()) dev_->destroyTexture(spotShadowDepthTex_);
   if (shadowFallbackTex_.valid()) dev_->destroyTexture(shadowFallbackTex_);
   if (shadowSampler_.valid()) dev_->destroySampler(shadowSampler_);
   if (shadowPipeline_.valid()) dev_->destroyPipeline(shadowPipeline_);
@@ -451,6 +481,8 @@ void Renderer::shutdown() {
   fxaaW_ = fxaaH_ = 0;
   shadowTarget_ = {};
   shadowDepthTex_ = {};
+  spotShadowTarget_ = {};
+  spotShadowDepthTex_ = {};
   shadowFallbackTex_ = {};
   shadowSampler_ = {};
   shadowPipeline_ = {};
@@ -750,9 +782,18 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   math::Mat4 lvp{1.0f};
   if (dirLight) lvp = makeLightViewProj(*dirLight, framingCenter_, framingRadius_);
   LightUBOData lu{};
+  // 首盏聚光阴影(选项 shadow.spot 开关;spot VP + 目标就绪)
+  const LightData* spotLight = nullptr;
+  for (const auto& l : effective)
+    if (l.type == LightType::Spot) { spotLight = &l; break; }
+  const bool spotShadowActive = spotEnabled_ && spotLight != nullptr &&
+                                shadowMapSize_ > 0 && ensureSpotShadowTarget();
+  const math::Mat4 spotVP = spotLight ? makeSpotViewProj(*spotLight) : math::Mat4(1.0f);
   fillLightUBO(lu, effective, lvp,
                shadowMapSize_ ? 1.0f / float(shadowMapSize_) : 0.0f, shadowActive,
-               dev_->backend() == Backend::GLES, shadowBias_);
+               dev_->backend() == Backend::GLES, shadowBias_, spotVP,
+               spotShadowActive,
+               shadowMapSize_ ? 1.0f / float(shadowMapSize_) : 0.0f);
   lu.lightCount[1] = postEnabled_ ? 1.0f : 0.0f;  // hdrMode(post 开输出线性 HDR)
   dev_->updateBuffer(lightUbo_, &lu, sizeof(lu), 0);
 
@@ -891,6 +932,28 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     cmd->endRenderPass();
   }
 
+  // ---- 聚光 ShadowPass(dir 阴影后,场景 pass 前)----
+  if (spotShadowActive) {
+    cmd->beginRenderPass(spotShadowTarget_, {0, 0, 0, 1, 1.0f});
+    RenderContext sctx;
+    sctx.shadowPass = true;
+    sctx.lightUbo = lightUbo_;
+    sctx.itemUbo = itemUbo_;
+    sctx.lightUboOffset = 64;  // spotViewProj 在 LightUBO 偏移 64
+    sctx.shadowPipe = shadowPipeline_;
+    sctx.skinnedShadowPipe = skinnedShadowPipeline_;
+    sctx.shadowMaskPipe = shadowMaskPipeline_;
+    sctx.jointUbo = jointUbo_;
+    for (uint32_t idx : lightVis) {
+      sctx.itemOffset = uint64_t(slotOf[idx]) * kUboStride;
+      sctx.jointOffset = jointSlot_[idx] >= 0
+                             ? uint64_t(jointSlot_[idx]) * kJointItemStride
+                             : 0;
+      queue_[idx]->record(cmd, sctx);
+    }
+    cmd->endRenderPass();
+  }
+
   // 上屏链:场景 → 内部 SceneTarget(分辨率缩放/MSAA 按画质档;post 开=R16F)
   uint32_t tw = 0, th = 0;
   dev_->targetSize(target, tw, th);
@@ -922,7 +985,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     dev_->updateBuffer(skyboxVb_, vb, sizeof(vb), 0);
     cmd->bindPipeline(skyboxPipeline_);
     cmd->bindVertexBuffer(0, skyboxVb_, 0);
-    cmd->bindUniformBuffer(2, lightUbo_, 0, 352);  // hdrMode(lightCount.y)
+    cmd->bindUniformBuffer(2, lightUbo_, 0, sizeof(LightUBOData));  // hdrMode(lightCount.y)
     cmd->bindTexture(5, env_.prefilterCube(), env_.cubeSampler());
     cmd->draw(3, 0);
   }
@@ -932,6 +995,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.env = &env_;
   ctx.lightUbo = lightUbo_;
   ctx.shadowMap = shadowActive ? shadowDepthTex_ : shadowFallbackTex_;
+  ctx.shadowSpotMap = spotShadowActive ? spotShadowDepthTex_ : shadowFallbackTex_;
   ctx.shadowSampler = shadowSampler_;
   ctx.pbrPipeline = pbrPipeline_;
   ctx.unlitPipeline = unlitPipeline_;

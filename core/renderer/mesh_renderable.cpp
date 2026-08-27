@@ -18,7 +18,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
     const PipelineHandle pipe =
         skinned ? ctx.skinnedShadowPipe : (mask0 ? ctx.shadowMaskPipe : ctx.shadowPipe);
     cmd->bindPipeline(pipe);
-    cmd->bindUniformBuffer(0, ctx.lightUbo, 0, 64);  // lightViewProj(LightUBO 前 64B)
+    cmd->bindUniformBuffer(0, ctx.lightUbo, ctx.lightUboOffset, 64);  // dir=0/spot=64
     cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), 256);
     if (skinned) cmd->bindUniformBuffer(3, ctx.jointUbo, ctx.jointOffset, 8192);
     for (const auto& g : mesh_->meshes()) {
@@ -37,7 +37,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       cmd->bindPipeline(ctx.blendPipeline);
       cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), 256);
-      cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 352);
+      cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B)
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
       cmd->bindTexture(1, g.mrTex, mesh_->sampler());
       cmd->bindTexture(2, g.normalTex, mesh_->sampler());
@@ -48,6 +48,8 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
         cmd->bindTexture(6, ctx.env->brdfLut(), ctx.env->lutSampler());
       }
       if (ctx.shadowMap.valid()) cmd->bindTexture(7, ctx.shadowMap, ctx.shadowSampler);
+      if (ctx.shadowSpotMap.valid())
+        cmd->bindTexture(8, ctx.shadowSpotMap, ctx.shadowSampler);
       cmd->bindVertexBuffer(0, g.vbo, 0);
       cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
       cmd->drawIndexed(g.indexCount, 0, 0);
@@ -59,7 +61,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       cmd->bindPipeline(ctx.skinnedPipeline);
       cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), 256);
-      cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 352);
+      cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B)
       cmd->bindUniformBuffer(3, ctx.jointUbo, ctx.jointOffset, 8192);
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
       cmd->bindTexture(1, g.mrTex, mesh_->sampler());
@@ -71,6 +73,8 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
         cmd->bindTexture(6, ctx.env->brdfLut(), ctx.env->lutSampler());
       }
       if (ctx.shadowMap.valid()) cmd->bindTexture(7, ctx.shadowMap, ctx.shadowSampler);
+      if (ctx.shadowSpotMap.valid())
+        cmd->bindTexture(8, ctx.shadowSpotMap, ctx.shadowSampler);
     } else if (g.material.unlit) {
       cmd->bindPipeline(ctx.unlitPipeline);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), 64);  // ItemUBO 前 64B=mvp
@@ -79,7 +83,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       cmd->bindPipeline(ctx.pbrPipeline);
       cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);  // FrameUBO
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), 256);  // ItemUBO
-      cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 352);  // LightUBO(多光源+阴影)
+      cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B,多光源+阴影)
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
       cmd->bindTexture(1, g.mrTex, mesh_->sampler());
       cmd->bindTexture(2, g.normalTex, mesh_->sampler());
@@ -90,6 +94,8 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
         cmd->bindTexture(6, ctx.env->brdfLut(), ctx.env->lutSampler());
       }
       if (ctx.shadowMap.valid()) cmd->bindTexture(7, ctx.shadowMap, ctx.shadowSampler);
+      if (ctx.shadowSpotMap.valid())
+        cmd->bindTexture(8, ctx.shadowSpotMap, ctx.shadowSampler);
     }
     cmd->bindVertexBuffer(0, g.vbo, 0);
     cmd->bindIndexBuffer(g.ibo, 0, g.indexType);

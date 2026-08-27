@@ -32,6 +32,11 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
 - P2-5 完成：性能基准套件(perf_test 4 场景×双后端,avg/p50/p95/p99/FPS,
   基线 JSON + p50 超 2× 软门槛,--update-baseline 更新;ctest 冒烟注册)
 - P2 全部完成(阴影+多光源/后处理链/骨骼动画/拾取/性能基准)
+- 聚光灯阴影完成:LightUBO 扩 432B(+spotViewProj/spotShadowParams;lightCount.z=首盏
+  聚光下标,-1=无)+ makeSpotViewProj(outerCone 透视,10% 锥角余量)+ 聚光 ShadowPass
+  (方向光 pass 后场景 pass 前,复用 lightVis 与 shadow 管线族,lightUboOffset=64 取
+  spotVP;暂不实列化分组)+ pbr/instanced frag 首盏聚光 PCF 3x3;
+  选项 shadow.spot(默认开,applyOptions 接线)+ golden helmet_spot_shadow 双后端
 - 场景示例集合完成:primitives 几何生成器(球/平面/盒)+ 5 程序场景
   (material_balls/cornell_box/light_playground/skinned_demo/instanced_field)
   + 知名场景(sponza/cesium_man,scripts/fetch_assets.sh 下载,assets/ 不入库)
@@ -151,7 +156,8 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   容量 128 槽(32KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源)；
   GLES uniform block 名表：UBO/FrameUBO→0，ItemUBO→1
 - 纹理槽位：0=baseColor，1=MR，2=normal，3=emissive，4=occlusion，5=prefilterCube，
-  6=brdfLut(nearest 采样)
+  6=brdfLut(nearest 采样)，7=方向光阴影，8=聚光阴影(后两者均比较采样器,恒绑定,
+  未激活绑 1x1 D32 占位)——共 9 槽(caps max_texture_slots=9)
 - cubemap 方向约定：GL/Khronos(u 右向、v 顶向下)，环境生成/预滤波/采样三处必须一致
 - 深度：离屏目标 `OffscreenTargetDesc.depth=true` + pipeline `depthTest/depthWrite`；
   depth 管线须配 depth 目标；CompareOp 默认 Less（Reverse-Z 预留）
@@ -183,12 +189,16 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - iOS 部署目标：**ktx CMakeLists 会强设 `CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=11.0`
   (CACHE 全局,污染所有目标;std::filesystem 需 13+)**——Deps.cmake 在拉取后覆盖回 16.0;
   toolchain 的 CMAKE_OSX_DEPLOYMENT_TARGET 须 CACHE FORCE(project() 平台初始化回填普通 set)
-- LightUBO=slot2(352B:lightViewProj|shadowParams|lightCount|lights[4×64B]);
-  GLES 块名 LightUBO→2、ShadowUBO→0;阴影纹理=slot 7(比较采样器 sampler2DShadow)
+- LightUBO=slot2(432B:lightViewProj|spotViewProj|shadowParams|spotShadowParams|
+  lightCount|lights[4×64B]);lightCount.z=首盏聚光下标(-1=无);
+  GLES 块名 LightUBO→2、ShadowUBO→0;阴影纹理=slot 7/8(比较采样器 sampler2DShadow);
+  Vulkan set0 binding 0..3 uniform + 4..12 sampler(布局/描述符池按 9 纹理槽)
 - 阴影:ShadowPass 在场景 pass 前(endScene 内);depth-only 目标
   (`OffscreenTargetDesc.depthFromTexture` + `PipelineDesc.depthOnly`);
   bias 走 shader(常量+slope);GLES 阴影 UV 的 v 翻转由 shadowParams.w 吸收;
-  采样器 `SamplerDesc.compareEnable`(三后端硬件比较)
+  采样器 `SamplerDesc.compareEnable`(三后端硬件比较);聚光 ShadowPass 紧随方向光
+  pass(sctx.lightUboOffset:dir=0/spot=64,shadow_depth 系顶点按偏移取 VP;
+  目标尺寸跟随画质档,档位重建时随 dir 一并释放)
 - 灯光约定:direction=指向光源(dot(N,L) 直接用);color 已乘 intensity;
   手动灯(C API)非空覆盖 glTF 灯,皆空则默认 1 方向光;glTF 灯方向=节点旋转×(0,0,-1) 取反
 - 画质:`QualityPreset.shadowMapSize`(0=关);`rd_engine_set_shadow_enabled` 与画质档为与关系;

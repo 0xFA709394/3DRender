@@ -93,6 +93,8 @@ public:
   void setEnvYaw(float deg);
   /// 视锥剔除开关(默认开;包围球 × world 测 6 平面,蒙皮项跳过)。
   void setFrustumCulling(bool on) { frustumCulling_ = on; }
+  /// 聚光灯阴影开关(默认开;选项 shadow.spot)。
+  void setSpotShadowEnabled(bool on) { spotEnabled_ = on; }
 
 private:
   static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
@@ -139,10 +141,13 @@ private:
   // ---- 多光源 + 阴影 ----
   /// 按画质档确保阴影贴图可用;返回阴影是否激活(目标就绪)。
   bool ensureShadowTarget();
-  BufferHandle lightUbo_;          // hostWrite,352B(LightUBOData)
+  bool ensureSpotShadowTarget();  ///< 聚光阴影目标(同尺寸策略)
+  BufferHandle lightUbo_;          // hostWrite,432B(LightUBOData)
   PipelineHandle shadowPipeline_;  // depthOnly
   TextureHandle shadowDepthTex_;   // D32 RT(阴影贴图)
   TargetHandle shadowTarget_;      // depth-only 目标
+  TextureHandle spotShadowDepthTex_;  // 聚光阴影 D32 RT
+  TargetHandle spotShadowTarget_;     // 聚光 depth-only 目标(尺寸跟随 dir 档)
   SamplerHandle shadowSampler_;    // 比较采样器
   TextureHandle shadowFallbackTex_;  // 1x1 D32(1.0,无阴影时的占位绑定)
   // ---- 蒙皮 ----
@@ -182,6 +187,7 @@ private:
   bool skyboxEnabled_ = false;
   float envYawDeg_ = 0.0f;
   bool frustumCulling_ = true;  ///< 视锥剔除(默认开)
+  bool spotEnabled_ = true;       ///< 聚光灯阴影(默认开;首盏聚光)
   float compositeExposure_ = 1.0f;
   float shadowBias_ = 0.0015f;
   uint32_t shadowMapSizeOverride_ = 0;  ///< 0=按档

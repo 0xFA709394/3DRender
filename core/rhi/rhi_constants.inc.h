@@ -4,7 +4,7 @@
 #define RD_CAPABILITY(name)
 #endif
 RD_CAPABILITY(max_texture_size)         // 2D 纹理像素上限
-RD_CAPABILITY(max_texture_slots)        // 纹理槽数(绑定约定上限 8)
+RD_CAPABILITY(max_texture_slots)        // 纹理槽数(绑定约定上限 9:slot0..8)
 RD_CAPABILITY(max_uniform_buffer_slots) // uniform 槽数(绑定约定上限 4)
 RD_CAPABILITY(instancing)               // 实例化绘制
 RD_CAPABILITY(msaa)                     // 最大 sample count(预留,P2 使用)

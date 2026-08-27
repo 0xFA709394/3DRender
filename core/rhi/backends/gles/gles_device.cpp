@@ -612,7 +612,7 @@ bool GLESDevice::init(const DeviceDesc&) {
   GLint maxTex = 0;
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
   caps_.set(Capability::max_texture_size, static_cast<uint32_t>(maxTex));
-  caps_.set(Capability::max_texture_slots, 8);
+  caps_.set(Capability::max_texture_slots, 9);  // slot0..8(ES3 保证 16 单元)
   caps_.set(Capability::max_uniform_buffer_slots, 4);
   caps_.set(Capability::instancing, 1);  // ES3 核心
   GLint maxSamples = 0;
@@ -801,7 +801,7 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
     uint32_t slot;
   } kBlockTable[] = {
       {"UBO", 0}, {"FrameUBO", 0}, {"ItemUBO", 1}, {"BlitUBO", 0}, {"ShadowUBO", 0},
-      {"JointUBO", 3},
+      {"LightUBO", 2}, {"JointUBO", 3},
   };
   for (const auto& b : kBlockTable) {
     GLuint blockIndex = glGetUniformBlockIndex(program, b.name);

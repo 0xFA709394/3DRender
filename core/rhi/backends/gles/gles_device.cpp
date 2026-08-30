@@ -612,7 +612,7 @@ bool GLESDevice::init(const DeviceDesc&) {
   GLint maxTex = 0;
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
   caps_.set(Capability::max_texture_size, static_cast<uint32_t>(maxTex));
-  caps_.set(Capability::max_texture_slots, 9);  // slot0..8(ES3 保证 16 单元)
+  caps_.set(Capability::max_texture_slots, 16);  // slot0..15(恰压 ES3 保证的 16 单元线)
   caps_.set(Capability::max_uniform_buffer_slots, 4);
   caps_.set(Capability::instancing, 1);  // ES3 核心
   GLint maxSamples = 0;
@@ -806,6 +806,25 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
   for (const auto& b : kBlockTable) {
     GLuint blockIndex = glGetUniformBlockIndex(program, b.name);
     if (blockIndex != GL_INVALID_INDEX) glUniformBlockBinding(program, blockIndex, b.slot);
+  }
+  // 语义命名 sampler → slot 一次性写入(链接期;pbr_forward 系用描述性命名,
+  // bindTexture 回放期的 tex%u 查表对它们无效——此前 GLES 上全部落单元 0,本表修复)。
+  // texN 命名的简单 shader(blit/composite 等)仍由 bindTexture 回放期覆盖。
+  static const struct {
+    const char* name;
+    uint32_t slot;
+  } kSamplerTable[] = {
+      {"texBaseColor", 0},     {"texMR", 1},           {"texNormal", 2},
+      {"texEmissive", 3},      {"texOcclusion", 4},    {"texPrefilter", 5},
+      {"texBrdfLut", 6},       {"texShadow", 7},       {"texShadowSpot", 8},
+      {"texEquirect", 0},      {"texEnv", 0},          {"texClearcoat", 9},
+      {"texClearcoatRough", 10}, {"texClearcoatNormal", 11}, {"texSheenColor", 12},
+      {"texSheenRough", 13},   {"texSpecularColor", 14}, {"texSpecular", 15},
+  };
+  glUseProgram(program);
+  for (const auto& s : kSamplerTable) {
+    GLint loc = glGetUniformLocation(program, s.name);
+    if (loc >= 0) glUniform1i(loc, GLint(s.slot));
   }
   programCache_.emplace(key, program);
   PipelineRec rec;

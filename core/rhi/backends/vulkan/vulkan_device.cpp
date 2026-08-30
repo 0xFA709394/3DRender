@@ -184,8 +184,8 @@ struct DescriptorKey {
   VkBuffer ubo[4];
   uint64_t uboOffset[4];
   uint64_t uboSize[4];
-  VkImageView texView[8];
-  VkSampler texSampler[8];
+  VkImageView texView[16];
+  VkSampler texSampler[16];
   bool operator<(const DescriptorKey& o) const {
     return memcmp(this, &o, sizeof(DescriptorKey)) < 0;
   }
@@ -375,7 +375,7 @@ private:
     }
   };
   std::map<RenderPassKey, VkRenderPass> renderPasses_;
-  VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;  ///< set0：binding 0..3 uniform + 4..12 sampler
+  VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;  ///< set0：binding 0..3 uniform + 4..19 sampler
   VkDescriptorPool descPool_ = VK_NULL_HANDLE;
   /// descriptor set 缓存(按绑定状态;池耗尽前不回收,帧内异构绑定组合有限)
   std::map<DescriptorKey, VkDescriptorSet> descSetCache_;
@@ -474,7 +474,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
     VkPhysicalDeviceFeatures physFeats;
     vkGetPhysicalDeviceFeatures(phys_, &physFeats);
     caps_.set(Capability::max_texture_size, physProps.limits.maxImageDimension2D);
-    caps_.set(Capability::max_texture_slots, 9);  // slot0..8(含聚光阴影 slot8)
+    caps_.set(Capability::max_texture_slots, 16);  // slot0..15(KHR 扩展材质纹理)
     caps_.set(Capability::max_uniform_buffer_slots, kMaxUniformSlots);
     caps_.set(Capability::instancing, 1);  // Vulkan 核心能力
     // framebufferColorSampleCounts 是位掩码,取不超过 4 的最高档
@@ -551,22 +551,22 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   if (!findOrCreateRenderPass(VK_FORMAT_R8G8B8A8_UNORM, true, 1)) return false;
 
   // 描述符布局（绑定约定）：
-  // binding 0..3：uniform buffer；binding 4..12：combined image sampler（texture slot 0..8）
-  VkDescriptorSetLayoutBinding bindings[13]{};
+  // binding 0..3：uniform buffer；binding 4..19：combined image sampler（texture slot 0..15）
+  VkDescriptorSetLayoutBinding bindings[20]{};
   for (uint32_t i = 0; i < kMaxUniformSlots; ++i) {
     bindings[i].binding = i;
     bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[i].descriptorCount = 1;
     bindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
   }
-  for (uint32_t i = 0; i < 9; ++i) {
+  for (uint32_t i = 0; i < 16; ++i) {
     bindings[4 + i].binding = 4 + i;
     bindings[4 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[4 + i].descriptorCount = 1;
     bindings[4 + i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
   }
   VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  dslci.bindingCount = 13;
+  dslci.bindingCount = 20;
   dslci.pBindings = bindings;
   VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &setLayout_));
 
@@ -575,7 +575,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   constexpr uint32_t kMaxDescSets = 256;
   VkDescriptorPoolSize poolSizes[] = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxUniformSlots * kMaxDescSets},
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 * kMaxDescSets},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 * kMaxDescSets},
   };
   VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   dpci.maxSets = kMaxDescSets;
@@ -613,9 +613,9 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
     RD_LOGE("rhi.vk", "descriptor 池耗尽(绑定组合过多)");
     return VK_NULL_HANDLE;
   }
-  VkWriteDescriptorSet writes[12]{};
+  VkWriteDescriptorSet writes[20]{};
   VkDescriptorBufferInfo uboInfos[4]{};
-  VkDescriptorImageInfo imgInfos[8]{};
+  VkDescriptorImageInfo imgInfos[16]{};
   uint32_t count = 0;
   for (uint32_t i = 0; i < 4; ++i) {
     if (key.ubo[i] == VK_NULL_HANDLE) continue;
@@ -628,7 +628,7 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
     w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     w.pBufferInfo = &uboInfos[i];
   }
-  for (uint32_t i = 0; i < 8; ++i) {
+  for (uint32_t i = 0; i < 16; ++i) {
     if (key.texView[i] == VK_NULL_HANDLE) continue;
     imgInfos[i] = {key.texSampler[i], key.texView[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     auto& w = writes[count++];
@@ -1944,7 +1944,7 @@ void VulkanCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
                                       SamplerHandle sampler) {
   const TextureRec* rec = device_->texture(texture);
   VkSampler s = device_->sampler(sampler);
-  if (!rec || s == VK_NULL_HANDLE || slot >= 8) return;
+  if (!rec || s == VK_NULL_HANDLE || slot >= 16) return;
   bound_.texView[slot] = rec->view;
   bound_.texSampler[slot] = s;
 }

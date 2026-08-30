@@ -1,6 +1,7 @@
 // glTF 加载与资源上传测试:BoxTextured 结构断言、DamagedHelmet 多 mesh/32 位索引、
 // 不存在文件返回空;GPU 上传(host Metal)句柄有效。
 #include <gtest/gtest.h>
+#include "common/image.h"
 #include "common/ktx2_gen.h"
 #include "common/skinned_gen.h"
 #include "resource/gltf_loader.h"
@@ -452,4 +453,110 @@ TEST(Gltf, EmissiveStrength) {
   ASSERT_TRUE(model.valid());
   EXPECT_FLOAT_EQ(model.meshes[0].material.emissiveFactor[0], 4.0f);   // 1.0 × 4
   EXPECT_FLOAT_EQ(model.meshes[0].material.emissiveFactor[1], 2.0f);   // 0.5 × 4
+}
+
+// KHR 材质扩展四件套:因子/纹理/法线 scale 解析
+TEST(Gltf, ExtMaterials) {
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "extensionsUsed": ["KHR_materials_clearcoat","KHR_materials_sheen",
+                       "KHR_materials_specular","KHR_materials_ior"],
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{"extensions": {
+      "KHR_materials_clearcoat": {"clearcoatFactor": 0.8,
+        "clearcoatRoughnessFactor": 0.25,
+        "clearcoatTexture": {"index": 0},
+        "clearcoatRoughnessTexture": {"index": 0},
+        "clearcoatNormalTexture": {"index": 0, "scale": 0.6}},
+      "KHR_materials_sheen": {"sheenColorFactor": [0.5, 0.6, 0.7],
+        "sheenRoughnessFactor": 0.4,
+        "sheenColorTexture": {"index": 0},
+        "sheenRoughnessTexture": {"index": 0}},
+      "KHR_materials_specular": {"specularFactor": 0.7,
+        "specularColorFactor": [0.9, 0.8, 0.7],
+        "specularColorTexture": {"index": 0},
+        "specularTexture": {"index": 0}},
+      "KHR_materials_ior": {"ior": 1.33}
+    }}],
+    "textures": [{"source": 0}],
+    "images": [{"uri": "ext.png"}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_extmat").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f); fclose(f); }
+  const uint8_t px[16] = {255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,255};
+  ASSERT_TRUE(rd::test::savePNG(dir + "/ext.png", 2, 2, px));
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  const auto& m = model.meshes[0].material;
+  EXPECT_FLOAT_EQ(m.clearcoatFactor, 0.8f);
+  EXPECT_FLOAT_EQ(m.clearcoatRoughnessFactor, 0.25f);
+  EXPECT_FLOAT_EQ(m.clearcoatNormalScale, 0.6f);
+  EXPECT_FLOAT_EQ(m.sheenColorFactor[0], 0.5f);
+  EXPECT_FLOAT_EQ(m.sheenColorFactor[2], 0.7f);
+  EXPECT_FLOAT_EQ(m.sheenRoughnessFactor, 0.4f);
+  EXPECT_FLOAT_EQ(m.specularFactor, 0.7f);
+  EXPECT_FLOAT_EQ(m.specularColorFactor[0], 0.9f);
+  EXPECT_FLOAT_EQ(m.ior, 1.33f);
+  EXPECT_EQ(m.clearcoat.width, 2u);        // 外链 URI 走 decodeImage
+  EXPECT_EQ(m.clearcoatRough.width, 2u);
+  EXPECT_EQ(m.clearcoatNormal.width, 2u);
+  EXPECT_EQ(m.sheenColor.width, 2u);
+  EXPECT_EQ(m.sheenRough.width, 2u);
+  EXPECT_EQ(m.specularColorTex.width, 2u);
+  EXPECT_EQ(m.specularTex.width, 2u);
+}
+
+// 默认零操作语义:无扩展材质 → 全部默认值(渲染零回归的解析侧依据)
+TEST(Gltf, ExtMaterialsDefaults) {
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_extmat_d").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f); fclose(f); }
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  const auto& m = model.meshes[0].material;
+  EXPECT_FLOAT_EQ(m.clearcoatFactor, 0.0f);
+  EXPECT_FLOAT_EQ(m.clearcoatRoughnessFactor, 0.0f);
+  EXPECT_FLOAT_EQ(m.clearcoatNormalScale, 1.0f);
+  EXPECT_FLOAT_EQ(m.sheenColorFactor[0], 0.0f);
+  EXPECT_FLOAT_EQ(m.sheenRoughnessFactor, 0.0f);
+  EXPECT_FLOAT_EQ(m.specularFactor, 1.0f);
+  EXPECT_FLOAT_EQ(m.specularColorFactor[0], 1.0f);
+  EXPECT_FLOAT_EQ(m.ior, 1.5f);
+  EXPECT_EQ(m.clearcoat.width, 0u);   // 无纹理 → 无效 ImageData
+  EXPECT_EQ(m.sheenColor.width, 0u);
+  EXPECT_EQ(m.specularTex.width, 0u);
 }

@@ -44,6 +44,19 @@ struct MaterialData {
   bool unlit = false;             // KHR_materials_unlit
   bool alphaBlend = false;        // alphaMode=BLEND
   float alphaCutoff = 0.0f;       // alphaMode=MASK 阈值(0=非 MASK;glTF 默认 0.5)
+  // ---- KHR 材质扩展四件套(默认值 = 零操作语义:渲染与无扩展逐像素一致)----
+  // KHR_materials_clearcoat
+  ImageData clearcoat;            float clearcoatFactor = 0.0f;
+  ImageData clearcoatRough;       float clearcoatRoughnessFactor = 0.0f;
+  ImageData clearcoatNormal;      float clearcoatNormalScale = 1.0f;
+  // KHR_materials_sheen
+  ImageData sheenColor;           float sheenColorFactor[3] = {0, 0, 0};
+  ImageData sheenRough;           float sheenRoughnessFactor = 0.0f;
+  // KHR_materials_specular(specular 因子在纹理 A 通道)
+  ImageData specularColorTex;     float specularColorFactor[3] = {1, 1, 1};
+  ImageData specularTex;          float specularFactor = 1.0f;
+  // KHR_materials_ior(独立于 specular 生效;1.5 → f0=0.04 与现状一致)
+  float ior = 1.5f;
 };
 
 /// 单个 mesh 的 CPU 数据。

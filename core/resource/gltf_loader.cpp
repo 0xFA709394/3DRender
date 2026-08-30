@@ -136,6 +136,42 @@ MaterialData readMaterial(const cgltf_primitive& prim, const char* gltfDir,
     m.occlusion = decodeImage(mat->occlusion_texture.texture, gltfDir, pref);
     m.occlusionStrength = mat->occlusion_texture.scale;
   }
+  // KHR_materials_clearcoat:清漆层(独立 GGX 瓣 + 独立法线/粗糙度)
+  if (mat->has_clearcoat) {
+    const auto& cc = mat->clearcoat;
+    m.clearcoatFactor = float(cc.clearcoat_factor);
+    m.clearcoatRoughnessFactor = float(cc.clearcoat_roughness_factor);
+    if (cc.clearcoat_texture.texture)
+      m.clearcoat = decodeImage(cc.clearcoat_texture.texture, gltfDir, pref);
+    if (cc.clearcoat_roughness_texture.texture)
+      m.clearcoatRough = decodeImage(cc.clearcoat_roughness_texture.texture, gltfDir, pref);
+    if (cc.clearcoat_normal_texture.texture) {
+      m.clearcoatNormal = decodeImage(cc.clearcoat_normal_texture.texture, gltfDir, pref);
+      m.clearcoatNormalScale = float(cc.clearcoat_normal_texture.scale);
+    }
+  }
+  // KHR_materials_sheen:织物绒面(Charlie 分布)
+  if (mat->has_sheen) {
+    const auto& sh = mat->sheen;
+    for (int c = 0; c < 3; ++c) m.sheenColorFactor[c] = float(sh.sheen_color_factor[c]);
+    m.sheenRoughnessFactor = float(sh.sheen_roughness_factor);
+    if (sh.sheen_color_texture.texture)
+      m.sheenColor = decodeImage(sh.sheen_color_texture.texture, gltfDir, pref);
+    if (sh.sheen_roughness_texture.texture)
+      m.sheenRough = decodeImage(sh.sheen_roughness_texture.texture, gltfDir, pref);
+  }
+  // KHR_materials_specular:介质高光强度/颜色
+  if (mat->has_specular) {
+    const auto& sp = mat->specular;
+    m.specularFactor = float(sp.specular_factor);
+    for (int c = 0; c < 3; ++c) m.specularColorFactor[c] = float(sp.specular_color_factor[c]);
+    if (sp.specular_color_texture.texture)
+      m.specularColorTex = decodeImage(sp.specular_color_texture.texture, gltfDir, pref);
+    if (sp.specular_texture.texture)
+      m.specularTex = decodeImage(sp.specular_texture.texture, gltfDir, pref);
+  }
+  // KHR_materials_ior:折射率 → 介质 f0
+  if (mat->has_ior) m.ior = float(mat->ior.ior);
   return m;
 }
 

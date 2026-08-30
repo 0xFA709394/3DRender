@@ -287,7 +287,7 @@ public:
     // ---- 能力上报(Apple GPU 家族判定)----
     caps_.set(Capability::max_texture_size,
               [device_ supportsFamily:MTLGPUFamilyApple3] ? 16384u : 8192u);
-    caps_.set(Capability::max_texture_slots, 9);  // slot0..8(含聚光阴影 slot8)
+    caps_.set(Capability::max_texture_slots, 16);  // slot0..15(KHR 扩展材质纹理)
     caps_.set(Capability::max_uniform_buffer_slots, 4);
     caps_.set(Capability::instancing, 1);
     caps_.set(Capability::msaa, 4);   // Apple 全家族支持 4x MSAA

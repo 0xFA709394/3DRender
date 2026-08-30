@@ -95,12 +95,15 @@ public:
   void setFrustumCulling(bool on) { frustumCulling_ = on; }
   /// 聚光灯阴影开关(默认开;选项 shadow.spot)。
   void setSpotShadowEnabled(bool on) { spotEnabled_ = on; }
+  /// KHR 扩展材质四件套开关(选项 render.ext_materials;与画质档为与关系)。
+  void setExtMaterialsEnabled(bool on) { extMaterialsManual_ = on; }
 
 private:
-  static constexpr uint32_t kUboStride = 256;   // 三后端对齐最小公倍
+  static constexpr uint32_t kUboStride = kItemUboStride;      // 512(块 304B)
   static constexpr uint32_t kMaxItems = 64;     // 渲染项(模型)容量
-  static constexpr uint32_t kMaxItemSlots = 128;  // ItemUBO 槽位(per-mesh;32KB,
-                                                  // GLES 3.x 实机普遍 64KB 支持)
+  static constexpr uint32_t kMaxItemSlots = kItemUboMaxSlots;  // ItemUBO 槽位(per-mesh;
+                                                   // 128 槽 ×512B=64KB,GLES 实机普遍支持)
+  static constexpr uint32_t kMaxInstGroup = 32; // 实例化组上限(items[32],16KB 线)
 
   /// 按 (目标尺寸×renderScale_, msaa_) 确保内部场景目标可用,参数变化时重建。
   TargetHandle ensureSceneTarget(uint32_t targetW, uint32_t targetH);
@@ -188,6 +191,8 @@ private:
   float envYawDeg_ = 0.0f;
   bool frustumCulling_ = true;  ///< 视锥剔除(默认开)
   bool spotEnabled_ = true;       ///< 聚光灯阴影(默认开;首盏聚光)
+  bool extMaterialsManual_ = true;    ///< KHR 扩展材质(选项 render.ext_materials)
+  bool extMaterialsQuality_ = false;  ///< KHR 扩展材质(画质档;setQuality 写入)
   float compositeExposure_ = 1.0f;
   float shadowBias_ = 0.0015f;
   uint32_t shadowMapSizeOverride_ = 0;  ///< 0=按档

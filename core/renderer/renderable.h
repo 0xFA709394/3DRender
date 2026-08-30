@@ -11,10 +11,16 @@ namespace renderer {
 class Environment;
 }
 
+/// ItemUBO 布局常量(P4-A:块 304B,槽距 512B;renderer/mesh_renderable 共用,
+/// 改动须与 renderer.cpp 的 ItemUBOData static_assert 联动)。
+inline constexpr uint32_t kItemUboStride = 512;   ///< 槽距(256 对齐下一档,三后端 minUniformBufferOffsetAlignment)
+inline constexpr uint32_t kItemUboSize = 304;     ///< 块大小 = sizeof(ItemUBOData)
+inline constexpr uint32_t kItemUboMaxSlots = 128; ///< UBO 缓冲槽位(per-mesh)
+
 /// 渲染项录制上下文:per-frame 与 per-item UBO + 环境/灯光纹理(Renderer 注入)。
 struct RenderContext {
   BufferHandle frameUbo;                    ///< slot0:FrameUBO(256B)
-  BufferHandle itemUbo;                     ///< slot1:ItemUBO(per-item 256B 步进)
+  BufferHandle itemUbo;                     ///< slot1:ItemUBO(per-item 512B 步进)
   uint64_t itemOffset = 0;                  ///< 本项在 itemUbo 中的偏移
   const renderer::Environment* env = nullptr;  ///< 环境纹理(prefilter/LUT)
   BufferHandle lightUbo;                    ///< slot2:LightUBO(432B,多光源+阴影)

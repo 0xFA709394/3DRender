@@ -23,6 +23,14 @@ struct MeshGpuData {
   TextureHandle normalTex;      // 缺省绑 1x1 平面法线(128,128,255)
   TextureHandle emissiveTex;    // 缺省绑 1x1 黑
   TextureHandle occlusionTex;   // 缺省绑 1x1 白
+  // ---- KHR 扩展四件套纹理(缺省占位:恒有效,renderer 恒绑定)----
+  TextureHandle clearcoatTex;      // 缺省绑 1x1 白(factor 默认 0 压制贡献)
+  TextureHandle clearcoatRoughTex; // 缺省绑 1x1 白
+  TextureHandle clearcoatNormalTex;  // 缺省绑平面法线(=退化基层法线,glTF 语义)
+  TextureHandle sheenColorTex;     // 缺省绑 1x1 白
+  TextureHandle sheenRoughTex;     // 缺省绑 1x1 白
+  TextureHandle specularColorTex;  // 缺省绑 1x1 白(白 × factor(1,1,1) = 恒等)
+  TextureHandle specularTex;       // 缺省绑 1x1 白(A=1 → 因子直通)
   bool skinned = false;         // 蒙皮网格(80B 顶点布局)
 };
 

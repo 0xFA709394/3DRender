@@ -1,7 +1,10 @@
 // pbr_forward_instanced.frag:pbr_forward 的实例化变体;ItemUBO 按 vItem 索引。
+//   KHR 扩展四件套(clearcoat/sheen/specular/ior)与 pbr_forward.frag 同构。
 // slot：0=baseColor(b4) 1=MR(b5) 2=normal(b6) 3=emissive(b7) 4=occlusion(b8)
-//       5=prefilterCube(b9) 6=brdfLut(b10) 7=shadowMap(b11);
-//       FrameUBO(b0) ItemUBO(b1) LightUBO(b2)。
+//       5=prefilterCube(b9) 6=brdfLut(b10) 7=shadowMap(b11) 8=spotShadow(b12)
+//       9=clearcoat(b13) 10=clearcoatRough(b14) 11=clearcoatNormal(b15)
+//       12=sheenColor(b16) 13=sheenRough(b17) 14=specularColor(b18) 15=specular(b19);
+//       FrameUBO(b0) ItemUBO(b1,元素 512B) LightUBO(b2)。
 #version 450
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -21,11 +24,15 @@ struct Item {
   mat4 world;
   mat4 normalMatrix;
   vec4 baseColorFactor;
-  vec4 emissiveOcclusion;
-  vec4 metallicRoughness;
-  vec4 uvTransform;
+  vec4 emissiveOcclusion;   // rgb=emissiveFactor, a=occlusionStrength
+  vec4 metallicRoughness;   // x=metallic, y=roughness, z=normalScale, w=alphaCutoff
+  vec4 uvTransform;         // xy=offset, zw=scale
+  vec4 ext0;  // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor
+  vec4 ext1;  // xyz=sheenColorFactor w=sheenRoughnessFactor
+  vec4 ext2;  // xyz=specularColorFactor w=ior
+  vec4 _pad[13];  // std140 数组元素 stride 对齐 CPU 槽距 512B(304+208)
 };
-layout(binding = 1) uniform ItemUBO { Item items[64]; } iu;
+layout(binding = 1) uniform ItemUBO { Item items[32]; } iu;  // 组上限 32(16KB 线)
 layout(binding = 2) uniform LightUBO {
   mat4 lightViewProj;
   mat4 spotViewProj;   // 首盏聚光阴影 VP
@@ -44,11 +51,21 @@ layout(binding = 9) uniform samplerCube texPrefilter;
 layout(binding = 10) uniform sampler2D texBrdfLut;
 layout(binding = 11) uniform sampler2DShadow texShadow;
 layout(binding = 12) uniform sampler2DShadow texShadowSpot;  // slot8:聚光阴影
+layout(binding = 13) uniform sampler2D texClearcoat;       // slot9:R=清漆强度
+layout(binding = 14) uniform sampler2D texClearcoatRough;  // slot10:G=清漆粗糙度
+layout(binding = 15) uniform sampler2D texClearcoatNormal; // slot11:清漆法线(缺省平面法线占位)
+layout(binding = 16) uniform sampler2D texSheenColor;      // slot12:RGB
+layout(binding = 17) uniform sampler2D texSheenRough;      // slot13:A=粗糙度
+layout(binding = 18) uniform sampler2D texSpecularColor;   // slot14:RGB
+layout(binding = 19) uniform sampler2D texSpecular;        // slot15:A=specular 因子
 
 layout(location = 0) out vec4 outColor;
 
 const float PREFILTER_MIPS = 5.0;
 const float PI = 3.14159265;
+// Charlie 方向反照率无 LUT 解析拟合(three.js 惯例;与 Khronos viewer 的 LUT 版
+// 有微小数值差异,golden 自生成自洽)
+const float kSheenAlbedo = 0.157;
 
 vec3 evalIrradiance(vec3 n) {
   // 与 environment.cpp 同一组正交归一 SH 基常量
@@ -67,8 +84,8 @@ vec3 evalIrradiance(vec3 n) {
   return max(e, vec3(0.0));
 }
 
-// 方向光 GGX 高光(D·G·F/(4·ndl·ndv)),fres 输出供 Fresnel 复用
-vec3 ggxSpec(vec3 n, vec3 l, vec3 v, float roughness, vec3 f0) {
+// 方向光 GGX 高光(D·G·F/(4·ndl·ndv)),fres 输出供分层衰减/漫反射能量扣复用
+vec3 ggxSpec(vec3 n, vec3 l, vec3 v, float roughness, vec3 f0, out vec3 fres) {
   vec3 h = normalize(l + v);
   float ndh = clamp(dot(n, h), 0.0, 1.0);
   float ndl = clamp(dot(n, l), 0.0, 1.0);
@@ -80,39 +97,95 @@ vec3 ggxSpec(vec3 n, vec3 l, vec3 v, float roughness, vec3 f0) {
   float k = a / 2.0;
   float gv = ndv / (ndv * (1.0 - k) + k + 1e-7);
   float gl = ndl / (ndl * (1.0 - k) + k + 1e-7);
-  vec3 fres = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
+  fres = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
   return fres * (d * gv * gl / (4.0 * ndv * ndl + 1e-7));
+}
+
+// Charlie 分布(KHR_materials_sheen 附录;alpha = roughness²)
+float sheenD(float roughness, float ndh) {
+  float a = roughness * roughness;
+  float invA = 1.0 / max(a, 1e-4);
+  float sin2h = max(1.0 - ndh * ndh, 0.0078125);
+  return (2.0 + invA) * pow(sin2h, invA * 0.5) / (2.0 * PI);
+}
+
+// Neubelt 可见性(解析;整体能量守恒由 kSheenAlbedo 拟合承担)
+float sheenV(float ndl, float ndv) {
+  return clamp(1.0 / (4.0 * (ndl + ndv - ndl * ndv)), 0.0, 1.0);
 }
 
 void main() {
   vec4 baseColor = texture(texBaseColor, vUV) * iu.items[vItem].baseColorFactor;
   // alphaMode=MASK:cutoff(iu.items[vItem].metallicRoughness.w)> 0 时按阈值裁剪
-  if (iu.items[vItem].metallicRoughness.w > 0.0 && baseColor.a < iu.items[vItem].metallicRoughness.w) discard;
+  if (iu.items[vItem].metallicRoughness.w > 0.0 &&
+      baseColor.a < iu.items[vItem].metallicRoughness.w) discard;
   vec2 mr = texture(texMR, vUV).bg;   // glTF: G=roughness, B=metallic
   float metallic = clamp(mr.y * iu.items[vItem].metallicRoughness.x, 0.0, 1.0);
   float roughness = clamp(mr.x * iu.items[vItem].metallicRoughness.y, 0.03, 1.0);
 
-  // 法线贴图(TBN)
+  // 法线贴图(TBN;清漆法线共享此切线空间)
   vec3 n = normalize(vNormal);
   vec3 t = normalize(vTangent.xyz - n * dot(n, vTangent.xyz));
   vec3 b = cross(n, t) * vTangent.w;
   vec3 nMap = (texture(texNormal, vUV).xyz * 2.0 - 1.0) *
-              vec3(iu.items[vItem].metallicRoughness.z, iu.items[vItem].metallicRoughness.z, 1.0);
+              vec3(iu.items[vItem].metallicRoughness.z,
+                   iu.items[vItem].metallicRoughness.z, 1.0);
   n = normalize(t * nMap.x + b * nMap.y + n * nMap.z);
 
   vec3 v = normalize(cameraPos.xyz - vWorldPos);
   vec3 r = reflect(-v, n);
-  vec3 f0 = mix(vec3(0.04), baseColor.rgb, metallic);
+  float ndv = clamp(dot(n, v), 0.0, 1.0);
 
-  // IBL:SH diffuse + prefilter specular(split-sum)
+  // ---- KHR_materials_specular + ior:介质 f0 改造(全默认 → 跳过,零回归)----
+  float specWeight = 1.0;
+  vec3 f0d = vec3(0.04);
+  const bool specIor = iu.items[vItem].ext0.w != 1.0 || iu.items[vItem].ext2.w != 1.5 ||
+                       iu.items[vItem].ext2.x != 1.0 || iu.items[vItem].ext2.y != 1.0 ||
+                       iu.items[vItem].ext2.z != 1.0;
+  if (specIor) {
+    specWeight = clamp(iu.items[vItem].ext0.w * texture(texSpecular, vUV).a, 0.0, 1.0);
+    vec3 specColor = clamp(
+        iu.items[vItem].ext2.xyz * texture(texSpecularColor, vUV).rgb, vec3(0.0),
+        vec3(1.0));
+    float k = (1.0 - iu.items[vItem].ext2.w) / (1.0 + iu.items[vItem].ext2.w);
+    f0d = min(k * k * specColor, vec3(1.0));
+  }
+  vec3 f0 = mix(f0d, baseColor.rgb, metallic);
+
+  // ---- KHR_materials_sheen(默认 sheenColorFactor=0 → 跳过)----
+  vec3 sheenColor = vec3(0.0);
+  float sheenRough = 0.0;
+  const bool sheenOn = max(max(iu.items[vItem].ext1.x, iu.items[vItem].ext1.y),
+                           iu.items[vItem].ext1.z) > 0.0;
+  if (sheenOn) {
+    sheenColor = iu.items[vItem].ext1.xyz * texture(texSheenColor, vUV).rgb;
+    sheenRough = clamp(iu.items[vItem].ext1.w * texture(texSheenRough, vUV).a, 0.03, 1.0);
+  }
+
+  // ---- KHR_materials_clearcoat(默认 factor=0 → 跳过)----
+  float ccFactor = 0.0, ccRough = 0.0;
+  vec3 ncc = n;
+  const bool ccOn = iu.items[vItem].ext0.x > 0.0;
+  if (ccOn) {
+    ccFactor = clamp(iu.items[vItem].ext0.x * texture(texClearcoat, vUV).r, 0.0, 1.0);
+    ccRough = clamp(iu.items[vItem].ext0.y * texture(texClearcoatRough, vUV).g, 0.03, 1.0);
+    vec3 nMapCc = (texture(texClearcoatNormal, vUV).xyz * 2.0 - 1.0) *
+                  vec3(iu.items[vItem].ext0.z, iu.items[vItem].ext0.z, 1.0);
+    ncc = normalize(t * nMapCc.x + b * nMapCc.y + n * nMapCc.z);
+  }
+
+  // IBL(基层):SH diffuse + prefilter specular(split-sum)
   vec3 irradiance = evalIrradiance(n);
   vec3 iblDiffuse = irradiance * baseColor.rgb * (1.0 - metallic);
   vec3 prefiltered = textureLod(texPrefilter, r, roughness * (PREFILTER_MIPS - 1.0)).rgb;
-  vec2 brdf = texture(texBrdfLut, vec2(clamp(dot(n, v), 0.0, 1.0), roughness)).rg;
-  vec3 iblSpec = prefiltered * (f0 * brdf.x + brdf.y);
+  vec2 brdf = texture(texBrdfLut, vec2(ndv, roughness)).rg;
+  vec3 Fenv = f0 * brdf.x + brdf.y;
+  vec3 iblSpec = prefiltered * Fenv;
+  if (specIor) iblDiffuse *= (vec3(1.0) - specWeight * Fenv);  // 介质漫反射能量扣
 
-  // 多光源 direct(首盏方向光投影阴影)
+  // 多光源 direct(首盏方向光 + 首盏聚光投影阴影;阴影因子同施于扩展层)
   vec3 direct = vec3(0.0);
+  vec3 ccDirect = vec3(0.0);  // 清漆层独立累积(分层衰减不衰减清漆自身)
   const int nLights = min(int(lightCount.x + 0.5), 4);
   for (int i = 0; i < nLights; ++i) {
     vec4 dirType = lights[i * 4 + 0];
@@ -139,11 +212,25 @@ void main() {
       }
     }
     float ndl = clamp(dot(n, L), 0.0, 1.0);
-    vec3 term = lcolor * att * ndl *
-                (baseColor.rgb * (1.0 - metallic) / PI + ggxSpec(n, L, v, roughness, f0));
+    vec3 fres;
+    vec3 spec = ggxSpec(n, L, v, roughness, f0, fres);
+    vec3 diffuse = baseColor.rgb * (1.0 - metallic) / PI;
+    if (specIor) diffuse *= (vec3(1.0) - specWeight * fres);
+    vec3 term = lcolor * att * ndl * (diffuse + spec);
+    if (sheenOn) {  // sheen 瓣:Charlie D × Neubelt V
+      vec3 h = normalize(L + v);
+      float ndh = clamp(dot(n, h), 0.0, 1.0);
+      term += lcolor * att * ndl * sheenColor * sheenD(sheenRough, ndh) * sheenV(ndl, ndv);
+    }
+    vec3 ccTerm = vec3(0.0);
+    if (ccOn) {  // 清漆瓣:GGX(f0=0.04,独立法线/粗糙度)
+      float ndlCc = clamp(dot(ncc, L), 0.0, 1.0);
+      vec3 fresCc;
+      ccTerm = lcolor * att * ndlCc * ggxSpec(ncc, L, v, ccRough, vec3(0.04), fresCc);
+    }
+    float shadowF = 1.0;
     if (i == 0 && type == 0) {
       // 阴影:PCF 3x3(bias 随坡度放大);采样坐标越界视为受光
-      float shadow = 1.0;
       if (shadowParams.z > 0.5) {
         vec4 lp = lightViewProj * vec4(vWorldPos, 1.0);
         vec3 ndc = lp.xyz / lp.w;
@@ -158,10 +245,9 @@ void main() {
             for (int y = -1; y <= 1; ++y)
               sum += texture(texShadow,
                              vec3(suv + vec2(float(x), float(y)) * shadowParams.y, refZ));
-          shadow = sum / 9.0;
+          shadowF = sum / 9.0;
         }
       }
-      term *= shadow;
     }
     // 聚光阴影:首盏聚光(lightCount.z)投影,PCF 3x3
     if (int(lightCount.z + 0.5) == i && spotShadowParams.z > 0.5) {
@@ -179,16 +265,34 @@ void main() {
           for (int y = -1; y <= 1; ++y)
             sum += texture(texShadowSpot,
                            vec3(suv + vec2(float(x), float(y)) * spotShadowParams.y, refZ));
-        term *= sum / 9.0;
+        shadowF *= sum / 9.0;
       }
     }
-    direct += term;
+    direct += term * shadowF;
+    ccDirect += ccTerm * shadowF;
   }
 
   float ao = mix(1.0, texture(texOcclusion, vUV).r, iu.items[vItem].emissiveOcclusion.a);
-  vec3 emissive = texture(texEmissive, vUV).rgb * iu.items[vItem].emissiveOcclusion.rgb;
+  vec3 emissive =
+      texture(texEmissive, vUV).rgb * iu.items[vItem].emissiveOcclusion.rgb;
 
-  vec3 color = (iblDiffuse + iblSpec + direct) * ao + emissive;
+  vec3 base = iblDiffuse + iblSpec + direct;
+  if (sheenOn) {  // sheen 层:基层能量扣(kSheenAlbedo 拟合)+ sheen IBL
+    float scale = 1.0 - kSheenAlbedo * max(max(sheenColor.r, sheenColor.g), sheenColor.b);
+    vec3 sheenIbl = textureLod(texPrefilter, r, sheenRough * (PREFILTER_MIPS - 1.0)).rgb *
+                    sheenColor * kSheenAlbedo;
+    base = base * scale + sheenIbl;
+  }
+  if (ccOn) {  // 清漆层:IBL(复用 brdfLut,f0=0.04 近似)+ 菲涅尔分层混合
+    vec3 rcc = reflect(-v, ncc);
+    float ndvCc = clamp(dot(ncc, v), 0.0, 1.0);
+    vec3 preCc = textureLod(texPrefilter, rcc, ccRough * (PREFILTER_MIPS - 1.0)).rgb;
+    vec2 brdfCc = texture(texBrdfLut, vec2(ndvCc, ccRough)).rg;
+    vec3 ccIbl = preCc * (0.04 * brdfCc.x + brdfCc.y);
+    float Fcc = 0.04 + 0.96 * pow(1.0 - ndvCc, 5.0);
+    base = base * (1.0 - ccFactor * Fcc) + (ccDirect + ccIbl) * ccFactor;
+  }
+  vec3 color = base * ao + emissive;
   if (lightCount.y > 0.5) {
     outColor = vec4(color, 1.0);  // hdrMode:线性输出,tone mapping 在 composite
   } else {

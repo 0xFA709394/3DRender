@@ -14,8 +14,12 @@ struct Item {
   vec4 emissiveOcclusion;   // rgb=emissiveFactor, a=occlusionStrength
   vec4 metallicRoughness;   // x=metallic, y=roughness, z=normalScale, w=alphaCutoff
   vec4 uvTransform;         // xy=offset, zw=scale
+  vec4 ext0;  // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor
+  vec4 ext1;  // xyz=sheenColorFactor w=sheenRoughnessFactor
+  vec4 ext2;  // xyz=specularColorFactor w=ior
+  vec4 _pad[13];  // std140 数组元素 stride 对齐 CPU 槽距 512B(304+208)
 };
-layout(binding = 1) uniform ItemUBO { Item items[64]; } iu;  // kMaxItems
+layout(binding = 1) uniform ItemUBO { Item items[32]; } iu;  // 组上限 32(16KB 线)
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;

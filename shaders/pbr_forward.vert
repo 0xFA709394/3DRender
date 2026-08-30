@@ -14,6 +14,9 @@ layout(binding = 1) uniform ItemUBO {
   vec4 emissiveOcclusion;   // rgb=emissiveFactor, a=occlusionStrength
   vec4 metallicRoughness;   // x=metallic, y=roughness, z=normalScale
   vec4 uvTransform;         // xy=offset, zw=scale
+  vec4 ext0;  // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor(vert 不读,GLES 跨阶段声明对齐)
+  vec4 ext1;  // xyz=sheenColorFactor w=sheenRoughnessFactor(同上)
+  vec4 ext2;  // xyz=specularColorFactor w=ior(同上)
 };
 
 layout(location = 0) out vec3 vWorldPos;

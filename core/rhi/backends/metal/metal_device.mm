@@ -1040,11 +1040,15 @@ void MetalCommandBuffer::bindIndexBuffer(BufferHandle buffer, uint64_t offset, I
   indexType_ = type;
 }
 
-/// 绑定约定：texture slot N ↔ fragment texture/sampler(N+4)。
+/// 绑定约定：texture slot N ↔ fragment texture(N+4)。
+/// sampler 参数上限 0..15：槽 12..15（索引 16..19）折返借用空闲 sampler 0..3
+/// （与 ShaderCompile.cmake 的 MSL sampler(N) 折返 sed 一致；0..3 此前空闲，
+/// 全部 shader 的 sampler 索引 = binding ≥ 4）。
 void MetalCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
                                      SamplerHandle sampler) {
   [encoder_ setFragmentTexture:device_->texture(texture) atIndex:slot + 4];
-  [encoder_ setFragmentSamplerState:device_->sampler(sampler) atIndex:slot + 4];
+  const uint32_t sIdx = slot < 12 ? slot + 4 : slot - 12;
+  [encoder_ setFragmentSamplerState:device_->sampler(sampler) atIndex:sIdx];
 }
 
 /// 绑定约定：uniform slot N ↔ buffer(N)，顶点/片段阶段同时绑定。

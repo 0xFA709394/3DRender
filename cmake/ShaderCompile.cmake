@@ -16,6 +16,8 @@
 # ============================================================================
 set(RD_SHADER_OUT ${CMAKE_BINARY_DIR}/shaders_out)
 file(MAKE_DIRECTORY ${RD_SHADER_OUT})
+# 函数内 CMAKE_CURRENT_LIST_DIR 解析到调用方目录,顶层先捕获本目录
+set(RD_CMAKE_DIR ${CMAKE_CURRENT_LIST_DIR})
 
 function(rd_compile_shader SRC)
   get_filename_component(F ${SRC} NAME)
@@ -35,10 +37,14 @@ function(rd_compile_shader SRC)
     COMMENT "glsl->spv ${F}")
 
   # --msl-decoration-binding：SPIR-V binding 直接映射为 MSL 绑定索引，
-  # 落实绑定约定（texture slot N ↔ Metal texture/sampler(N+4) ↔ Vulkan binding(N+4)）
+  # 落实绑定约定（texture slot N ↔ Metal texture/sampler(N+4) ↔ Vulkan binding(N+4)）。
+  # Metal sampler 参数上限 0..15：binding 16..19（纹理槽 12..15）经
+  # fixup_msl_samplers.cmake 折返借用空闲 sampler 0..3
+  # （与 Metal 后端 bindTexture 的折返映射一致；texture(N+4)≤19 在上限 31 内）。
   add_custom_command(
     OUTPUT ${MSL} ${GLES} ${REFL}
     COMMAND $<TARGET_FILE:spirv-cross> ${SPV} --msl --msl-decoration-binding --output ${MSL}
+    COMMAND ${CMAKE_COMMAND} -P ${RD_CMAKE_DIR}/fixup_msl_samplers.cmake ${MSL}
     COMMAND $<TARGET_FILE:spirv-cross> ${SPV} --version 300 --es --output ${GLES}
     COMMAND $<TARGET_FILE:spirv-cross> ${SPV} --reflect --output ${REFL}
     DEPENDS ${SPV} spirv-cross

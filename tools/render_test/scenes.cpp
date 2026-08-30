@@ -179,7 +179,7 @@ void buildInstancedField(Device& dev, DemoScene& out) {
 }
 
 void buildEmissiveBloom(Device& dev, DemoScene& out) {
-  static const QualityPreset kHigh = {1.0f, 4, 256, 6, 4096, 2048, 1, 0};
+  static const QualityPreset kHigh = {1.0f, 4, 256, 6, 4096, 2048, 1, 0, 1};
   out.quality = &kHigh;
   for (int i = 0; i < 4; ++i)
     for (int j = 0; j < 4; ++j) {
@@ -261,7 +261,7 @@ void buildNormalMapWall(Device& dev, DemoScene& out) {
 }
 
 void buildShadowGallery(Device& dev, DemoScene& out) {
-  static const QualityPreset kHigh = {1.0f, 4, 256, 6, 4096, 2048, 1, 0};
+  static const QualityPreset kHigh = {1.0f, 4, 256, 6, 4096, 2048, 1, 0, 1};
   out.quality = &kHigh;
   uploadInto(dev, wrapMesh(primitives::makePlane(10.0f, 2.0f)), out, math::Mat4(1.0f));
   uploadInto(dev, wrapMesh(primitives::makeBox(1.6f, 0.2f, 1.6f)), out,

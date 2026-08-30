@@ -39,6 +39,7 @@ add_executable(rd_tests
   renderer/quality_test.cpp
   renderer/ktx2_render_test.cpp
   renderer/shadow_test.cpp
+  renderer/material_ext_test.cpp
   renderer/post_test.cpp
   renderer/skinned_test.cpp
   renderer/demo_scenes_test.cpp

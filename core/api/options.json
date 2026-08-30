@@ -44,5 +44,6 @@
     "domain": {"style": "range", "min": 0, "max": 4096, "step": 128},
     "doc": "阴影贴图边长(0=按画质档)"
   },
-  "shadow.spot": {"type": "bool", "default": true, "doc": "聚光灯阴影开关(首盏聚光)"}
+  "shadow.spot": {"type": "bool", "default": true, "doc": "聚光灯阴影开关(首盏聚光)"},
+  "render.ext_materials": {"type": "bool", "default": true, "doc": "KHR 材质扩展四件套(clearcoat/sheen/specular/ior)开关"}
 }

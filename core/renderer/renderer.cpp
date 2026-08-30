@@ -55,7 +55,8 @@ void fillVertexLayout(PipelineDesc& pd) {
                    {3, Format::R32G32_FLOAT, 40, 0}};
 }
 
-/// ItemUBO 布局(256B):mvp|world|normalMatrix|baseColorFactor|emissiveOcc|metalRough|uvTf
+/// ItemUBO 布局(304B 块,槽距 512B):mvp|world|normalMatrix|baseColorFactor|
+/// emissiveOcc|metalRough|uvTf|ext0|ext1|ext2
 struct ItemUBOData {
   math::Mat4 mvp;
   math::Mat4 world;
@@ -64,8 +65,11 @@ struct ItemUBOData {
   float emissiveOcc[4];     // rgb=emissiveFactor, a=occlusionStrength
   float metallicRough[4];   // x=metallic, y=roughness, z=normalScale, w=alphaCutoff
   float uvTransform[4];     // xy=offset, zw=scale
+  float ext0[4];            // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor
+  float ext1[4];            // xyz=sheenColorFactor w=sheenRoughnessFactor
+  float ext2[4];            // xyz=specularColorFactor w=ior
 };
-static_assert(sizeof(ItemUBOData) == 256, "ItemUBO 必须 256B");
+static_assert(sizeof(ItemUBOData) == kItemUboSize, "ItemUBO 必须 304B(槽距 512)");
 
 } // namespace
 
@@ -835,6 +839,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     slotBase_[i] = slotOf[i] < 0 ? 0 : uint32_t(slotOf[i]);
 
   // 统一填充 per-mesh ItemUBO(item 内 meshCount 个连续槽;截断时 mesh0 兜底)
+  const bool extOn = extMaterialsManual_ && extMaterialsQuality_;  // 与关系门控
   for (uint32_t i = 0; i < count; ++i) {
     if (slotOf[order[i]] < 0) continue;  // 剔除项不占 UBO 槽
     const auto* renderable = static_cast<const MeshRenderable*>(queue_[order[i]].get());
@@ -873,6 +878,27 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
         iu.metallicRough[2] = 1.0f;
         iu.uvTransform[2] = iu.uvTransform[3] = 1.0f;
       }
+      // ---- KHR 扩展四件套因子(关闭/无扩展时写默认 = 零操作)----
+      if (extOn && !meshes.empty() && mi < meshes.size()) {
+        const auto& mm = meshes[mi].material;
+        iu.ext0[0] = mm.clearcoatFactor;
+        iu.ext0[1] = mm.clearcoatRoughnessFactor;
+        iu.ext0[2] = mm.clearcoatNormalScale;
+        iu.ext0[3] = mm.specularFactor;
+        iu.ext1[0] = mm.sheenColorFactor[0];
+        iu.ext1[1] = mm.sheenColorFactor[1];
+        iu.ext1[2] = mm.sheenColorFactor[2];
+        iu.ext1[3] = mm.sheenRoughnessFactor;
+        iu.ext2[0] = mm.specularColorFactor[0];
+        iu.ext2[1] = mm.specularColorFactor[1];
+        iu.ext2[2] = mm.specularColorFactor[2];
+        iu.ext2[3] = mm.ior;
+      } else {
+        iu.ext0[2] = 1.0f;   // clearcoatNormalScale 默认
+        iu.ext0[3] = 1.0f;   // specularFactor 默认
+        iu.ext2[0] = iu.ext2[1] = iu.ext2[2] = 1.0f;  // specularColorFactor 默认
+        iu.ext2[3] = 1.5f;   // ior 默认(f0=0.04 与现状一致)
+      }
       dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(slot) * kUboStride);
     }
   }
@@ -899,7 +925,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
               ? r->resourceId()
               : nullptr;
       if (rid && shadowInstPipeline_.valid())
-        while (groupEnd < lightVis.size()) {
+        while (groupEnd < lightVis.size() && groupEnd - li < kMaxInstGroup) {
           auto* n = static_cast<MeshRenderable*>(queue_[lightVis[groupEnd]].get());
           if (!n || n->resourceId() != rid || n->meshData().empty() ||
               jointSlot_[lightVis[groupEnd]] >= 0 ||
@@ -1013,7 +1039,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
                           ? r->resourceId()
                           : nullptr;
     if (rid && instancedPipeline_.valid())
-      while (groupEnd < camVis.size()) {
+      while (groupEnd < camVis.size() && groupEnd - vi < kMaxInstGroup) {
         auto* n = static_cast<MeshRenderable*>(queue_[camVis[groupEnd]].get());
         if (!n || n->resourceId() != rid || n->meshData().empty() ||
             n->meshData()[0].skinned || n->meshData()[0].material.alphaBlend)
@@ -1043,6 +1069,15 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
           cmd->bindTexture(6, env_.brdfLut(), env_.lutSampler());
         }
         if (shadowActive) cmd->bindTexture(7, shadowDepthTex_, shadowSampler_);
+        if (spotShadowActive) cmd->bindTexture(8, spotShadowDepthTex_, shadowSampler_);
+        // KHR 扩展材质纹理(9..15;恒绑定,占位由资源层保证)
+        cmd->bindTexture(9, g.clearcoatTex, sampler);
+        cmd->bindTexture(10, g.clearcoatRoughTex, sampler);
+        cmd->bindTexture(11, g.clearcoatNormalTex, sampler);
+        cmd->bindTexture(12, g.sheenColorTex, sampler);
+        cmd->bindTexture(13, g.sheenRoughTex, sampler);
+        cmd->bindTexture(14, g.specularColorTex, sampler);
+        cmd->bindTexture(15, g.specularTex, sampler);
         cmd->bindVertexBuffer(0, g.vbo, 0);
         cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
         cmd->drawIndexedInstanced(g.indexCount, 0, 0, groupSize, 0);

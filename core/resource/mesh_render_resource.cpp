@@ -68,15 +68,32 @@ std::shared_ptr<MeshRenderResource> MeshRenderResource::upload(Device& dev,
     g.normalTex = uploadOr(dev, m.material.normal, res->fallbackNormal_);
     g.emissiveTex = uploadOr(dev, m.material.emissive, res->fallbackBlack_);
     g.occlusionTex = uploadOr(dev, m.material.occlusion, res->fallbackWhite_);
+    g.clearcoatTex = uploadOr(dev, m.material.clearcoat, res->fallbackWhite_);
+    g.clearcoatRoughTex = uploadOr(dev, m.material.clearcoatRough, res->fallbackWhite_);
+    g.clearcoatNormalTex = uploadOr(dev, m.material.clearcoatNormal, res->fallbackNormal_);
+    g.sheenColorTex = uploadOr(dev, m.material.sheenColor, res->fallbackWhite_);
+    g.sheenRoughTex = uploadOr(dev, m.material.sheenRough, res->fallbackWhite_);
+    g.specularColorTex = uploadOr(dev, m.material.specularColorTex, res->fallbackWhite_);
+    g.specularTex = uploadOr(dev, m.material.specularTex, res->fallbackWhite_);
     // CPU 像素已上传,清空以省内存(材质 factor 等元数据保留)
     m.material.baseColor.pixels.clear();
     m.material.metallicRoughness.pixels.clear();
     m.material.normal.pixels.clear();
     m.material.emissive.pixels.clear();
     m.material.occlusion.pixels.clear();
+    m.material.clearcoat.pixels.clear();
+    m.material.clearcoatRough.pixels.clear();
+    m.material.clearcoatNormal.pixels.clear();
+    m.material.sheenColor.pixels.clear();
+    m.material.sheenRough.pixels.clear();
+    m.material.specularColorTex.pixels.clear();
+    m.material.specularTex.pixels.clear();
     g.material = std::move(m.material);
     if (!g.vbo.valid() || !g.ibo.valid() || !g.baseColorTex.valid() || !g.mrTex.valid() ||
-        !g.normalTex.valid() || !g.emissiveTex.valid() || !g.occlusionTex.valid()) {
+        !g.normalTex.valid() || !g.emissiveTex.valid() || !g.occlusionTex.valid() ||
+        !g.clearcoatTex.valid() || !g.clearcoatRoughTex.valid() ||
+        !g.clearcoatNormalTex.valid() || !g.sheenColorTex.valid() ||
+        !g.sheenRoughTex.valid() || !g.specularColorTex.valid() || !g.specularTex.valid()) {
       res->destroy(dev);
       return nullptr;
     }
@@ -90,7 +107,9 @@ void MeshRenderResource::destroy(Device& dev) {
     if (g.vbo.valid()) dev.destroyBuffer(g.vbo);
     if (g.ibo.valid()) dev.destroyBuffer(g.ibo);
     for (TextureHandle t : {g.baseColorTex, g.mrTex, g.normalTex, g.emissiveTex,
-                            g.occlusionTex}) {
+                            g.occlusionTex, g.clearcoatTex, g.clearcoatRoughTex,
+                            g.clearcoatNormalTex, g.sheenColorTex, g.sheenRoughTex,
+                            g.specularColorTex, g.specularTex}) {
       // 只销毁非占位纹理(占位纹理由本对象统一销毁)
       if (t.valid() && t != fallbackWhite_ && t != fallbackBlack_ && t != fallbackNormal_)
         dev.destroyTexture(t);

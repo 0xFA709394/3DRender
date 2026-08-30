@@ -566,6 +566,7 @@ void Renderer::setQuality(const QualityPreset& q) {
     RD_LOGW("renderer", "后端无 HDR 渲染目标 caps,后处理自动关闭");
   postEnabled_ = wantPost && dev_->caps().supports(Capability::hdr_render_target);
   fxaaEnabled_ = q.fxaaEnabled != 0;
+  extMaterialsQuality_ = q.extMaterials != 0;
   if (q.iblPrefilterSize != iblSize_ || q.iblPrefilterMips != iblMips_) {
     iblSize_ = q.iblPrefilterSize;
     iblMips_ = q.iblPrefilterMips;

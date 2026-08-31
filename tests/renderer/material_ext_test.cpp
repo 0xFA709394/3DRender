@@ -1,8 +1,11 @@
 // KHR 扩展材质门控语义:程序化 clearcoat 球 开/关 渲染应不同;
 // DamagedHelmet(无扩展)开/关应逐像素一致(零操作语义)。
-// (Task 7 追加三 golden 模型用例。)
+// + 三 golden 模型用例(ClearCoatTest/SheenChair/SpecularTest;资产缺失自动 skip)。
 #include <gtest/gtest.h>
+#include <cstdlib>
+#include <filesystem>
 #include <glm/glm.hpp>
+#include "common/golden_test.h"
 #include "common/image.h"
 #include "common/shader_code.h"
 #include "renderer/renderer.h"
@@ -126,3 +129,29 @@ TEST(MaterialExtGate, ToggleChangesClearcoat) {
   auto cmp = rd::test::compareSSIM(on.pixels.data(), off.pixels.data(), kW, kH, 0.05);
   EXPECT_GT(cmp.error, 0.01) << "clearcoat 开关未产生可见差异";
 }
+
+// ---- golden 三模型(fetch_assets 下载;缺失自动 skip)----
+
+// 资产定位:RD_ASSETS_DIR(默认 <repo>/assets);缺失 → 空图(golden skip)
+std::string findAsset(const char* rel) {
+  if (!getenv("RD_ASSETS_DIR"))
+    setenv("RD_ASSETS_DIR", (std::string(RD_TEST_DATA_DIR) + "/../assets").c_str(), 1);
+  std::string p = std::string(getenv("RD_ASSETS_DIR")) + "/" + rel;
+  return std::filesystem::exists(p) ? p : std::string();
+}
+
+rd::test::Image renderAsset(rd::Backend b, const char* rel) {
+  const std::string path = findAsset(rel);
+  if (path.empty()) return {};
+  auto model = rd::loadGltf(path.c_str());
+  if (!model.valid()) return {};
+  return renderModel(b, model, true);
+}
+
+rd::test::Image renderClearCoat(rd::Backend b) { return renderAsset(b, "ClearCoatTest.glb"); }
+rd::test::Image renderSheenChair(rd::Backend b) { return renderAsset(b, "SheenChair.glb"); }
+rd::test::Image renderSpecular(rd::Backend b) { return renderAsset(b, "SpecularTest.glb"); }
+
+RD_GOLDEN_TEST(MaterialExt, ClearCoat, "ext_clearcoat", 0.05, renderClearCoat)
+RD_GOLDEN_TEST(MaterialExt, SheenChair, "ext_sheen_chair", 0.05, renderSheenChair)
+RD_GOLDEN_TEST(MaterialExt, Specular, "ext_specular", 0.05, renderSpecular)

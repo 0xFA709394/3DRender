@@ -16,7 +16,7 @@ const char* const kNames[] = {"material_balls", "cornell_box", "light_playground
                               "sponza",         "cesium_man",
                               "emissive_bloom", "normal_map_wall",
                               "shadow_gallery", "ktx2_gallery", "alpha_blend",
-                              "fox_anim"};
+                              "fox_anim",       "material_ext_gallery"};
 
 /// 单 mesh ModelAsset 包装(材质参数由调用方设)。
 ModelAsset wrapMesh(MeshData&& mesh) {
@@ -395,6 +395,43 @@ bool buildFamousGlb(Device& dev, DemoScene& out, ModelAsset& storage,
   return true;
 }
 
+// KHR 扩展材质三模型并排(资产缺失返回 false → 调用方 skip)
+bool buildMaterialExtGallery(Device& dev, DemoScene& out) {
+  struct Entry {
+    const char* rel;
+    float x;
+  };
+  const Entry entries[] = {
+      {"ClearCoatTest.glb", -1.6f}, {"SheenChair.glb", 0.0f}, {"SpecularTest.glb", 1.6f}};
+  std::string base = "assets/";
+  if (!std::filesystem::exists(base)) {
+    if (const char* alt = getenv("RD_ASSETS_DIR")) base = std::string(alt) + "/";
+  }
+  for (const auto& e : entries) {
+    const std::string path = base + e.rel;
+    if (!std::filesystem::exists(path)) {
+      RD_LOGW("demo.scene", "资产缺失(scripts/fetch_assets.sh 下载): %s", path.c_str());
+      return false;
+    }
+    auto model = loadGltf(path.c_str());
+    if (!model.valid()) return false;
+    auto res = MeshRenderResource::upload(dev, model);
+    if (!res) return false;
+    const float s = 0.8f / std::max(model.boundingRadius, 1e-4f);  // 归一到 0.8 半径
+    out.resources.push_back(res);
+    out.worlds.push_back(glm::translate(math::Mat4(1.0f), math::Vec3(e.x, 0.8f, 0)) *
+                         glm::scale(math::Mat4(1.0f), math::Vec3(s)));
+  }
+  LightData dir;  // 默认方向光 + 适度亮度,高光可见
+  dir.color[0] = dir.color[1] = dir.color[2] = 3.0f;
+  out.lights.push_back(dir);
+  out.camera.lookAt({0, 0.9f, 4.2f}, {0, 0.6f, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 50.0f);
+  out.framingCenter[1] = 0.8f;
+  out.framingRadius = 2.6f;
+  return true;
+}
+
 } // namespace
 
 const char* const* demoSceneNames(uint32_t& count) {
@@ -431,6 +468,8 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
     buildAlphaBlend(dev, out);
   } else if (n == "fox_anim") {
     if (!buildFamousGlb(dev, out, modelStorage, "Fox.glb", true)) return false;
+  } else if (n == "material_ext_gallery") {
+    if (!buildMaterialExtGallery(dev, out)) return false;
   } else {
     RD_LOGE("demo.scene", "未知场景: %s", name);
     return false;

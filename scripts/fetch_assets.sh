@@ -19,6 +19,11 @@ dl WaterBottle.glb WaterBottle/glTF-Binary/WaterBottle.glb
 dl Corset.glb Corset/glTF-Binary/Corset.glb
 dl Lantern.glb Lantern/glTF-Binary/Lantern.glb
 
+# P4-A KHR 材质扩展 golden 模型(clearcoat/sheen/specular)
+dl ClearCoatTest.glb ClearCoatTest/glTF-Binary/ClearCoatTest.glb
+dl SheenChair.glb SheenChair/glTF-Binary/SheenChair.glb
+dl SpecularTest.glb SpecularTest/glTF-Binary/SpecularTest.glb
+
 # Sponza(无 glb 形态):glTF 主文件 + 全部外链纹理到 assets/sponza/
 if [ -f assets/sponza/Sponza.gltf ]; then
   echo "已存在 assets/sponza/Sponza.gltf"

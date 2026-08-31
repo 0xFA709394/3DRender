@@ -63,7 +63,12 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   `rd_engine_set_cache_dir` 开启;缓存模式预滤波走离屏读回+updateTexture
   (三后端统一);BRDF LUT 为 CPU 纯函数不缓存;ctest ibl_cache_miss/hit/equal 双跑
 - loader 补强:非索引/strip 分解(交替绕序)+ 法线缺失时逐面 flat 生成(Fox 可用)
-- 下一步:P3(AR + 鸿蒙)或 P4(打磨:包体积/资产规范/性能调优)
+- P4-A 完成：KHR 材质扩展四件套(clearcoat GGX f0=0.04 独立法线/sheen Charlie+Neubelt
+  0.157 拟合/specular+ior f0 改造+漫反射能量扣;默认因子零操作,golden 零回归)
+  + 纹理槽 9→16 + ItemUBO 304B 块/512B 槽距 + 实例化组上限 32
+  + render.ext_materials 选项与画质档与关系;
+  顺带修复:Vulkan slot8 聚光阴影描述符丢弃 + GLES 语义 sampler 名全落单元 0
+- 下一步:P4-B(transmission/volume)或 P4-C(morph/Draco),或 P3(AR+鸿蒙)
 
 ## 构建与测试
 ```bash
@@ -104,8 +109,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   选项 render.frustum_culling(默认开);perf sponza 基准场景(fetch_assets 下载,缺失跳过)
 - 自动实例化(P4 性能):场景 pass 同 MeshRenderResource 相邻可见项(非蒙皮/非 blend,
   组≥2)合并 drawIndexedInstanced;shader=pbr_forward_instanced.vert/.frag
-  (ItemUBO 声明为 items[64] 数组,gl_InstanceIndex 索引;宿主 bind 组首槽偏移+组大小);
-  desc.instancedVs/Fs 空=不启用;阴影 pass 不分组(v2);golden 像素与逐项一致
+  (ItemUBO 声明为 items[32] 数组,Item 512B=304B 数据+_pad[13],gl_InstanceIndex 索引;
+  宿主 bind 组首槽偏移+组大小,组上限 32);desc.instancedVs/Fs 空=不启用;
+  阴影 pass 不分组(v2);golden 像素与逐项一致
 - IBL 缓存:`rd_engine_set_cache_dir(path)` 开启(默认关);
   render_test `--cache-dir <path>`;缓存键=env 源像素+size+mips
 - HDR 环境+天空盒:.hdr equirect(stb float)→ equirect_to_cube pass(RGBA16F)
@@ -123,6 +129,10 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   析构落盘;ctest pipeline_cache_* 双跑
 - 交互调试：`./build/tools/render_test/render_test --interactive --model <glb>`
   （GLFW 窗口,Metal;拖拽旋转/滚轮缩放/双击重置;`RD_INTERACTIVE_FRAMES=N` 冒烟退出）
+- KHR 扩展 golden:`ext_clearcoat/ext_sheen_chair/ext_specular`(fetch_assets 下载
+  ClearCoatTest/SheenChair/SpecularTest;缺失自动 skip);
+  交互 `--interactive --scene material_ext_gallery`;
+  门控命令:`set render.ext_materials false`
 
 ## 移动端构建
 - 环境：`source /tmp/rd_env.sh`（JAVA_HOME/ANDROID_HOME/PATH）；JDK 须 17~22（openjdk@21）
@@ -148,20 +158,26 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - BufferDesc 五元组 `{size, usage, hostWrite, hostRead, data}`：非 hostWrite 缓冲为
   device-local，`updateBuffer` 会被拒绝（动态数据须 `hostWrite=true`）
 - 纹理可作为渲染目标：`TextureUsage::RenderTargetAttachment` +
-  `OffscreenTargetDesc.colorFromTexture(face/mip)`；GLES sampler uniform 命名 `texN ↔ slot N`
+  `OffscreenTargetDesc.colorFromTexture(face/mip)`；GLES sampler uniform 双机制:
+  链接期语义名表(createPipeline 内 kSamplerTable,如 texBaseColor→0,texClearcoat→9)
+  + bindTexture 回放期 `tex%u`→slot N(blit/composite 等 texN 命名的简单 shader)
 - 顶点布局约定（glTF 模型）：pos(3f)@0 | normal(3f)@12 | tangent(4f)@24 | uv(2f)@40，
   交错 stride 48，location 0/1/2/3
 - UBO 约定：slot0=FrameUBO(256B:viewProj|cameraPos|lightDir|lightColor|sh[9])，
-  slot1=ItemUBO(256B 步进:**per-(item,mesh)**——item 占 meshCount 个连续槽,
-  容量 128 槽(32KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源)；
+  slot1=ItemUBO(304B 块/512B 槽距:**per-(item,mesh)**——item 占 meshCount 个连续槽,
+  容量 128 槽(64KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源)；
   GLES uniform block 名表：UBO/FrameUBO→0，ItemUBO→1
 - 纹理槽位：0=baseColor，1=MR，2=normal，3=emissive，4=occlusion，5=prefilterCube，
   6=brdfLut(nearest 采样)，7=方向光阴影，8=聚光阴影(后两者均比较采样器,恒绑定,
-  未激活绑 1x1 D32 占位)——共 9 槽(caps max_texture_slots=9)
+  未激活绑 1x1 D32 占位)，9=clearcoat(R)，10=clearcoatRough(G)，11=clearcoatNormal，
+  12=sheenColor，13=sheenRough(A)，14=specularColor，15=specular(A)
+  ——共 16 槽(caps max_texture_slots=16;恰压 GLES 3.0 保证的 16 纹理单元线,真机普遍 32+);
+  Metal 侧 sampler 参数上限 0..15:槽 12..15(索引 16..19)折返借用空闲 sampler 0..3
+  (cmake/fixup_msl_samplers.cmake 后处理 + bindTexture 同映射)
 - cubemap 方向约定：GL/Khronos(u 右向、v 顶向下)，环境生成/预滤波/采样三处必须一致
 - 深度：离屏目标 `OffscreenTargetDesc.depth=true` + pipeline `depthTest/depthWrite`；
   depth 管线须配 depth 目标；CompareOp 默认 Less（Reverse-Z 预留）
-- renderer 层 per-item UBO 步进 256B（三后端对齐最小公倍）；渲染循环见
+- renderer 层 per-item UBO 步进 512B（三后端对齐最小公倍）；渲染循环见
   `tests/renderer/renderer_test.cpp` 的 beginFrame/beginScene/collect/endScene/submit/endFrame 顺序
 - shader 内嵌：embedded_shaders.cpp 自动生成（host=build 期；Android/iOS=configure 期），勿手改；
   iOS 真机/模拟器 metallib 分别编译（RD_EMBED_IOS_METAL / RD_EMBED_IOS_SIMULATOR）
@@ -192,7 +208,7 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
 - LightUBO=slot2(432B:lightViewProj|spotViewProj|shadowParams|spotShadowParams|
   lightCount|lights[4×64B]);lightCount.z=首盏聚光下标(-1=无);
   GLES 块名 LightUBO→2、ShadowUBO→0;阴影纹理=slot 7/8(比较采样器 sampler2DShadow);
-  Vulkan set0 binding 0..3 uniform + 4..12 sampler(布局/描述符池按 9 纹理槽)
+  Vulkan set0 binding 0..3 uniform + 4..19 sampler(布局/描述符池按 16 纹理槽)
 - 阴影:ShadowPass 在场景 pass 前(endScene 内);depth-only 目标
   (`OffscreenTargetDesc.depthFromTexture` + `PipelineDesc.depthOnly`);
   bias 走 shader(常量+slope);GLES 阴影 UV 的 v 翻转由 shadowParams.w 吸收;
@@ -233,6 +249,17 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   ItemUBO metallicRough.w;pbr.frag `if (w>0 && alpha<w) discard`;
   走 opaque 路径(depthWrite 开);**阴影 pass 支持裁剪**(shadow_depth_mask 管线:
   采样 baseColor alpha discard;mask 材质不参与阴影实例化分组)
+- KHR 扩展材质(P4-A):clearcoat/sheen/specular/ior 四扩展默认值=零操作语义
+  (clearcoatFactor=0/clearcoatRoughnessFactor=0/clearcoatNormalScale=1/
+  sheenColorFactor=0/sheenRoughnessFactor=0/specularFactor=1/specularColorFactor=(1,1,1)/
+  ior=1.5);分层 BRDF(pbr_forward.frag):specIor/sheen/clearcoat 三均匀分支,
+  默认因子全跳(零纹理采样零瓣计算,零回归硬约束);clearcoat=GGX(f0=0.04,独立法线),
+  sheen=Charlie D×Neubelt V+0.157 常数能量拟合(three.js 惯例,与 Khronos LUT 版
+  有微小数值差异,golden 自生成自洽),specular/ior=f0 改造+漫反射能量扣(1-specWeight×F);
+  ItemUBO ext0=(cc,ccRough,ccNormalScale,spec)/ext1=(sheenColor.xyz,sheenRough)/
+  ext2=(specColor.xyz,ior);门控=选项 render.ext_materials × 画质档 extMaterials
+  (High/Mid=1,Low=0)与关系,关闭时 ItemUBO 填充默认因子;
+  纹理 9..15 恒绑定(clearcoatNormal 缺省平面法线占位,余白图)
 - 阴影实例化:lightVis 同资源相邻组(非蒙皮/非 mask,≥2)→ shadow_depth_instanced.vert
   + drawIndexedInstanced(ItemUBO 组偏移绑定)
 - 包体积(P4):`tools/glb_ktx2`(glb→ASTC 4x2 KTX2:cgltf/nlohmann 解析,逐图像

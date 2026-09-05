@@ -5,6 +5,9 @@
 //       9=clearcoat(b13) 10=clearcoatRough(b14) 11=clearcoatNormal(b15)
 //       12=sheenColor(b16) 13=sheenRough(b17) 14=specularColor(b18) 15=specular(b19);
 //       FrameUBO(b0) ItemUBO(b1,304B) LightUBO(b2)。
+// 分离采样器模型(每阶段 sampler 上限 16;此处 sampler 仅 5 个):材质 2D 纹理 =
+//   texture2D + 共享 smpMat(binding23,状态=mesh sampler);cube/lut/shadow 状态
+//   特殊保持 combined(binding 9..12)。
 #version 450
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -39,22 +42,23 @@ layout(binding = 2) uniform LightUBO {
   vec4 lights[16];     // 4 盏 × 4 vec4(dirType|posRange|color|spot)
 };
 
-layout(binding = 4) uniform sampler2D texBaseColor;
-layout(binding = 5) uniform sampler2D texMR;
-layout(binding = 6) uniform sampler2D texNormal;
-layout(binding = 7) uniform sampler2D texEmissive;
-layout(binding = 8) uniform sampler2D texOcclusion;
-layout(binding = 9) uniform samplerCube texPrefilter;
-layout(binding = 10) uniform sampler2D texBrdfLut;
-layout(binding = 11) uniform sampler2DShadow texShadow;
-layout(binding = 12) uniform sampler2DShadow texShadowSpot;  // slot8:聚光阴影
-layout(binding = 13) uniform sampler2D texClearcoat;       // slot9:R=清漆强度
-layout(binding = 14) uniform sampler2D texClearcoatRough;  // slot10:G=清漆粗糙度
-layout(binding = 15) uniform sampler2D texClearcoatNormal; // slot11:清漆法线(缺省平面法线占位)
-layout(binding = 16) uniform sampler2D texSheenColor;      // slot12:RGB
-layout(binding = 17) uniform sampler2D texSheenRough;      // slot13:A=粗糙度
-layout(binding = 18) uniform sampler2D texSpecularColor;   // slot14:RGB
-layout(binding = 19) uniform sampler2D texSpecular;        // slot15:A=specular 因子
+layout(binding = 4) uniform texture2D texBaseColor;       // slot0
+layout(binding = 5) uniform texture2D texMR;              // slot1
+layout(binding = 6) uniform texture2D texNormal;          // slot2
+layout(binding = 7) uniform texture2D texEmissive;        // slot3
+layout(binding = 8) uniform texture2D texOcclusion;       // slot4
+layout(binding = 9) uniform samplerCube texPrefilter;     // slot5(combined)
+layout(binding = 10) uniform sampler2D texBrdfLut;        // slot6(combined,nearest)
+layout(binding = 11) uniform sampler2DShadow texShadow;   // slot7(combined,比较采样)
+layout(binding = 12) uniform sampler2DShadow texShadowSpot; // slot8(combined,比较采样)
+layout(binding = 13) uniform texture2D texClearcoat;       // slot9:R=清漆强度
+layout(binding = 14) uniform texture2D texClearcoatRough;  // slot10:G=清漆粗糙度
+layout(binding = 15) uniform texture2D texClearcoatNormal; // slot11:清漆法线(缺省平面法线占位)
+layout(binding = 16) uniform texture2D texSheenColor;      // slot12:RGB
+layout(binding = 17) uniform texture2D texSheenRough;      // slot13:A=粗糙度
+layout(binding = 18) uniform texture2D texSpecularColor;   // slot14:RGB
+layout(binding = 19) uniform texture2D texSpecular;        // slot15:A=specular 因子
+layout(binding = 23) uniform sampler smpMat;  // 共享材质采样器(线性+repeat;UV 差异 shader 内 clamp)
 
 layout(location = 0) out vec4 outColor;
 
@@ -112,10 +116,10 @@ float sheenV(float ndl, float ndv) {
 }
 
 void main() {
-  vec4 baseColor = texture(texBaseColor, vUV) * baseColorFactor;
+  vec4 baseColor = texture(sampler2D(texBaseColor, smpMat), vUV) * baseColorFactor;
   // alphaMode=MASK:cutoff(metallicRoughness.w)> 0 时按阈值裁剪
   if (metallicRoughness.w > 0.0 && baseColor.a < metallicRoughness.w) discard;
-  vec2 mr = texture(texMR, vUV).bg;   // glTF: G=roughness, B=metallic
+  vec2 mr = texture(sampler2D(texMR, smpMat), vUV).bg;   // glTF: G=roughness, B=metallic
   float metallic = clamp(mr.y * metallicRoughness.x, 0.0, 1.0);
   float roughness = clamp(mr.x * metallicRoughness.y, 0.03, 1.0);
 
@@ -123,7 +127,7 @@ void main() {
   vec3 n = normalize(vNormal);
   vec3 t = normalize(vTangent.xyz - n * dot(n, vTangent.xyz));
   vec3 b = cross(n, t) * vTangent.w;
-  vec3 nMap = (texture(texNormal, vUV).xyz * 2.0 - 1.0) *
+  vec3 nMap = (texture(sampler2D(texNormal, smpMat), vUV).xyz * 2.0 - 1.0) *
               vec3(metallicRoughness.z, metallicRoughness.z, 1.0);
   n = normalize(t * nMap.x + b * nMap.y + n * nMap.z);
 
@@ -137,9 +141,9 @@ void main() {
   const bool specIor = ext0.w != 1.0 || ext2.w != 1.5 ||
                        ext2.x != 1.0 || ext2.y != 1.0 || ext2.z != 1.0;
   if (specIor) {
-    specWeight = clamp(ext0.w * texture(texSpecular, vUV).a, 0.0, 1.0);
+    specWeight = clamp(ext0.w * texture(sampler2D(texSpecular, smpMat), vUV).a, 0.0, 1.0);
     vec3 specColor =
-        clamp(ext2.xyz * texture(texSpecularColor, vUV).rgb, vec3(0.0), vec3(1.0));
+        clamp(ext2.xyz * texture(sampler2D(texSpecularColor, smpMat), vUV).rgb, vec3(0.0), vec3(1.0));
     float k = (1.0 - ext2.w) / (1.0 + ext2.w);
     f0d = min(k * k * specColor, vec3(1.0));
   }
@@ -150,8 +154,8 @@ void main() {
   float sheenRough = 0.0;
   const bool sheenOn = max(max(ext1.x, ext1.y), ext1.z) > 0.0;
   if (sheenOn) {
-    sheenColor = ext1.xyz * texture(texSheenColor, vUV).rgb;
-    sheenRough = clamp(ext1.w * texture(texSheenRough, vUV).a, 0.03, 1.0);
+    sheenColor = ext1.xyz * texture(sampler2D(texSheenColor, smpMat), vUV).rgb;
+    sheenRough = clamp(ext1.w * texture(sampler2D(texSheenRough, smpMat), vUV).a, 0.03, 1.0);
   }
 
   // ---- KHR_materials_clearcoat(默认 factor=0 → 跳过)----
@@ -159,9 +163,9 @@ void main() {
   vec3 ncc = n;
   const bool ccOn = ext0.x > 0.0;
   if (ccOn) {
-    ccFactor = clamp(ext0.x * texture(texClearcoat, vUV).r, 0.0, 1.0);
-    ccRough = clamp(ext0.y * texture(texClearcoatRough, vUV).g, 0.03, 1.0);
-    vec3 nMapCc = (texture(texClearcoatNormal, vUV).xyz * 2.0 - 1.0) *
+    ccFactor = clamp(ext0.x * texture(sampler2D(texClearcoat, smpMat), vUV).r, 0.0, 1.0);
+    ccRough = clamp(ext0.y * texture(sampler2D(texClearcoatRough, smpMat), vUV).g, 0.03, 1.0);
+    vec3 nMapCc = (texture(sampler2D(texClearcoatNormal, smpMat), vUV).xyz * 2.0 - 1.0) *
                   vec3(ext0.z, ext0.z, 1.0);
     ncc = normalize(t * nMapCc.x + b * nMapCc.y + n * nMapCc.z);
   }
@@ -264,8 +268,8 @@ void main() {
     ccDirect += ccTerm * shadowF;
   }
 
-  float ao = mix(1.0, texture(texOcclusion, vUV).r, emissiveOcclusion.a);
-  vec3 emissive = texture(texEmissive, vUV).rgb * emissiveOcclusion.rgb;
+  float ao = mix(1.0, texture(sampler2D(texOcclusion, smpMat), vUV).r, emissiveOcclusion.a);
+  vec3 emissive = texture(sampler2D(texEmissive, smpMat), vUV).rgb * emissiveOcclusion.rgb;
 
   vec3 base = iblDiffuse + iblSpec + direct;
   if (sheenOn) {  // sheen 层:基层能量扣(kSheenAlbedo 拟合)+ sheen IBL

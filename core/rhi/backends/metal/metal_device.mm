@@ -161,6 +161,7 @@ struct PipelineRec {
   MTLPrimitiveType topology;
   MTLCullMode cull;
   id<MTLDepthStencilState> depthState = nil;  ///< 深度状态(depthTest/Write 时创建)
+  bool separate = false;  ///< pbr 族(分离采样器):分离槽共享 sampler(0)=smpMat
 };
 struct TargetRec {
   id<MTLTexture> color;
@@ -287,7 +288,7 @@ public:
     // ---- 能力上报(Apple GPU 家族判定)----
     caps_.set(Capability::max_texture_size,
               [device_ supportsFamily:MTLGPUFamilyApple3] ? 16384u : 8192u);
-    caps_.set(Capability::max_texture_slots, 16);  // slot0..15(KHR 扩展材质纹理)
+    caps_.set(Capability::max_texture_slots, 19);  // slot0..18(transmission 三槽)
     caps_.set(Capability::max_uniform_buffer_slots, 4);
     caps_.set(Capability::instancing, 1);
     caps_.set(Capability::msaa, 4);   // Apple 全家族支持 4x MSAA
@@ -411,8 +412,8 @@ public:
     if (auto it = pipelineCache_.find(key); it != pipelineCache_.end()) {
       PipelineHandle h(nextId_++);
       pipelines_.emplace(h, PipelineRec{it->second, toMTLTopology(desc.topology),
-                                        toMTLCull(desc.cullMode),
-                                        makeDepthState(desc)});
+                                        toMTLCull(desc.cullMode), makeDepthState(desc),
+                                        desc.separateSamplers});
       return h;
     }
 
@@ -468,7 +469,8 @@ public:
     pipelineCache_.emplace(key, state);
     PipelineHandle h(nextId_++);
     pipelines_.emplace(h, PipelineRec{state, toMTLTopology(desc.topology),
-                                      toMTLCull(desc.cullMode), makeDepthState(desc)});
+                                      toMTLCull(desc.cullMode), makeDepthState(desc),
+                                      desc.separateSamplers});
     return h;
   }
 
@@ -1040,14 +1042,15 @@ void MetalCommandBuffer::bindIndexBuffer(BufferHandle buffer, uint64_t offset, I
   indexType_ = type;
 }
 
-/// 绑定约定：texture slot N ↔ fragment texture(N+4)。
-/// sampler 参数上限 0..15：槽 12..15（索引 16..19）折返借用空闲 sampler 0..3
-/// （与 ShaderCompile.cmake 的 MSL sampler(N) 折返 sed 一致；0..3 此前空闲，
-/// 全部 shader 的 sampler 索引 = binding ≥ 4）。
+/// 绑定约定：texture slot N ↔ fragment texture(N+4)(≤ 18 → ≤ 22 < 31 上限)。
+/// sampler 参数上限 0..15:pbr 族(分离采样器)分离槽共享 sampler(0)(=smpMat,
+/// 与 fixup_msl_samplers 的 sampler(23)→sampler(0) 折返一致);combined 槽
+/// 5..8 用 index 9..12(cube/lut/shadow 在限内)。其余族:index = slot+4(4..7)。
 void MetalCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
                                      SamplerHandle sampler) {
   [encoder_ setFragmentTexture:device_->texture(texture) atIndex:slot + 4];
-  const uint32_t sIdx = slot < 12 ? slot + 4 : slot - 12;
+  const uint32_t sIdx =
+      (pipeline_.separate && !(slot >= 5 && slot <= 8)) ? 0 : slot + 4;
   [encoder_ setFragmentSamplerState:device_->sampler(sampler) atIndex:sIdx];
 }
 

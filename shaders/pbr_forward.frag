@@ -61,6 +61,9 @@ layout(binding = 16) uniform texture2D texSheenColor;      // slot12:RGB
 layout(binding = 17) uniform texture2D texSheenRough;      // slot13:A=粗糙度
 layout(binding = 18) uniform texture2D texSpecularColor;   // slot14:RGB
 layout(binding = 19) uniform texture2D texSpecular;        // slot15:A=specular 因子
+layout(binding = 20) uniform texture2D texTransmissionScene;  // slot16:场景色拷贝(mip 链)
+layout(binding = 21) uniform texture2D texTransmission;       // slot17:R=透射强度
+layout(binding = 22) uniform texture2D texThickness;          // slot18:G=厚度
 layout(binding = 23) uniform sampler smpMat;  // 共享材质采样器(线性+repeat;UV 差异 shader 内 clamp)
 
 layout(location = 0) out vec4 outColor;
@@ -173,6 +176,26 @@ void main() {
     ncc = normalize(t * nMapCc.x + b * nMapCc.y + n * nMapCc.z);
   }
 
+  // ---- KHR transmission + volume(默认 factor=0 → 跳过,零回归)----
+  float transFactor = 0.0;
+  vec3 transmitted = vec3(0.0);
+  const bool transOn = ext3.x > 0.0;
+  if (transOn) {
+    transFactor = clamp(ext3.x * texture(sampler2D(texTransmission, smpMat), vUV).r, 0.0, 1.0);
+    float thickness = ext3.y * texture(sampler2D(texThickness, smpMat), vUV).g;
+    vec2 suv = gl_FragCoord.xy * transmissionParams.xy;
+    vec3 refr = refract(-v, n, 1.0 / clamp(ext2.w, 1.001, 3.0));
+    // 屏幕空间折射偏移:薄壁小偏移,厚度放大(Khronos viewer 投影近似;clamp 抵消 repeat)
+    suv += refr.xy * max(thickness, 0.05) * transmissionParams.xy * 4.0;
+    float lod = roughness * transmissionParams.z;
+    transmitted = textureLod(sampler2D(texTransmissionScene, smpMat),
+                             clamp(suv, vec2(0.0), vec2(1.0)), lod).rgb;
+    if (ext3.z > 0.0 && thickness > 0.0) {  // Beer-Lambert 吸收
+      vec3 atten = clamp(ext4.xyz, vec3(1e-4), vec3(1.0));
+      transmitted *= exp(-log(atten) / ext3.z * thickness);
+    }
+  }
+
   // IBL(基层):SH diffuse + prefilter specular(split-sum)
   vec3 irradiance = evalIrradiance(n);
   vec3 iblDiffuse = irradiance * baseColor.rgb * (1.0 - metallic);
@@ -181,6 +204,7 @@ void main() {
   vec3 Fenv = f0 * brdf.x + brdf.y;
   vec3 iblSpec = prefiltered * Fenv;
   if (specIor) iblDiffuse *= (vec3(1.0) - specWeight * Fenv);  // 介质漫反射能量扣
+  if (transOn) iblDiffuse *= (1.0 - transFactor);  // 透射替换漫反射位
 
   // 多光源 direct(首盏方向光 + 首盏聚光投影阴影;阴影因子同施于扩展层)
   vec3 direct = vec3(0.0);
@@ -215,6 +239,7 @@ void main() {
     vec3 spec = ggxSpec(n, L, v, roughness, f0, fres);
     vec3 diffuse = baseColor.rgb * (1.0 - metallic) / PI;
     if (specIor) diffuse *= (vec3(1.0) - specWeight * fres);
+    if (transOn) diffuse *= (1.0 - transFactor);  // 透射替换漫反射位
     vec3 term = lcolor * att * ndl * (diffuse + spec);
     if (sheenOn) {  // sheen 瓣:Charlie D × Neubelt V
       vec3 h = normalize(L + v);
@@ -289,6 +314,10 @@ void main() {
     vec3 ccIbl = preCc * (0.04 * brdfCc.x + brdfCc.y);
     float Fcc = 0.04 + 0.96 * pow(1.0 - ndvCc, 5.0);
     base = base * (1.0 - ccFactor * Fcc) + (ccDirect + ccIbl) * ccFactor;
+  }
+  if (transOn) {  // 透射:入射面菲涅尔权重(高光保留在 base 中)
+    float fTrans = f0d.x + (1.0 - f0d.x) * pow(1.0 - ndv, 5.0);
+    base += transmitted * transFactor * (1.0 - fTrans);
   }
   vec3 color = base * ao + emissive;
   if (lightCount.y > 0.5) {

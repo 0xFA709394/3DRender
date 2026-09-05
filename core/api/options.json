@@ -45,5 +45,6 @@
     "doc": "阴影贴图边长(0=按画质档)"
   },
   "shadow.spot": {"type": "bool", "default": true, "doc": "聚光灯阴影开关(首盏聚光)"},
-  "render.ext_materials": {"type": "bool", "default": true, "doc": "KHR 材质扩展四件套(clearcoat/sheen/specular/ior)开关"}
+  "render.ext_materials": {"type": "bool", "default": true, "doc": "KHR 材质扩展四件套(clearcoat/sheen/specular/ior)开关"},
+  "render.transmission": {"type": "bool", "default": true, "doc": "KHR transmission/volume(透射/体积吸收)开关"}
 }

@@ -224,6 +224,7 @@ public:
                      uint32_t firstInstance) override;
   void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
                             uint32_t instanceCount, uint32_t firstInstance) override;
+  void generateMipmaps(TextureHandle tex) override;
   void endRenderPass() override;
 
   VulkanDevice* device_;
@@ -2098,6 +2099,58 @@ void VulkanCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t fir
                                                uint32_t firstInstance) {
   bindDescriptorForDraw();
   vkCmdDrawIndexed(cmd_, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+}
+
+/// 录制式 mip 链生成(pass 间隙调用;逐级 blit 录进当前 cmd_,submit 时按序执行;
+/// 逻辑与 Device::generateMipmaps 立即版一致,仅不重置/提交命令缓冲)。
+void VulkanCommandBuffer::generateMipmaps(TextureHandle tex) {
+  const TextureRec* rec = device_->texture(tex);
+  if (!rec || rec->mipLevels < 2) return;
+  TextureRec& tr = *const_cast<TextureRec*>(rec);
+  for (uint32_t face = 0; face < tr.faces; ++face) {
+    for (uint32_t mip = 1; mip < tr.mipLevels; ++mip) {
+      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      b.image = tr.image;
+      b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      b.oldLayout = tr.subLayouts[face * tr.mipLevels + mip - 1];
+      b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+      b.oldLayout = tr.subLayouts[face * tr.mipLevels + mip];
+      b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      b.srcAccessMask = 0;
+      b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+      VkImageBlit blit{};
+      blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, face, 1};
+      uint32_t sw = tr.width >> (mip - 1), sh = tr.height >> (mip - 1);
+      uint32_t dw = tr.width >> mip, dh = tr.height >> mip;
+      blit.srcOffsets[1] = {int32_t(sw ? sw : 1), int32_t(sh ? sh : 1), 1};
+      blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, face, 1};
+      blit.dstOffsets[1] = {int32_t(dw ? dw : 1), int32_t(dh ? dh : 1), 1};
+      vkCmdBlitImage(cmd_, tr.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tr.image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+      b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+      b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &b);
+      tr.subLayouts[face * tr.mipLevels + mip - 1] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, face, 1};
+      vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &b);
+      tr.subLayouts[face * tr.mipLevels + mip] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+  }
 }
 
 /**

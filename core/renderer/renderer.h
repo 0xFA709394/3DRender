@@ -97,6 +97,8 @@ public:
   void setSpotShadowEnabled(bool on) { spotEnabled_ = on; }
   /// KHR 扩展材质四件套开关(选项 render.ext_materials;与画质档为与关系)。
   void setExtMaterialsEnabled(bool on) { extMaterialsManual_ = on; }
+  /// KHR transmission/volume 开关(选项 render.transmission;与画质档为与关系)。
+  void setTransmissionEnabled(bool on) { transmissionManual_ = on; }
 
 private:
   static constexpr uint32_t kUboStride = kItemUboStride;      // 512(块 304B)
@@ -134,6 +136,7 @@ private:
   uint32_t iblSize_ = 64, iblMips_ = 5;       ///< 当前 IBL prefilter 参数
   Format colorFormat_ = Format::RGBA8_UNORM;  ///< init 记录(endScene 目标格式须一致)
   std::vector<uint8_t> pfVsCode_, pfFsCode_, eqFsCode_;  ///< env 重建暂存
+  std::vector<uint8_t> blitVsCode_, blitFsCode_;  ///< blit 系管线重建暂存(transmission 拷贝)
   std::string entry_;
   PipelineHandle blitPipeline_;
   BufferHandle blitUbo_;        // 16B:vec4(vFlip,0,0,0)
@@ -193,6 +196,8 @@ private:
   bool spotEnabled_ = true;       ///< 聚光灯阴影(默认开;首盏聚光)
   bool extMaterialsManual_ = true;    ///< KHR 扩展材质(选项 render.ext_materials)
   bool extMaterialsQuality_ = false;  ///< KHR 扩展材质(画质档;setQuality 写入)
+  bool transmissionManual_ = true;    ///< KHR transmission/volume(选项 render.transmission)
+  bool transmissionQuality_ = false;  ///< KHR transmission/volume(画质档;setQuality 写入)
   float compositeExposure_ = 1.0f;
   float shadowBias_ = 0.0015f;
   uint32_t shadowMapSizeOverride_ = 0;  ///< 0=按档
@@ -205,6 +210,17 @@ private:
   void destroyPostTargets();
   /// 按最终目标尺寸确保 fxaa 中间目标。
   bool ensureFxaaTarget(uint32_t w, uint32_t h);
+
+  // ---- transmission(P4-B 两段 pass)----
+  TargetHandle transTarget_;            ///< transTex mip0 拷贝目标(texture-backed)
+  TextureHandle transTex_;              ///< 场景颜色拷贝(全 mip 链,格式随 SceneTarget)
+  TextureHandle transPlaceholderTex_;   ///< 1x1 RGBA8 白(pass A 占位/降级)
+  PipelineHandle transBlitPipeline_;    ///< blit 管线的 sceneFormat_ 变体(拷贝进纹理)
+  SamplerHandle transSampler_;          ///< linear+mipmap(slot16 采样器状态)
+  uint32_t transW_ = 0, transH_ = 0, transMips_ = 0;
+  Format transFmt_ = Format::RGBA8_UNORM;
+  /// 按场景尺寸/格式确保 transmission 纹理(全 mip)与拷贝目标;变化重建。
+  bool ensureTransmissionTarget(uint32_t w, uint32_t h, Format fmt);
 };
 
 } // namespace rd

@@ -82,6 +82,8 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   pfVsCode_ = desc.prefilterVs;
   pfFsCode_ = desc.prefilterFs;
   eqFsCode_ = desc.equirectFs;
+  blitVsCode_ = desc.blitVs;
+  blitFsCode_ = desc.blitFs;
 
   // unlit 管线(shader 模块持有,场景管线随 SceneTarget 重建用)
   uvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.unlitVs, desc.entry});
@@ -215,6 +217,20 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
       dev.waitIdle();
       dev.destroyTarget(ft);
     }
+  }
+
+  // transmission 占位(1x1 白)与共享采样器(pass A 恒绑 slot16;关闭/降级路径)
+  {
+    TextureDesc ttd;
+    ttd.width = 1;
+    ttd.height = 1;
+    ttd.format = Format::RGBA8_UNORM;
+    ttd.usage = TextureUsage::Sampled;
+    const uint8_t white[4] = {255, 255, 255, 255};
+    ttd.data = white;
+    ttd.dataSize = 4;
+    transPlaceholderTex_ = dev.createTexture(ttd);
+    transSampler_ = dev.createSampler({});  // linear+mipmap(与 mesh sampler 同状态)
   }
 
   // PostChain 管线(vert 复用 blit;extract/blur 输出 R16F,composite/fxaa 输出目标格式)
@@ -486,6 +502,11 @@ void Renderer::shutdown() {
   if (jointUbo_.valid()) dev_->destroyBuffer(jointUbo_);
   if (frameUbo_.valid()) dev_->destroyBuffer(frameUbo_);
   if (itemUbo_.valid()) dev_->destroyBuffer(itemUbo_);
+  if (transTarget_.valid()) dev_->destroyTarget(transTarget_);
+  if (transTex_.valid()) dev_->destroyTexture(transTex_);
+  if (transPlaceholderTex_.valid()) dev_->destroyTexture(transPlaceholderTex_);
+  if (transBlitPipeline_.valid()) dev_->destroyPipeline(transBlitPipeline_);
+  if (transSampler_.valid()) dev_->destroySampler(transSampler_);
   fxaaTarget_ = {};
   blurUbo1_ = blurUbo2_ = blurUbo3_ = fxaaUbo_ = compositeUbo_ = {};
   extractPipeline_ = blurPipeline_ = compositePipeline_ = fxaaPipeline_ = {};
@@ -574,6 +595,7 @@ void Renderer::setQuality(const QualityPreset& q) {
   postEnabled_ = wantPost && dev_->caps().supports(Capability::hdr_render_target);
   fxaaEnabled_ = q.fxaaEnabled != 0;
   extMaterialsQuality_ = q.extMaterials != 0;
+  transmissionQuality_ = q.transmission != 0;
   if (q.iblPrefilterSize != iblSize_ || q.iblPrefilterMips != iblMips_) {
     iblSize_ = q.iblPrefilterSize;
     iblMips_ = q.iblPrefilterMips;
@@ -611,6 +633,50 @@ TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
   sceneSamples_ = samples;
   sceneFormat_ = fmt;
   return sceneTarget_;
+}
+
+bool Renderer::ensureTransmissionTarget(uint32_t w, uint32_t h, Format fmt) {
+  if (transTex_.valid() && w == transW_ && h == transH_ && fmt == transFmt_) return true;
+  if (transTarget_.valid()) dev_->destroyTarget(transTarget_);
+  if (transTex_.valid()) dev_->destroyTexture(transTex_);
+  if (transBlitPipeline_.valid()) dev_->destroyPipeline(transBlitPipeline_);
+  transBlitPipeline_ = {};
+  const uint32_t mips =
+      1 + uint32_t(std::floor(std::log2(float(std::max(w, h)))));
+  TextureDesc td;
+  td.width = w;
+  td.height = h;
+  td.format = fmt;
+  td.usage = TextureUsage::Sampled | TextureUsage::RenderTargetAttachment;
+  td.mipLevels = mips;
+  transTex_ = dev_->createTexture(td);
+  OffscreenTargetDesc od;
+  od.width = w;
+  od.height = h;
+  od.colorFromTexture = transTex_;
+  od.mipLevel = 0;
+  transTarget_ = dev_->createOffscreenTarget(od);
+  if (!transTex_.valid() || !transTarget_.valid()) {
+    RD_LOGE("renderer", "transmission 纹理/目标创建失败(%ux%u fmt=%d)", w, h, int(fmt));
+    return false;
+  }
+  // 拷贝管线:blit 系(scene 颜色 → transTex mip0),格式随场景(R16F/RGBA8)
+  auto vs = dev_->createShaderModule({ShaderStage::Vertex, blitVsCode_, entry_});
+  auto fs = dev_->createShaderModule({ShaderStage::Fragment, blitFsCode_, entry_});
+  PipelineDesc pd;
+  pd.vertexShader = vs;
+  pd.fragmentShader = fs;
+  pd.cullMode = CullMode::None;
+  pd.colorFormat = fmt;
+  transBlitPipeline_ = dev_->createPipeline(pd);
+  dev_->destroyShaderModule(vs);
+  dev_->destroyShaderModule(fs);
+  if (!transBlitPipeline_.valid()) return false;
+  transW_ = w;
+  transH_ = h;
+  transMips_ = mips;
+  transFmt_ = fmt;
+  return true;
 }
 
 void Renderer::destroyPostTargets() {
@@ -757,20 +823,29 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
 
 void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   const uint32_t count = uint32_t(queue_.size());
-  // opaque/blend 分区排序:opaque 先;blend 按视距远→近(正确透明叠加)
+  // opaque → transmission → blend 三分区:前者和后者均按视距远→近;opaque 保提交序
+  const bool transOn = transmissionManual_ && transmissionQuality_;
   std::vector<uint32_t> order(count);
   for (uint32_t i = 0; i < count; ++i) order[i] = i;
-  auto isBlend = [&](uint32_t i) {
+  auto matOf = [&](uint32_t i) -> const MaterialData* {
     const auto* r = static_cast<const MeshRenderable*>(queue_[i].get());
-    return !r->meshData().empty() && r->meshData()[0].material.alphaBlend;
+    return r->meshData().empty() ? nullptr : &r->meshData()[0].material;
+  };
+  auto tierOf = [&](uint32_t i) {
+    const MaterialData* m = matOf(i);
+    if (!m) return 0;
+    if (m->alphaBlend) return 2;
+    if (transOn && m->transmissionFactor > 0.0f) return 1;
+    return 0;
   };
   std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-    const bool ba = isBlend(a), bb = isBlend(b);
-    if (ba != bb) return !ba;
+    const int ta = tierOf(a), tb = tierOf(b);
+    if (ta != tb) return ta < tb;
+    if (ta == 0) return false;  // opaque 稳定(保提交序)
     const math::Vec4 e(cameraEye_, 1.0f);
     const float da = glm::dot(worldStack_[a][3] - e, worldStack_[a][3] - e);
     const float db = glm::dot(worldStack_[b][3] - e, worldStack_[b][3] - e);
-    return da > db;
+    return da > db;  // transmission/blend 按视距远→近
   });
 
   // ---- LightUBO 填充(无灯 → 默认 1 方向光,与 2b/2c 现状一致)----
@@ -905,12 +980,14 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
         iu.ext2[1] = mm.specularColorFactor[1];
         iu.ext2[2] = mm.specularColorFactor[2];
         iu.ext2[3] = mm.ior;
-        iu.ext3[0] = mm.transmissionFactor;
-        iu.ext3[1] = mm.thicknessFactor;
-        iu.ext3[2] = mm.attenuationDistance;
-        iu.ext4[0] = mm.attenuationColor[0];
-        iu.ext4[1] = mm.attenuationColor[1];
-        iu.ext4[2] = mm.attenuationColor[2];
+        if (transOn) {  // transmission 门控:关闭时零值(零操作)
+          iu.ext3[0] = mm.transmissionFactor;
+          iu.ext3[1] = mm.thicknessFactor;
+          iu.ext3[2] = mm.attenuationDistance;
+          iu.ext4[0] = mm.attenuationColor[0];
+          iu.ext4[1] = mm.attenuationColor[1];
+          iu.ext4[2] = mm.attenuationColor[2];
+        }
       } else {
         iu.ext0[2] = 1.0f;   // clearcoatNormalScale 默认
         iu.ext0[3] = 1.0f;   // specularFactor 默认
@@ -1012,6 +1089,16 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   } else {
     ensureScenePipelines(colorFormat_, 1);
   }
+  // 预判:可见集中是否存在 transmission 项(决定是否拆两段 pass)
+  bool anyTrans = false;
+  for (uint32_t idx : camVis)
+    if (tierOf(idx) == 1) {
+      anyTrans = true;
+      break;
+    }
+  const bool splitPass = anyTrans && ensureTransmissionTarget(sceneW_, sceneH_, sceneFormat_);
+  if (anyTrans && !splitPass) RD_LOGW("renderer", "transmission 目标不可用,透射项按 opaque 渲染");
+
   cmd->beginRenderPass(scene, clear_);
   // 天空盒:场景 pass 首画(depthTest/Write 关;后续物体正常覆盖)
   if (skyboxEnabled_ && skyboxPipeline_.valid() && skyboxVb_.valid() &&
@@ -1048,20 +1135,25 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.skinnedShadowPipe = skinnedShadowPipeline_;
   ctx.blendPipeline = blendPipeline_;
   ctx.jointUbo = jointUbo_;
+  ctx.transSceneTex = transPlaceholderTex_;  // pass A 占位(透射采样只在 pass B)
+  ctx.transSampler = transSampler_;
   for (uint32_t vi = 0; vi < camVis.size();) {
     const uint32_t idx = camVis[vi];
     auto* r = static_cast<MeshRenderable*>(queue_[idx].get());
-    // 实例化分组:同资源 + 非蒙皮 + 非 blend 的相邻可见项(组 ≥2 才合并)
+    // 实例化分组:同资源 + 非蒙皮 + 非 blend + 非 transmission 的相邻可见项(组 ≥2)
     uint32_t groupEnd = vi + 1;
-    const void* rid = r && !r->meshData().empty() && !r->meshData()[0].skinned &&
-                              !r->meshData()[0].material.alphaBlend
-                          ? r->resourceId()
-                          : nullptr;
+    const void* rid =
+        r && !r->meshData().empty() && !r->meshData()[0].skinned &&
+                !r->meshData()[0].material.alphaBlend &&
+                !(transOn && r->meshData()[0].material.transmissionFactor > 0.0f)
+            ? r->resourceId()
+            : nullptr;
     if (rid && instancedPipeline_.valid())
       while (groupEnd < camVis.size() && groupEnd - vi < kMaxInstGroup) {
         auto* n = static_cast<MeshRenderable*>(queue_[camVis[groupEnd]].get());
         if (!n || n->resourceId() != rid || n->meshData().empty() ||
-            n->meshData()[0].skinned || n->meshData()[0].material.alphaBlend)
+            n->meshData()[0].skinned || n->meshData()[0].material.alphaBlend ||
+            (transOn && n->meshData()[0].material.transmissionFactor > 0.0f))
           break;
         ++groupEnd;
       }
@@ -1072,7 +1164,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       cmd->bindPipeline(instancedPipeline_);
       cmd->bindUniformBuffer(0, frameUbo_, 0, 272);
       cmd->bindUniformBuffer(1, itemUbo_, uint64_t(slotBase) * kUboStride,
-                           uint64_t(groupSize) * kUboStride);
+                            uint64_t(groupSize) * kUboStride);
       cmd->bindUniformBuffer(2, lightUbo_, 0, 352);
       // 纹理/缓冲取组首项资源(同资源全组共享)
       const auto& meshes = r->meshData();
@@ -1097,11 +1189,19 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
         cmd->bindTexture(13, g.sheenRoughTex, sampler);
         cmd->bindTexture(14, g.specularColorTex, sampler);
         cmd->bindTexture(15, g.specularTex, sampler);
+        if (ctx.transSceneTex.valid())
+          cmd->bindTexture(16, ctx.transSceneTex, transSampler_);
         cmd->bindVertexBuffer(0, g.vbo, 0);
         cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
         cmd->drawIndexedInstanced(g.indexCount, 0, 0, groupSize, 0);
       }
       vi = groupEnd;
+      continue;
+    }
+    // ---- pass A 单段路径:非拆分时 blend 项也在本 pass(零回归);
+    // 拆分时 transmission/blend 均延后到 pass B ----
+    if (splitPass && tierOf(idx) != 0) {
+      ++vi;
       continue;
     }
     queue_[idx]->prepass(cmd);  // 2b 钩子(默认空)
@@ -1113,6 +1213,33 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     ++vi;
   }
   cmd->endRenderPass();
+  // ---- pass B:transmission + blend(load 续画)----
+  if (splitPass) {
+    // 拷贝链:blit(scene 颜色 → transTex mip0)→ 录制式 mip 链生成
+    cmd->beginRenderPass(transTarget_, clear_);
+    cmd->bindPipeline(transBlitPipeline_);
+    const float vf = dev_->backend() == Backend::GLES ? 1.0f : 0.0f;
+    const float bp[4] = {vf, 0.0f, 0.0f, 0.0f};
+    dev_->updateBuffer(blitUbo_, bp, sizeof(bp), 0);
+    cmd->bindUniformBuffer(0, blitUbo_, 0, 16);
+    cmd->bindTexture(0, dev_->targetColorTexture(scene), blitSampler_);
+    cmd->draw(3, 0);
+    cmd->endRenderPass();
+    cmd->generateMipmaps(transTex_);
+    // FrameUBO transmissionParams(texel/maxLod;偏移 256 处 16B 局部更新)
+    const float tp[4] = {1.0f / float(sceneW_), 1.0f / float(sceneH_),
+                         float(transMips_) - 1.0f, 0.0f};
+    dev_->updateBuffer(frameUbo_, tp, sizeof(tp), 256);
+    cmd->beginRenderPass(scene, clear_, /*loadContent=*/true);
+    ctx.transSceneTex = transTex_;  // pass B 绑真图(透射折射采样)
+    for (uint32_t idx : camVis)  // 先 transmission 后 blend(order 已排)
+      if (tierOf(idx) == 1 || tierOf(idx) == 2) {
+        ctx.itemOffset = uint64_t(slotOf[idx]) * kUboStride;
+        ctx.jointOffset = jointSlot_[idx] >= 0 ? uint64_t(jointSlot_[idx]) * kJointItemStride : 0;
+        queue_[idx]->record(cmd, ctx);
+      }
+    cmd->endRenderPass();
+  }
   if (scene != target) {
     const bool postActive = postEnabled_ && ensurePostTargets(sceneW_, sceneH_);
     if (postActive) {

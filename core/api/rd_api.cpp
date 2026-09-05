@@ -144,6 +144,7 @@ void applyOptions(rd_engine* e) {
   e->renderer.setShadowBias(o.shadow.bias);
   e->renderer.setSpotShadowEnabled(o.shadow.spot);
   e->renderer.setExtMaterialsEnabled(o.render.ext_materials);
+  e->renderer.setTransmissionEnabled(o.render.transmission);
   e->renderer.setSkyboxEnabled(o.env.skybox);
   e->renderer.setFrustumCulling(o.render.frustum_culling);
   e->renderer.setEnvYaw(o.env.yaw_deg);

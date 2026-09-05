@@ -212,6 +212,7 @@ public:
                      uint32_t firstInstance) override;
   void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
                             uint32_t instanceCount, uint32_t firstInstance) override;
+  void generateMipmaps(TextureHandle tex) override;
   /// pass 结束:MSAA 目标录制一条 resolve blit(回放期执行);
   /// 非 MSAA 无动作(回放模型下清屏/绑定都已在 beginRenderPass 闭包内)。
   void endRenderPass() override {
@@ -544,6 +545,19 @@ void GLESCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t first
                             reinterpret_cast<const void*>(
                                 uintptr_t(ioff + firstIndex * (u16 ? 2 : 4))),
                             GLsizei(instanceCount));
+  });
+}
+
+/// 录制式 mip 链生成(进回放队列,时序与已录命令严格一致)。
+void GLESCommandBuffer::generateMipmaps(TextureHandle tex) {
+  const TextureRec* rec = device_->textureRec(tex);
+  if (!rec || rec->mipLevels < 2) return;
+  TextureRec t = *rec;  // 快照(target/tex id)
+  cmds_.emplace_back([t] {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(t.target, t.tex);
+    glGenerateMipmap(t.target);
+    glBindTexture(t.target, 0);
   });
 }
 

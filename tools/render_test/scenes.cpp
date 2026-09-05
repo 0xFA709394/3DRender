@@ -16,7 +16,8 @@ const char* const kNames[] = {"material_balls", "cornell_box", "light_playground
                               "sponza",         "cesium_man",
                               "emissive_bloom", "normal_map_wall",
                               "shadow_gallery", "ktx2_gallery", "alpha_blend",
-                              "fox_anim",       "material_ext_gallery"};
+                              "fox_anim",       "material_ext_gallery",
+                              "transmission_gallery"};
 
 /// 单 mesh ModelAsset 包装(材质参数由调用方设)。
 ModelAsset wrapMesh(MeshData&& mesh) {
@@ -432,6 +433,59 @@ bool buildMaterialExtGallery(Device& dev, DemoScene& out) {
   return true;
 }
 
+// 透射画廊:棋盘地板 + 三球(清玻璃/毛玻璃/红吸收);KHR transmission/volume 演示
+void buildTransmissionGallery(Device& dev, DemoScene& out) {
+  // 棋盘地板:6×6 黑白格(两种材质的薄盒;+3 球 = 39 项 < 64 上限)
+  const float cell = 0.5f, y0 = -0.001f;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 6; ++j) {
+      auto mesh = primitives::makeBox(cell * 0.98f, 0.02f, cell * 0.98f);
+      const bool white = (i + j) % 2 == 0;
+      mesh.material.baseColorFactor[0] = mesh.material.baseColorFactor[1] =
+          mesh.material.baseColorFactor[2] = white ? 0.92f : 0.08f;
+      mesh.material.roughnessFactor = 0.85f;
+      mesh.material.metallicFactor = 0.0f;
+      math::Mat4 w =
+          glm::translate(math::Mat4(1.0f),
+                         math::Vec3((i - 2.5f) * cell, y0, (j - 2.5f) * cell));
+      uploadInto(dev, wrapMesh(std::move(mesh)), out, w);
+    }
+  // 三球:清玻璃(t=1,rough=0)/毛玻璃(t=1,rough=0.45)/红吸收
+  // (t=1,rough=0,thickness=2,attenColor=(0.9,0.1,0.1),attenDist=0.5)
+  struct Ball {
+    float x;
+    float rough;
+    float thickness;
+    float atten[3];
+    float attenDist;
+  };
+  const Ball balls[] = {
+      {-1.2f, 0.0f, 0.0f, {1, 1, 1}, 0.0f},
+      {0.0f, 0.45f, 0.0f, {1, 1, 1}, 0.0f},
+      {1.2f, 0.0f, 2.0f, {0.9f, 0.1f, 0.1f}, 0.5f},
+  };
+  for (const auto& b : balls) {
+    auto mesh = primitives::makeSphere(0.5f, 48, 24);
+    mesh.material.transmissionFactor = 1.0f;
+    mesh.material.roughnessFactor = b.rough;
+    mesh.material.metallicFactor = 0.0f;
+    mesh.material.thicknessFactor = b.thickness;
+    mesh.material.attenuationColor[0] = b.atten[0];
+    mesh.material.attenuationColor[1] = b.atten[1];
+    mesh.material.attenuationColor[2] = b.atten[2];
+    mesh.material.attenuationDistance = b.attenDist;
+    uploadInto(dev, wrapMesh(std::move(mesh)), out,
+               glm::translate(math::Mat4(1.0f), math::Vec3(b.x, 0.5f, 0)));
+  }
+  LightData dir;  // 默认方向光,高光/透射对比可见
+  dir.color[0] = dir.color[1] = dir.color[2] = 3.0f;
+  out.lights.push_back(dir);
+  out.camera.lookAt({0, 1.1f, 4.4f}, {0, 0.5f, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 50.0f);
+  out.framingCenter[1] = 0.5f;
+  out.framingRadius = 2.4f;
+}
+
 } // namespace
 
 const char* const* demoSceneNames(uint32_t& count) {
@@ -470,6 +524,8 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
     if (!buildFamousGlb(dev, out, modelStorage, "Fox.glb", true)) return false;
   } else if (n == "material_ext_gallery") {
     if (!buildMaterialExtGallery(dev, out)) return false;
+  } else if (n == "transmission_gallery") {
+    buildTransmissionGallery(dev, out);
   } else {
     RD_LOGE("demo.scene", "未知场景: %s", name);
     return false;

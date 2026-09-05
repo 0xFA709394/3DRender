@@ -72,8 +72,11 @@ struct BufferRec { VkBuffer buffer; VkDeviceMemory memory; bool hostVisible = fa
 struct ShaderRec { VkShaderModule module; ShaderStage stage; std::string entry; };
 /// 缓存的底层管线对象:VkPipeline + 拓扑/剔除缓存。
 struct CachedPipeline { VkPipeline pipeline; VkPrimitiveTopology topology; VkCullModeFlags cull; };
-/// 管线:共享底层对象引用(缓存持有本体,句柄表只持引用)。
-struct PipelineRec { std::shared_ptr<CachedPipeline> cached; };
+/// 管线:共享底层对象引用(缓存持有本体,句柄表只持引用);separate=分离采样器布局族。
+struct PipelineRec {
+  std::shared_ptr<CachedPipeline> cached;
+  bool separate = false;
+};
 
 /// 管线缓存 key:影响 VkPipeline 创建的全部参数(shader 句柄值 + 状态 + 顶点布局)。
 struct PipelineKey {
@@ -85,6 +88,7 @@ struct PipelineKey {
   uint32_t srcColor = 0, dstColor = 0, srcAlpha = 0, dstAlpha = 0;
   uint32_t colorFormat = 0;
   uint32_t sampleCount = 1;
+  bool separate = false;  ///< 布局族(pbr 分离采样器/其余 combined)
   std::vector<VertexBinding> bindings;
   std::vector<VertexAttribute> attribs;
   bool operator==(const PipelineKey& o) const {
@@ -93,7 +97,8 @@ struct PipelineKey {
            depthCompare == o.depthCompare &&
            blendEnable == o.blendEnable && srcColor == o.srcColor && dstColor == o.dstColor &&
            srcAlpha == o.srcAlpha && dstAlpha == o.dstAlpha && colorFormat == o.colorFormat &&
-           sampleCount == o.sampleCount && bindings == o.bindings && attribs == o.attribs;
+           sampleCount == o.sampleCount && separate == o.separate &&
+           bindings == o.bindings && attribs == o.attribs;
   }
 };
 struct PipelineKeyHash {
@@ -103,6 +108,7 @@ struct PipelineKeyHash {
     mix(k.topology); mix(k.cull); mix(k.colorFormat); mix(k.sampleCount);
     mix(k.depthTest); mix(k.depthWrite); mix(k.depthCompare); mix(k.blendEnable);
     mix(k.srcColor); mix(k.dstColor); mix(k.srcAlpha); mix(k.dstAlpha);
+    mix(k.separate);
     for (const auto& b : k.bindings) {
       mix((size_t(b.binding) << 8) | b.stride);
       mix(uint32_t(b.stepRate));
@@ -180,12 +186,15 @@ struct TextureRec {
 struct SamplerRec { VkSampler sampler = VK_NULL_HANDLE; };
 
 /// 每 draw 的绑定状态 key(POD;memcmp 比较,须零初始化构造)。
+/// slot 0..18(19 槽):pbr 族分离槽只写 view(combined 槽 5..8 额外记 sampler)。
 struct DescriptorKey {
   VkBuffer ubo[4];
   uint64_t uboOffset[4];
   uint64_t uboSize[4];
-  VkImageView texView[16];
-  VkSampler texSampler[16];
+  VkImageView texView[19];
+  VkSampler texSampler[19];               // 仅 combined 槽 5..8 有效
+  VkSampler sharedSampler = VK_NULL_HANDLE;  // pbr 族:binding 23(smpMat 状态)
+  bool pbrFamily = false;                 // 布局族(键维度)
   bool operator<(const DescriptorKey& o) const {
     return memcmp(this, &o, sizeof(DescriptorKey)) < 0;
   }
@@ -317,6 +326,8 @@ public:
   /// 按绑定状态 find-or-create descriptor set(创建时一次性写入全部非空绑定)。
   VkDescriptorSet descriptorSetFor(const DescriptorKey& key);
   VkPipelineLayout pipelineLayout() const { return pipelineLayout_; }
+  /// pbr 族布局(分离采样器;PipelineRec::separate 管线用)
+  VkPipelineLayout pbrPipelineLayout() const { return pbrPipelineLayout_; }
   VkDevice device() const { return device_; }
   /// 录制子资源 layout 转换 barrier 到指定命令缓冲(并更新 subLayouts 追踪)。
   void recordTextureTransition(VkCommandBuffer cmd, TextureHandle tex, uint32_t face,
@@ -380,6 +391,9 @@ private:
   /// descriptor set 缓存(按绑定状态;池耗尽前不回收,帧内异构绑定组合有限)
   std::map<DescriptorKey, VkDescriptorSet> descSetCache_;
   VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;  ///< 全局唯一管线布局(所有管线共享 setLayout_)
+  /// pbr 族布局(分离采样器):pbr_forward 系管线用;blit/post/unlit/shadow 族仍走 combined
+  VkDescriptorSetLayout pbrSetLayout_ = VK_NULL_HANDLE;
+  VkPipelineLayout pbrPipelineLayout_ = VK_NULL_HANDLE;
   /// 管线缓存:缓存持有底层 VkPipeline 本体,句柄表只持 shared_ptr 引用
   std::unordered_map<PipelineKey, std::shared_ptr<CachedPipeline>, PipelineKeyHash>
       pipelineCache_;
@@ -474,7 +488,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
     VkPhysicalDeviceFeatures physFeats;
     vkGetPhysicalDeviceFeatures(phys_, &physFeats);
     caps_.set(Capability::max_texture_size, physProps.limits.maxImageDimension2D);
-    caps_.set(Capability::max_texture_slots, 16);  // slot0..15(KHR 扩展材质纹理)
+    caps_.set(Capability::max_texture_slots, 19);  // slot0..18(transmission 三槽)
     caps_.set(Capability::max_uniform_buffer_slots, kMaxUniformSlots);
     caps_.set(Capability::instancing, 1);  // Vulkan 核心能力
     // framebufferColorSampleCounts 是位掩码,取不超过 4 的最高档
@@ -576,10 +590,12 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   VkDescriptorPoolSize poolSizes[] = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxUniformSlots * kMaxDescSets},
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 * kMaxDescSets},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 15 * kMaxDescSets},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, kMaxDescSets},
   };
   VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   dpci.maxSets = kMaxDescSets;
-  dpci.poolSizeCount = 2;
+  dpci.poolSizeCount = 4;
   dpci.pPoolSizes = poolSizes;
   VK_CHECK(vkCreateDescriptorPool(device_, &dpci, nullptr, &descPool_));
 
@@ -588,6 +604,37 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   plci.setLayoutCount = 1;
   plci.pSetLayouts = &setLayout_;
   VK_CHECK(vkCreatePipelineLayout(device_, &plci, nullptr, &pipelineLayout_));
+
+  // pbr 族布局(分离采样器模型):binding 0..3 UBO;
+  // 4..8/13..22 = SAMPLED_IMAGE(slot 0..4,9..18 分离纹理,每阶段 sampler 上限 16
+  // 的出路——MoltenVK/Metal 实测 maxPerStageDescriptorSamplers=16);
+  // 9..12 = COMBINED(slot 5..8 cube/lut/shadow,采样器状态特殊);
+  // 23 = SAMPLER(共享 smpMat = mesh sampler 状态)
+  VkDescriptorSetLayoutBinding pb[24]{};
+  for (uint32_t i = 0; i < kMaxUniformSlots; ++i) {
+    pb[i].binding = i;
+    pb[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pb[i].descriptorCount = 1;
+    pb[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  }
+  auto setPb = [&](uint32_t b, VkDescriptorType t) {
+    pb[b].binding = b;
+    pb[b].descriptorType = t;
+    pb[b].descriptorCount = 1;
+    pb[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  };
+  for (uint32_t s = 0; s <= 4; ++s) setPb(4 + s, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+  for (uint32_t s = 5; s <= 8; ++s) setPb(4 + s, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+  for (uint32_t s = 9; s <= 18; ++s) setPb(4 + s, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+  setPb(23, VK_DESCRIPTOR_TYPE_SAMPLER);
+  VkDescriptorSetLayoutCreateInfo pbci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  pbci.bindingCount = 24;
+  pbci.pBindings = pb;
+  VK_CHECK(vkCreateDescriptorSetLayout(device_, &pbci, nullptr, &pbrSetLayout_));
+  VkPipelineLayoutCreateInfo pblci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  pblci.setLayoutCount = 1;
+  pblci.pSetLayouts = &pbrSetLayout_;
+  VK_CHECK(vkCreatePipelineLayout(device_, &pblci, nullptr, &pbrPipelineLayout_));
 
   VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   VK_CHECK(vkCreateFence(device_, &fci, nullptr, &acquireFence_));
@@ -607,15 +654,15 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
   VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   dsai.descriptorPool = descPool_;
   dsai.descriptorSetCount = 1;
-  dsai.pSetLayouts = &setLayout_;
+  dsai.pSetLayouts = key.pbrFamily ? &pbrSetLayout_ : &setLayout_;
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (vkAllocateDescriptorSets(device_, &dsai, &set) != VK_SUCCESS) {
     RD_LOGE("rhi.vk", "descriptor 池耗尽(绑定组合过多)");
     return VK_NULL_HANDLE;
   }
-  VkWriteDescriptorSet writes[20]{};
+  VkWriteDescriptorSet writes[24]{};
   VkDescriptorBufferInfo uboInfos[4]{};
-  VkDescriptorImageInfo imgInfos[16]{};
+  VkDescriptorImageInfo imgInfos[20]{};  // 19 槽 + smpMat(binding 23)
   uint32_t count = 0;
   for (uint32_t i = 0; i < 4; ++i) {
     if (key.ubo[i] == VK_NULL_HANDLE) continue;
@@ -628,7 +675,7 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
     w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     w.pBufferInfo = &uboInfos[i];
   }
-  for (uint32_t i = 0; i < 16; ++i) {
+  for (uint32_t i = 0; i < 19; ++i) {
     if (key.texView[i] == VK_NULL_HANDLE) continue;
     imgInfos[i] = {key.texSampler[i], key.texView[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     auto& w = writes[count++];
@@ -636,8 +683,24 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
     w.dstSet = set;
     w.dstBinding = i + 4;
     w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    // pbr 族:槽 5..8(combined,cube/lut/shadow 状态特殊)之外的槽为分离
+    //   SAMPLED_IMAGE(sampler=共享 smpMat@23;view 未绑的 binding 跳过不写,
+    //   布局声明多于 shader 实际使用合法)。
+    // 其余族:combined。
+    w.descriptorType = (key.pbrFamily && !(i >= 5 && i <= 8))
+                           ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                           : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w.pImageInfo = &imgInfos[i];
+  }
+  if (key.pbrFamily && key.sharedSampler != VK_NULL_HANDLE) {
+    imgInfos[19] = {key.sharedSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    auto& w = writes[count++];
+    w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = set;
+    w.dstBinding = 23;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    w.pImageInfo = &imgInfos[19];
   }
   if (count > 0) vkUpdateDescriptorSets(device_, count, writes, 0, nullptr);
   descSetCache_.emplace(key, set);
@@ -836,8 +899,10 @@ VulkanDevice::~VulkanDevice() {
     vkDestroyPipeline(device_, kv.second->pipeline, nullptr);
   pipelineCache_.clear();
   vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
+  vkDestroyPipelineLayout(device_, pbrPipelineLayout_, nullptr);
   vkDestroyDescriptorPool(device_, descPool_, nullptr);
   vkDestroyDescriptorSetLayout(device_, setLayout_, nullptr);
+  vkDestroyDescriptorSetLayout(device_, pbrSetLayout_, nullptr);
   for (auto& kv : renderPasses_) vkDestroyRenderPass(device_, kv.second, nullptr);
   renderPasses_.clear();
   vkDestroyCommandPool(device_, cmdPool_, nullptr);
@@ -1059,11 +1124,12 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   key.dstAlpha = uint32_t(desc.blend.dstAlpha);
   key.colorFormat = uint32_t(desc.colorFormat);
   key.sampleCount = desc.sampleCount;
+  key.separate = desc.separateSamplers;
   key.bindings = desc.vertexBindings;
   key.attribs = desc.attributes;
   if (auto it = pipelineCache_.find(key); it != pipelineCache_.end()) {
     PipelineHandle h(nextId_++);
-    pipelines_.emplace(h, PipelineRec{it->second});
+    pipelines_.emplace(h, PipelineRec{it->second, desc.separateSamplers});
     return h;
   }
 
@@ -1160,7 +1226,9 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   gpci.pDepthStencilState = &ds;
   gpci.pColorBlendState = &cb;
   gpci.pDynamicState = &dyn;
-  gpci.layout = pipelineLayout_;  // 全局唯一管线布局
+  // 布局族:pbr 族(分离采样器)用 pbrPipelineLayout_,其余沿用全局 combined 布局
+  const bool separate = desc.separateSamplers;
+  gpci.layout = separate ? pbrPipelineLayout_ : pipelineLayout_;
   // 深度性/采样数须与 render pass 匹配:按 (格式,深度,采样数) 取缓存 pass;
   // depthOnly 管线用 depth-only pass(UNDEFINED 键)
   const bool useDepth = desc.depthTest || desc.depthWrite || desc.depthOnly;
@@ -1178,7 +1246,7 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc) {
   auto cached = std::make_shared<CachedPipeline>(CachedPipeline{pipeline, topology, cull});
   pipelineCache_.emplace(std::move(key), cached);
   PipelineHandle h(nextId_++);
-  pipelines_.emplace(h, PipelineRec{std::move(cached)});
+  pipelines_.emplace(h, PipelineRec{std::move(cached), separate});
   return h;
 }
 
@@ -1924,8 +1992,10 @@ void VulkanCommandBuffer::bindPipeline(PipelineHandle pipeline) {
   PipelineRec rec;
   if (!device_->pipeline(pipeline, rec)) return;
   vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rec.cached->pipeline);
-  currentLayout_ = device_->pipelineLayout();
+  currentLayout_ = rec.separate ? device_->pbrPipelineLayout() : device_->pipelineLayout();
   topology_ = rec.cached->topology;
+  bound_ = DescriptorKey{};  // 换管线(可能换布局族):绑定状态作废重录
+  bound_.pbrFamily = rec.separate;
 }
 
 void VulkanCommandBuffer::bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) {
@@ -1938,15 +2008,20 @@ void VulkanCommandBuffer::bindIndexBuffer(BufferHandle buffer, uint64_t offset, 
                        type == IndexType::UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 }
 
-/// 绑定约定：texture slot N ↔ set0 binding(N+4) combined-image-sampler；
-/// 只记录绑定状态,descriptor set 在 draw 时按状态缓存命中/创建后绑定。
+/// 绑定约定：texture slot N ↔ set0 binding(N+4)。
+/// pbr 族：分离槽(除 5..8)只记 view + sharedSampler;combined 槽 5..8 记 view+sampler。
+/// 其余族：combined(view+sampler);只记录状态,descriptor set 在 draw 时绑定。
 void VulkanCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
                                       SamplerHandle sampler) {
   const TextureRec* rec = device_->texture(texture);
   VkSampler s = device_->sampler(sampler);
-  if (!rec || s == VK_NULL_HANDLE || slot >= 16) return;
+  if (!rec || s == VK_NULL_HANDLE || slot >= 19) return;
   bound_.texView[slot] = rec->view;
-  bound_.texSampler[slot] = s;
+  if (bound_.pbrFamily && !(slot >= 5 && slot <= 8)) {
+    bound_.sharedSampler = s;  // 全部分离槽共享同一采样器状态(mesh/全局)
+  } else {
+    bound_.texSampler[slot] = s;
+  }
 }
 
 /// 绑定约定：uniform slot N ↔ set0 binding N(同样只记录状态)。

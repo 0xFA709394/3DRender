@@ -184,6 +184,9 @@ struct PipelineDesc {
   /// 颜色附件格式。渲染到 swapchain 时必须与 Device::swapChainColorFormat
   /// 返回的格式一致（Metal layer 限 BGRA8 系），否则后端可能创建失败。
   Format colorFormat = Format::RGBA8_UNORM;
+  /// pbr 族管线=true:Vulkan 用分离采样器布局族(texture2D+smpMat,含 binding 23);
+  /// 其余族(blit/post/unlit/shadow/env)保留 combined 布局。仅 Vulkan 后端消费。
+  bool separateSamplers = false;
 };
 
 /// 纹理创建参数。

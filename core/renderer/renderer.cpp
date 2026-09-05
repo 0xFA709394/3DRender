@@ -105,6 +105,7 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   ppd.depthTest = true;
   ppd.depthWrite = true;
   ppd.colorFormat = desc.colorFormat;
+  ppd.separateSamplers = true;  // pbr 族:分离采样器布局
   pbrPipeline_ = dev.createPipeline(ppd);
 
   // 双层 UBO
@@ -295,6 +296,7 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
   ppd.depthWrite = true;
   ppd.colorFormat = fmt;
   ppd.sampleCount = samples;
+  ppd.separateSamplers = true;  // pbr 族:分离采样器布局(blend/skinned 继承)
   pbrPipeline_ = dev_->createPipeline(ppd);
   if (!unlitPipeline_.valid() || !pbrPipeline_.valid())
     RD_LOGE("renderer", "场景管线重建失败(fmt=%d samples=%u)", int(fmt), samples);
@@ -324,13 +326,15 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
   skd.depthWrite = true;
   skd.colorFormat = fmt;
   skd.sampleCount = samples;
+  skd.separateSamplers = true;  // 蒙皮复用 pbr frag → 同族
   if (skinnedPipeline_.valid()) dev_->destroyPipeline(skinnedPipeline_);
   skinnedPipeline_ = dev_->createPipeline(skd);
-  // 蒙皮阴影管线(depthOnly 80B)
+  // 蒙皮阴影管线(depthOnly 80B;shadow 族=combined 布局,显式关闭继承)
   PipelineDesc ssd = skd;
   ssd.vertexShader = sdsvs_;
   ssd.fragmentShader = sfs_;
   ssd.depthOnly = true;
+  ssd.separateSamplers = false;
   if (skinnedShadowPipeline_.valid()) dev_->destroyPipeline(skinnedShadowPipeline_);
   skinnedShadowPipeline_ = dev_->createPipeline(ssd);
   if (!skinnedPipeline_.valid() || !skinnedShadowPipeline_.valid())
@@ -361,6 +365,7 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
     ipd.depthWrite = true;
     ipd.colorFormat = fmt;
     ipd.sampleCount = samples;
+    ipd.separateSamplers = true;  // 实例化复用 pbr frag → 同族
     if (instancedPipeline_.valid()) dev_->destroyPipeline(instancedPipeline_);
     instancedPipeline_ = dev_->createPipeline(ipd);
   }

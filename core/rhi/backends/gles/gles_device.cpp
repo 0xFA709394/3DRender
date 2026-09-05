@@ -612,7 +612,7 @@ bool GLESDevice::init(const DeviceDesc&) {
   GLint maxTex = 0;
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
   caps_.set(Capability::max_texture_size, static_cast<uint32_t>(maxTex));
-  caps_.set(Capability::max_texture_slots, 16);  // slot0..15(恰压 ES3 保证的 16 单元线)
+  caps_.set(Capability::max_texture_slots, 19);  // slot0..18(transmission;真机普遍 32+)
   caps_.set(Capability::max_uniform_buffer_slots, 4);
   caps_.set(Capability::instancing, 1);  // ES3 核心
   GLint maxSamples = 0;
@@ -820,6 +820,20 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
       {"texEquirect", 0},      {"texEnv", 0},          {"texClearcoat", 9},
       {"texClearcoatRough", 10}, {"texClearcoatNormal", 11}, {"texSheenColor", 12},
       {"texSheenRough", 13},   {"texSpecularColor", 14}, {"texSpecular", 15},
+      // 分离采样器模型:spirv-cross 转 GLSL ES 时 texture2D+sampler 合并名
+      // (pbr 族 15 张分离纹理;cube/lut/shadow 保持 combined 名不变)
+      {"SPIRV_Cross_CombinedtexBaseColorsmpMat", 0},
+      {"SPIRV_Cross_CombinedtexMRsmpMat", 1},
+      {"SPIRV_Cross_CombinedtexNormalsmpMat", 2},
+      {"SPIRV_Cross_CombinedtexEmissivesmpMat", 3},
+      {"SPIRV_Cross_CombinedtexOcclusionsmpMat", 4},
+      {"SPIRV_Cross_CombinedtexClearcoatsmpMat", 9},
+      {"SPIRV_Cross_CombinedtexClearcoatRoughsmpMat", 10},
+      {"SPIRV_Cross_CombinedtexClearcoatNormalsmpMat", 11},
+      {"SPIRV_Cross_CombinedtexSheenColorsmpMat", 12},
+      {"SPIRV_Cross_CombinedtexSheenRoughsmpMat", 13},
+      {"SPIRV_Cross_CombinedtexSpecularColorsmpMat", 14},
+      {"SPIRV_Cross_CombinedtexSpecularsmpMat", 15},
   };
   glUseProgram(program);
   for (const auto& s : kSamplerTable) {

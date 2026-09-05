@@ -177,6 +177,7 @@ struct TargetRec {
   id<MTLTexture> msaaColor = nil;  ///< MSAA 颜色附件(Private)
   id<MTLTexture> msaaDepth = nil;  ///< MSAA 深度附件(Private,samples>1 且 hasDepth 时)
   bool depthOnly = false;      ///< depth-only 目标(阴影贴图;只挂深度附件)
+  bool preserve = false;       ///< 内容跨 pass 持久(MSAA/深度 store;load 续画用)
 };
 struct SwapChainRec {
   CAMetalLayer* layer = nil;
@@ -202,7 +203,8 @@ class MetalDevice;
 class MetalCommandBuffer final : public CommandBuffer {
 public:
   explicit MetalCommandBuffer(MetalDevice* device) : device_(device) {}
-  void beginRenderPass(TargetHandle target, const ClearColor& clear) override;
+  void beginRenderPass(TargetHandle target, const ClearColor& clear,
+                       bool loadContent = false) override;
   void bindPipeline(PipelineHandle pipeline) override;
   void bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) override;
   void bindIndexBuffer(BufferHandle buffer, uint64_t offset, IndexType type) override;
@@ -555,6 +557,7 @@ public:
     rec.color = tex;
     rec.width = desc.width;
     rec.height = desc.height;
+    rec.preserve = desc.preserveContent;
     // 注册可采样颜色句柄(纹理归 TargetRec 所有,句柄仅引用)
     {
       TextureRec trec;
@@ -982,12 +985,13 @@ private:
 
 /// 开始 render pass：以 Clear 加载动作绑定颜色附件，并设置全幅 viewport;
 /// texture-backed 目标按 face/mip 指定 slice/level。
-void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear) {
+void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear,
+                                         bool loadContent) {
   TargetRec t;
   if (!device_->target(target, t)) return;
   MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
   if (t.depthOnly) {
-    // 纯深度目标:只挂深度附件(阴影图要保留,store)
+    // 纯深度目标:只挂深度附件(阴影图要保留,store;恒清屏)
     rp.depthAttachment.texture = t.depth;
     rp.depthAttachment.loadAction = MTLLoadActionClear;
     rp.depthAttachment.clearDepth = clear.depth;
@@ -997,11 +1001,15 @@ void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& 
     [encoder_ setViewport:vp];
     return;
   }
+  const MTLLoadAction load = loadContent ? MTLLoadActionLoad : MTLLoadActionClear;
   if (t.samples > 1) {
-    // MSAA:渲染到多重采样附件,pass 结束自动 resolve 到 color
+    // MSAA:渲染到多重采样附件,pass 结束自动 resolve 到 color;
+    // preserve(两段 pass 续画):样本本身也要 store(下个 pass load 读的是 msaa 附件)
     rp.colorAttachments[0].texture = t.msaaColor;
     rp.colorAttachments[0].resolveTexture = t.color;
-    rp.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+    rp.colorAttachments[0].storeAction =
+        t.preserve ? MTLStoreActionStoreAndMultisampleResolve
+                   : MTLStoreActionMultisampleResolve;
   } else {
     rp.colorAttachments[0].texture = t.color;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -1012,11 +1020,13 @@ void MetalCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& 
   }
   if (t.hasDepth) {
     rp.depthAttachment.texture = t.msaaDepth ? t.msaaDepth : t.depth;
-    rp.depthAttachment.loadAction = MTLLoadActionClear;
+    rp.depthAttachment.loadAction = load;
     rp.depthAttachment.clearDepth = clear.depth;
-    rp.depthAttachment.storeAction = MTLStoreActionDontCare;
+    // preserve:深度须 store(pass B 续画仍做深度测试);否则 pass 后弃
+    rp.depthAttachment.storeAction = t.preserve ? MTLStoreActionStore
+                                                : MTLStoreActionDontCare;
   }
-  rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+  rp.colorAttachments[0].loadAction = load;
   rp.colorAttachments[0].clearColor = MTLClearColorMake(clear.r, clear.g, clear.b, clear.a);
   encoder_ = [cmd_ renderCommandEncoderWithDescriptor:rp];
   MTLViewport vp{0, 0, double(t.width), double(t.height), 0, 1};

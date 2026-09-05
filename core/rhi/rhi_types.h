@@ -241,6 +241,10 @@ struct OffscreenTargetDesc {
   /// 与 colorFromTexture 互斥;sampleCount 须为 1。纹理须以
   /// Format::D32_FLOAT + RenderTargetAttachment 创建。
   TextureHandle depthFromTexture;
+  /// 内容跨 pass 持久:pass A 结束后内容(MSAA 样本/深度)须 store 以便
+  /// beginRenderPass(loadContent=true) 重开续画(transmission 两段 pass 用)。
+  /// scene target 置位;默认 false 零开销。
+  bool preserveContent = false;
 };
 
 /// 设备创建参数。

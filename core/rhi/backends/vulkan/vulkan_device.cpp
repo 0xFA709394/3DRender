@@ -154,6 +154,7 @@ struct TargetRec {
   VkImage msaaColor = VK_NULL_HANDLE;           ///< MSAA 颜色图像(samples>1 时有效)
   VkDeviceMemory msaaColorMem = VK_NULL_HANDLE;
   VkImageView msaaView = VK_NULL_HANDLE;
+  bool preserve = false;                        ///< 内容跨 pass 持久(MSAA/深度 store;load 续画)
 };
 
 /// 交换链：surface + swapchain 对象 + 每帧图像注册的 TargetHandle 列表。
@@ -210,7 +211,8 @@ class VulkanDevice;
 class VulkanCommandBuffer final : public CommandBuffer {
 public:
   explicit VulkanCommandBuffer(VulkanDevice* device) : device_(device) {}
-  void beginRenderPass(TargetHandle target, const ClearColor& clear) override;
+  void beginRenderPass(TargetHandle target, const ClearColor& clear,
+                       bool loadContent) override;
   void bindPipeline(PipelineHandle pipeline) override;
   void bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) override;
   void bindIndexBuffer(BufferHandle buffer, uint64_t offset, IndexType type) override;
@@ -320,8 +322,13 @@ public:
   }
   /// render pass 缓存只读查询(目标创建时已确保存在;CommandBuffer 侧用)。
   VkRenderPass renderPassAt(VkFormat format, bool depth, uint32_t samples) const {
-    auto it = renderPasses_.find({format, depth, samples});
+    auto it = renderPasses_.find({format, depth, samples, false, false});
     return it != renderPasses_.end() ? it->second : VK_NULL_HANDLE;
+  }
+  /// find-or-create(beginRenderPass 的 load 变体用;framebuffer 兼容同 key 族)
+  VkRenderPass findOrCreateRenderPass(VkFormat format, bool depth, uint32_t samples,
+                                      bool load = false, bool preserve = false) {
+    return findOrCreateRenderPassImpl(format, depth, samples, load, preserve);
   }
   /// 按绑定状态 find-or-create descriptor set(创建时一次性写入全部非空绑定)。
   VkDescriptorSet descriptorSetFor(const DescriptorKey& key);
@@ -348,8 +355,10 @@ private:
                    uint32_t samples,
                    VkImageUsageFlags usage, VkMemoryPropertyFlags memProps, VkImage& image,
                    VkDeviceMemory& memory);
-  /// 按 (格式,深度,采样数) find-or-create render pass;samples>1 时带 resolve 附件。
-  VkRenderPass findOrCreateRenderPass(VkFormat format, bool depth, uint32_t samples);
+  /// 按 (格式,深度,采样数,load,preserve) find-or-create render pass;
+  /// load=true 时附件 loadOp=LOAD(初始 layout=pass A 结束态),供两段 pass 续画。
+  VkRenderPass findOrCreateRenderPassImpl(VkFormat format, bool depth, uint32_t samples,
+                                          bool load, bool preserve);
   bool createSwapchainObject(SwapChainRec& rec, VkSwapchainKHR oldSwapchain);
   bool buildSwapChainTargets(SwapChainRec& rec);
   void destroySwapChainImages(SwapChainRec& rec);
@@ -374,15 +383,19 @@ private:
   VkQueue queue_ = VK_NULL_HANDLE;
   VkCommandPool cmdPool_ = VK_NULL_HANDLE;
   VkCommandBuffer cmd_ = VK_NULL_HANDLE;       ///< 设备唯一命令缓冲（单线程模型）
-  /// render pass 缓存:按 (格式,深度,采样数) find-or-create;MSAA pass 带 resolve 附件
+  /// render pass 缓存:按 (格式,深度,采样数,load,preserve) find-or-create;MSAA pass 带 resolve 附件
   struct RenderPassKey {
     VkFormat format;
     bool depth;
     uint32_t samples;
+    bool load;      ///< load 变体(初始内容续画;attachment 的 loadOp/initialLayout 不同)
+    bool preserve;  ///< MSAA 颜色样本/深度 store(两段 pass 持久化)
     bool operator<(const RenderPassKey& o) const {
       if (format != o.format) return format < o.format;
       if (depth != o.depth) return depth < o.depth;
-      return samples < o.samples;
+      if (samples != o.samples) return samples < o.samples;
+      if (load != o.load) return load < o.load;
+      return preserve < o.preserve;
     }
   };
   std::map<RenderPassKey, VkRenderPass> renderPasses_;
@@ -707,9 +720,10 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
   return set;
 }
 
-VkRenderPass VulkanDevice::findOrCreateRenderPass(VkFormat format, bool withDepth,
-                                                  uint32_t samples) {
-  const RenderPassKey key{format, withDepth, samples};
+VkRenderPass VulkanDevice::findOrCreateRenderPassImpl(VkFormat format, bool withDepth,
+                                                       uint32_t samples, bool load,
+                                                       bool preserve) {
+  const RenderPassKey key{format, withDepth, samples, load, preserve};
   auto it = renderPasses_.find(key);
   if (it != renderPasses_.end()) return it->second;
 
@@ -760,24 +774,33 @@ VkRenderPass VulkanDevice::findOrCreateRenderPass(VkFormat format, bool withDept
   VkAttachmentDescription color{};
   color.format = format;
   color.samples = vkSamples;
-  color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  // MSAA 颜色内容 resolve 后即弃;单采样须 STORE(staging 拷贝/readback 依赖)
-  color.storeOp = samples > 1 ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+  color.loadOp = load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+  // MSAA 颜色样本 resolve 后即弃(preserve 时须 store 供 load 变体续画);
+  // 单采样须 STORE(staging 拷贝/readback 依赖)
+  color.storeOp = samples > 1 ? (preserve ? VK_ATTACHMENT_STORE_OP_STORE
+                                          : VK_ATTACHMENT_STORE_OP_DONT_CARE)
                               : VK_ATTACHMENT_STORE_OP_STORE;
   color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  // load 入 layout = pass A 结束态:MSAA 附件停在 COLOR_ATTACHMENT_OPTIMAL;
+  // 单采样被 endRenderPass 转 SHADER_READ_ONLY(拷贝采样链)
+  color.initialLayout =
+      load ? (samples > 1 ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                          : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+           : VK_IMAGE_LAYOUT_UNDEFINED;
   color.finalLayout = samples > 1 ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
                                   : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
   VkAttachmentDescription depth{};
   depth.format = VK_FORMAT_D32_SFLOAT;
   depth.samples = vkSamples;
-  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.loadOp = load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+  // preserve:深度须 store(pass B 续画仍做深度测试);否则 pass 后弃
+  depth.storeOp = preserve ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  depth.initialLayout =
+      load ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
   depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   VkAttachmentDescription resolve{};
@@ -803,12 +826,20 @@ VkRenderPass VulkanDevice::findOrCreateRenderPass(VkFormat format, bool withDept
   if (samples > 1) subpass.pResolveAttachments = &resolveRef;
 
   // 依赖：外部→subpass（颜色输出可写）；subpass→外部（颜色写完 → transfer 可读）
+  // load 变体:前一 pass 的输出可能经 blit 采样(transmissionTex),src 补片段着色器读
   VkSubpassDependency deps[2]{};
   deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
   deps[0].dstSubpass = 0;
   deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  if (load) {
+    deps[0].srcStageMask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  }
   deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  if (load && withDepth)
+    deps[0].dstAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   deps[1].srcSubpass = 0;
   deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
   deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1342,6 +1373,7 @@ TargetHandle VulkanDevice::createOffscreenTarget(const OffscreenTargetDesc& desc
   rec.height = desc.height;
   rec.format = desc.colorFormat;
   rec.samples = desc.sampleCount;
+  rec.preserve = desc.preserveContent;
   if (!createImage(desc.width, desc.height, toVkFormat(desc.colorFormat),
                    VK_IMAGE_TILING_OPTIMAL, 1,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -1957,7 +1989,8 @@ void VulkanDevice::waitIdle() {
 // ---------------- CommandBuffer 录制 ----------------
 
 /// 开始 render pass：Clear 加载动作 + 全幅 scissor + 负高度视口（y 翻转）。
-void VulkanCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear) {
+void VulkanCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear,
+                                          bool loadContent) {
   TargetRec t;
   if (!device_->target(target, t)) return;
   currentTarget_ = target;
@@ -1972,7 +2005,9 @@ void VulkanCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor&
     rp.renderPass = device_->renderPassAt(VK_FORMAT_UNDEFINED, true, 1);
     rp.clearValueCount = 1;
   } else {
-    rp.renderPass = device_->renderPassAt(toVkFormat(t.format), t.hasDepth, t.samples);
+    // load 变体按 (load,preserve) 取;framebuffer 与之兼容(格式/采样数同)
+    rp.renderPass = device_->findOrCreateRenderPass(toVkFormat(t.format), t.hasDepth,
+                                                    t.samples, loadContent, t.preserve);
     rp.clearValueCount = t.samples > 1 ? (t.hasDepth ? 3u : 2u) : (t.hasDepth ? 2u : 1u);
   }
   rp.framebuffer = t.fb;

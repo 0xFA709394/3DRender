@@ -79,6 +79,9 @@ public:
   virtual void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex,
                                     int32_t vertexOffset, uint32_t instanceCount,
                                     uint32_t firstInstance) = 0;
+  /// 录制式生成全部 mip 链(transmission 拷贝后帧内调用;
+  /// 与 Device::generateMipmaps 的立即版对应,时序在已录命令之后)。
+  virtual void generateMipmaps(TextureHandle tex) = 0;
   /// 结束当前 render pass（与 beginRenderPass 配对）。
   virtual void endRenderPass() = 0;
 };

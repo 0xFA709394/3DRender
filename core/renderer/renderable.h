@@ -43,6 +43,10 @@ struct RenderContext {
   /// 共享 JointUBO(slot3;per-item 偏移)
   BufferHandle jointUbo;
   uint64_t jointOffset = 0;               ///< 本项在 JointUBO 中的偏移(蒙皮项)
+  /// slot16:transmission 场景颜色拷贝(Renderer 注入;pass A=占位,pass B=真图;
+  /// 无效则不绑——shader 槽位声明前向后兼容)
+  TextureHandle transSceneTex;
+  SamplerHandle transSampler;             ///< slot16 采样器(linear+mipmap)
 };
 
 class Renderable {

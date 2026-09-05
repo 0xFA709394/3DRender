@@ -216,6 +216,7 @@ public:
                      uint32_t firstInstance) override;
   void drawIndexedInstanced(uint32_t indexCount, uint32_t firstIndex, int32_t vertexOffset,
                             uint32_t instanceCount, uint32_t firstInstance) override;
+  void generateMipmaps(TextureHandle tex) override;
   void endRenderPass() override;
 
   MetalDevice* device_;                    ///< 回指设备（查句柄表）
@@ -1109,6 +1110,15 @@ void MetalCommandBuffer::drawIndexedInstanced(uint32_t indexCount, uint32_t firs
                     instanceCount:instanceCount
                        baseVertex:vertexOffset
                      baseInstance:firstInstance];
+}
+
+/// 录制式 mip 链生成(pass 间隙调用;blit 编码器进本帧 cmd_,submit 时按序执行)。
+void MetalCommandBuffer::generateMipmaps(TextureHandle tex) {
+  id<MTLTexture> t = device_->texture(tex);
+  if (!t || t.mipmapLevelCount < 2) return;
+  id<MTLBlitCommandEncoder> blit = [cmd_ blitCommandEncoder];
+  [blit generateMipmapsForTexture:t];
+  [blit endEncoding];
 }
 
 void MetalCommandBuffer::endRenderPass() { [encoder_ endEncoding]; }

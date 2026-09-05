@@ -63,6 +63,8 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       if (ctx.shadowSpotMap.valid())
         cmd->bindTexture(8, ctx.shadowSpotMap, ctx.shadowSampler);
       bindExtTextures(g);
+      if (ctx.transSceneTex.valid())
+        cmd->bindTexture(16, ctx.transSceneTex, ctx.transSampler);
       cmd->bindVertexBuffer(0, g.vbo, 0);
       cmd->bindIndexBuffer(g.ibo, 0, g.indexType);
       cmd->drawIndexed(g.indexCount, 0, 0);
@@ -89,6 +91,8 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       if (ctx.shadowSpotMap.valid())
         cmd->bindTexture(8, ctx.shadowSpotMap, ctx.shadowSampler);
       bindExtTextures(g);
+      if (ctx.transSceneTex.valid())
+        cmd->bindTexture(16, ctx.transSceneTex, ctx.transSampler);
     } else if (g.material.unlit) {
       cmd->bindPipeline(ctx.unlitPipeline);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), 64);  // ItemUBO 前 64B=mvp
@@ -111,6 +115,8 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       if (ctx.shadowSpotMap.valid())
         cmd->bindTexture(8, ctx.shadowSpotMap, ctx.shadowSampler);
       bindExtTextures(g);
+      if (ctx.transSceneTex.valid())
+        cmd->bindTexture(16, ctx.transSceneTex, ctx.transSampler);
     }
     cmd->bindVertexBuffer(0, g.vbo, 0);
     cmd->bindIndexBuffer(g.ibo, 0, g.indexType);

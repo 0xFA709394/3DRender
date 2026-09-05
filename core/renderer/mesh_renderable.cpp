@@ -47,7 +47,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
   for (const auto& g : mesh_->meshes()) {
     if (g.material.alphaBlend && !g.skinned) {  // blend 路径(skinned 按 opaque)
       cmd->bindPipeline(ctx.blendPipeline);
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B)
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
@@ -72,7 +72,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
     if (g.skinned) {
       // 蒙皮 PBR 路径(skinned 恒 PBR;unlit+蒙皮组合不支持)
       cmd->bindPipeline(ctx.skinnedPipeline);
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B)
       cmd->bindUniformBuffer(3, ctx.jointUbo, ctx.jointOffset, 8192);
@@ -95,7 +95,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
     } else {
       cmd->bindPipeline(ctx.pbrPipeline);
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 256);  // FrameUBO
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);  // FrameUBO
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);  // ItemUBO
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B,多光源+阴影)
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());

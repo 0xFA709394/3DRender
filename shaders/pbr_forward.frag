@@ -20,6 +20,7 @@ layout(binding = 0) uniform FrameUBO {
   vec4 lightDir;      // 占位(多光源后由 LightUBO 接管)
   vec4 lightColor;    // 占位
   vec4 sh[9];         // xyz=SH 系数（Ã 已折叠）
+  vec4 transmissionParams;  // x=1/transW y=1/transH z=maxLod w=0
 };
 layout(binding = 1) uniform ItemUBO {
   mat4 mvp;
@@ -32,6 +33,8 @@ layout(binding = 1) uniform ItemUBO {
   vec4 ext0;  // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor
   vec4 ext1;  // xyz=sheenColorFactor w=sheenRoughnessFactor
   vec4 ext2;  // xyz=specularColorFactor w=ior
+  vec4 ext3;  // x=transmissionFactor y=thicknessFactor z=attenuationDistance(0=∞) w=0
+  vec4 ext4;  // xyz=attenuationColor w=0
 };
 layout(binding = 2) uniform LightUBO {
   mat4 lightViewProj;

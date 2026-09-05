@@ -68,8 +68,10 @@ struct ItemUBOData {
   float ext0[4];            // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor
   float ext1[4];            // xyz=sheenColorFactor w=sheenRoughnessFactor
   float ext2[4];            // xyz=specularColorFactor w=ior
+  float ext3[4];            // x=transmissionFactor y=thicknessFactor z=attenuationDistance(0=∞) w=0
+  float ext4[4];            // xyz=attenuationColor w=0
 };
-static_assert(sizeof(ItemUBOData) == kItemUboSize, "ItemUBO 必须 304B(槽距 512)");
+static_assert(sizeof(ItemUBOData) == kItemUboSize, "ItemUBO 必须 336B(槽距 512)");
 
 } // namespace
 
@@ -109,7 +111,7 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   pbrPipeline_ = dev.createPipeline(ppd);
 
   // 双层 UBO
-  frameUbo_ = dev.createBuffer({256, BufferUsage::Uniform, true, false, nullptr});
+  frameUbo_ = dev.createBuffer({272, BufferUsage::Uniform, true, false, nullptr});
   itemUbo_ = dev.createBuffer({uint64_t(kUboStride) * kMaxItemSlots, BufferUsage::Uniform, true,
                                false, nullptr});
 
@@ -692,15 +694,16 @@ void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) 
   clear_ = clear;
   cameraEye_ = camera.eye();
 
-  // FrameUBO:viewProj|cameraPos|lightDir|lightColor|sh[9×vec4]
+  // FrameUBO:viewProj|cameraPos|lightDir|lightColor|sh[9×vec4]|transmissionParams
   struct {
     math::Mat4 viewProj;
     math::Vec4 cameraPos;
     math::Vec4 lightDir;
     math::Vec4 lightColor;
     float sh[9][4];
+    float transmissionParams[4];  // x=1/transW y=1/transH z=maxLod w=0(Task 6 填真值)
   } fu;
-  static_assert(sizeof(fu) == 256, "FrameUBO 必须 256B");
+  static_assert(sizeof(fu) == 272, "FrameUBO 必须 272B");
   fu.viewProj = viewProj_;
   const auto& eye = camera.eye();
   fu.cameraPos = math::Vec4(eye, 1.0f);
@@ -714,6 +717,8 @@ void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) 
     fu.sh[i][2] = sh[i * 3 + 2];
     fu.sh[i][3] = 0.0f;
   }
+  fu.transmissionParams[0] = fu.transmissionParams[1] = fu.transmissionParams[2] =
+      fu.transmissionParams[3] = 0.0f;
   dev_->updateBuffer(frameUbo_, &fu, sizeof(fu), 0);
 }
 
@@ -885,7 +890,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
         iu.metallicRough[2] = 1.0f;
         iu.uvTransform[2] = iu.uvTransform[3] = 1.0f;
       }
-      // ---- KHR 扩展四件套因子(关闭/无扩展时写默认 = 零操作)----
+      // ---- KHR 扩展因子(transmission/volume 门控 Task 6 接线,先随 extOn 透传)----
       if (extOn && !meshes.empty() && mi < meshes.size()) {
         const auto& mm = meshes[mi].material;
         iu.ext0[0] = mm.clearcoatFactor;
@@ -900,11 +905,18 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
         iu.ext2[1] = mm.specularColorFactor[1];
         iu.ext2[2] = mm.specularColorFactor[2];
         iu.ext2[3] = mm.ior;
+        iu.ext3[0] = mm.transmissionFactor;
+        iu.ext3[1] = mm.thicknessFactor;
+        iu.ext3[2] = mm.attenuationDistance;
+        iu.ext4[0] = mm.attenuationColor[0];
+        iu.ext4[1] = mm.attenuationColor[1];
+        iu.ext4[2] = mm.attenuationColor[2];
       } else {
         iu.ext0[2] = 1.0f;   // clearcoatNormalScale 默认
         iu.ext0[3] = 1.0f;   // specularFactor 默认
         iu.ext2[0] = iu.ext2[1] = iu.ext2[2] = 1.0f;  // specularColorFactor 默认
         iu.ext2[3] = 1.5f;   // ior 默认(f0=0.04 与现状一致)
+        // ext3/ext4 零值 = transmissionFactor 0/attenuationColor(0,0,0) → 零操作 ✓
       }
       dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(slot) * kUboStride);
     }
@@ -1058,7 +1070,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       // 实例化路径:bind UBO 组偏移 + 一次 drawIndexedInstanced
       const uint32_t slotBase = uint32_t(slotOf[idx]);
       cmd->bindPipeline(instancedPipeline_);
-      cmd->bindUniformBuffer(0, frameUbo_, 0, 256);
+      cmd->bindUniformBuffer(0, frameUbo_, 0, 272);
       cmd->bindUniformBuffer(1, itemUbo_, uint64_t(slotBase) * kUboStride,
                            uint64_t(groupSize) * kUboStride);
       cmd->bindUniformBuffer(2, lightUbo_, 0, 352);

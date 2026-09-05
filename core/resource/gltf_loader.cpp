@@ -172,6 +172,23 @@ MaterialData readMaterial(const cgltf_primitive& prim, const char* gltfDir,
   }
   // KHR_materials_ior:折射率 → 介质 f0
   if (mat->has_ior) m.ior = float(mat->ior.ior);
+  // KHR_materials_transmission:透射(场景色折射采样,渲染层 pass 拆分)
+  if (mat->has_transmission) {
+    const auto& tr = mat->transmission;
+    m.transmissionFactor = float(tr.transmission_factor);
+    if (tr.transmission_texture.texture)
+      m.transmissionTex = decodeImage(tr.transmission_texture.texture, gltfDir, pref);
+  }
+  // KHR_materials_volume:厚度 + Beer-Lambert 吸收
+  if (mat->has_volume) {
+    const auto& vo = mat->volume;
+    m.thicknessFactor = float(vo.thickness_factor);
+    if (vo.thickness_texture.texture)
+      m.thicknessTex = decodeImage(vo.thickness_texture.texture, gltfDir, pref);
+    for (int c = 0; c < 3; ++c) m.attenuationColor[c] = float(vo.attenuation_color[c]);
+    m.attenuationDistance =
+        vo.attenuation_distance > 0.0f ? float(vo.attenuation_distance) : 0.0f;
+  }
   return m;
 }
 

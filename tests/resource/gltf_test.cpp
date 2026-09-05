@@ -560,3 +560,87 @@ TEST(Gltf, ExtMaterialsDefaults) {
   EXPECT_EQ(m.sheenColor.width, 0u);
   EXPECT_EQ(m.specularTex.width, 0u);
 }
+
+// KHR_materials_transmission + KHR_materials_volume 解析(默认值零操作)
+TEST(Gltf, TransmissionVolume) {
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "extensionsUsed": ["KHR_materials_transmission","KHR_materials_volume"],
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{"extensions": {
+      "KHR_materials_transmission": {"transmissionFactor": 0.9,
+        "transmissionTexture": {"index": 0}},
+      "KHR_materials_volume": {"thicknessFactor": 2.0,
+        "thicknessTexture": {"index": 0},
+        "attenuationColor": [0.8, 0.2, 0.1],
+        "attenuationDistance": 0.5}
+    }}],
+    "textures": [{"source": 0}],
+    "images": [{"uri": "ext.png"}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_trans").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f); fclose(f); }
+  const uint8_t px[16] = {255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,255};
+  ASSERT_TRUE(rd::test::savePNG(dir + "/ext.png", 2, 2, px));
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  const auto& m = model.meshes[0].material;
+  EXPECT_FLOAT_EQ(m.transmissionFactor, 0.9f);
+  EXPECT_FLOAT_EQ(m.thicknessFactor, 2.0f);
+  EXPECT_NEAR(m.attenuationColor[0], 0.8f, 1e-6);
+  EXPECT_NEAR(m.attenuationColor[1], 0.2f, 1e-6);
+  EXPECT_NEAR(m.attenuationColor[2], 0.1f, 1e-6);
+  EXPECT_FLOAT_EQ(m.attenuationDistance, 0.5f);
+  EXPECT_EQ(m.transmissionTex.width, 2u);
+  EXPECT_EQ(m.thicknessTex.width, 2u);
+}
+
+// 默认零操作:无扩展材质 → transmission/thickness=0、attenuation=(1,1,1)/0(∞ 哨兵)
+TEST(Gltf, TransmissionVolumeDefaults) {
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                "indices": 1, "material": 0}]}],
+    "materials": [{}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_trans_d").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f); fclose(f); }
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  const auto& m = model.meshes[0].material;
+  EXPECT_FLOAT_EQ(m.transmissionFactor, 0.0f);
+  EXPECT_FLOAT_EQ(m.thicknessFactor, 0.0f);
+  EXPECT_FLOAT_EQ(m.attenuationColor[0], 1.0f);
+  EXPECT_FLOAT_EQ(m.attenuationDistance, 0.0f);  // 0 = +∞ 哨兵(无吸收)
+  EXPECT_EQ(m.transmissionTex.width, 0u);
+  EXPECT_EQ(m.thicknessTex.width, 0u);
+}

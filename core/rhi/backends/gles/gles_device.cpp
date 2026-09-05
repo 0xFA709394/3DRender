@@ -198,7 +198,8 @@ class GLESDevice;
 class GLESCommandBuffer final : public CommandBuffer {
 public:
   explicit GLESCommandBuffer(GLESDevice* device) : device_(device) {}
-  void beginRenderPass(TargetHandle target, const ClearColor& clear) override;
+  void beginRenderPass(TargetHandle target, const ClearColor& clear,
+                       bool loadContent) override;
   void bindPipeline(PipelineHandle pipeline) override;
   void bindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset) override;
   void bindIndexBuffer(BufferHandle buffer, uint64_t offset, IndexType type) override;
@@ -367,12 +368,13 @@ private:
 
 // ---------------- CommandBuffer 实现 ----------------
 
-void GLESCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear) {
+void GLESCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& clear,
+                                        bool loadContent) {
   TargetRec t;
   if (!device_->target(target, t)) return;
   current_ = t;  // 录制期快照(供状态查询)
   // GL 调用全部延迟到回放;surface 切换也在回放期(渲染线程)执行
-  cmds_.emplace_back([this, t, clear] {
+  cmds_.emplace_back([this, t, clear, loadContent] {
     if (t.isSwapchain) {
       device_->makeCurrent(t.surface);
     } else {
@@ -389,6 +391,7 @@ void GLESCommandBuffer::beginRenderPass(TargetHandle target, const ClearColor& c
       glClear(GL_DEPTH_BUFFER_BIT);
       return;
     }
+    if (loadContent) return;  // load 语义:FBO 附着内容天然持久,跳过清屏续画
     glClearColor(clear.r, clear.g, clear.b, clear.a);
     if (t.hasDepth) {
       glDepthMask(GL_TRUE);  // 清深度前确保可写

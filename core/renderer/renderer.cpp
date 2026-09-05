@@ -598,6 +598,7 @@ TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
   td.depth = true;
   td.sampleCount = samples;
   td.colorFormat = fmt;
+  td.preserveContent = true;  // transmission 两段 pass:pass A 内容(MSAA/深度)须持久
   sceneTarget_ = dev_->createOffscreenTarget(td);
   if (!sceneTarget_.valid()) {
     RD_LOGE("renderer", "SceneTarget 创建失败(%ux%u samples=%u fmt=%d)", w, h, samples,

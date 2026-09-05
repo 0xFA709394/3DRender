@@ -15,6 +15,7 @@ add_executable(rd_tests
   rhi/instancing_test.cpp
   rhi/cube_target_test.cpp
   rhi/depth_test.cpp
+  rhi/loadop_test.cpp
   rhi/compressed_texture_test.cpp
   rhi/target_texture_test.cpp
   rhi/msaa_test.cpp

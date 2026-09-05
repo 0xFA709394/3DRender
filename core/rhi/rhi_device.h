@@ -39,8 +39,12 @@ public:
    * @brief 开始一个 render pass（绑定渲染目标并清屏）。
    * @param target 离屏目标或 acquireSwapChainTarget 得到的 swapchain 帧目标。
    * @param clear  清屏颜色。
+   * @param loadContent true:不清屏,加载目标现有内容续画(目标须
+   *        OffscreenTargetDesc.preserveContent=true 创建;transmission pass B 用);
+   *        false(默认):清屏,行为与旧版一致。
    */
-  virtual void beginRenderPass(TargetHandle target, const ClearColor& clear) = 0;
+  virtual void beginRenderPass(TargetHandle target, const ClearColor& clear,
+                               bool loadContent = false) = 0;
   /// 绑定渲染管线（之后的 draw 使用该管线的 shader 与状态）。
   virtual void bindPipeline(PipelineHandle pipeline) = 0;
   /**

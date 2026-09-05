@@ -57,6 +57,13 @@ struct MaterialData {
   ImageData specularTex;          float specularFactor = 1.0f;
   // KHR_materials_ior(独立于 specular 生效;1.5 → f0=0.04 与现状一致)
   float ior = 1.5f;
+  // ---- KHR transmission/volume(P4-B;默认值 = 零操作语义)----
+  // KHR_materials_transmission:透射(场景色折射采样,渲染层两段 pass)
+  ImageData transmissionTex;       float transmissionFactor = 0.0f;  // 0=无透射
+  // KHR_materials_volume:厚度 + Beer-Lambert 吸收
+  ImageData thicknessTex;          float thicknessFactor = 0.0f;     // 0=薄壁
+  float attenuationColor[3] = {1, 1, 1};
+  float attenuationDistance = 0.0f;  // 0 哨兵 = spec 默认 +∞(无吸收)
 };
 
 /// 单个 mesh 的 CPU 数据。

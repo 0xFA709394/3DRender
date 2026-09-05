@@ -68,7 +68,19 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   + 纹理槽 9→16 + ItemUBO 304B 块/512B 槽距 + 实例化组上限 32
   + render.ext_materials 选项与画质档与关系;
   顺带修复:Vulkan slot8 聚光阴影描述符丢弃 + GLES 语义 sampler 名全落单元 0
-- 下一步:P4-B(transmission/volume)或 P4-C(morph/Draco),或 P3(AR+鸿蒙)
+- P4-B 完成：KHR transmission/volume 两件套(场景两段 pass:opaque→拷贝 SceneTarget
+  至 transmissionTex+generateMipmaps→loadContent 续画 transmission/blend;
+  屏幕空间折射偏移×roughness mip 模糊+Beer-Lambert 吸收;三分区排序
+  opaque→transmission→blend)+ **pbr 系 shader 分离采样器模型**(texture2D×15
+  +共享 smpMat,Vulkan 双描述符布局族/Metal 共享 sampler(0)/GLES 合并名表;
+  每阶段 sampler 16 上限的出路)+ LoadOp(beginRenderPass loadContent
+  +OffscreenTargetDesc.preserveContent,三后端)+ 录制式 CommandBuffer::
+  generateMipmaps(三后端,帧内时序正确)+ ItemUBO 336B(ext3/ext4)+FrameUBO
+  272B(transmissionParams)+ render.transmission 门控(×画质档 High/Mid=1,Low=0)
+  + transmission_gallery 场景 + golden 四件(ext_transmission/roughness/
+  volume/amber 双后端)+ 门控语义测试(开关可见/零操作逐像素一致);
+  已知限制:不互相折射/blend 不入折射/屏幕空间单次折射近似/Low 档退化 opaque
+- 下一步:P4-C(morph/Draco),或 P3(AR+鸿蒙)
 
 ## 构建与测试
 ```bash
@@ -133,6 +145,10 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   ClearCoatTest/SheenChair/SpecularTest;缺失自动 skip);
   交互 `--interactive --scene material_ext_gallery`;
   门控命令:`set render.ext_materials false`
+- transmission/volume golden:`ext_transmission/ext_transmission_roughness/ext_volume/
+  ext_amber`(TransmissionTest/Roughness/Attenuation/MosquitoInAmber;缺失自动 skip);
+  交互 `--interactive --scene transmission_gallery`(棋盘地板+清/毛/红吸收三球);
+  门控命令:`set render.transmission false`
 
 ## 移动端构建
 - 环境：`source /tmp/rd_env.sh`（JAVA_HOME/ANDROID_HOME/PATH）；JDK 须 17~22（openjdk@21）
@@ -163,17 +179,24 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   + bindTexture 回放期 `tex%u`→slot N(blit/composite 等 texN 命名的简单 shader)
 - 顶点布局约定（glTF 模型）：pos(3f)@0 | normal(3f)@12 | tangent(4f)@24 | uv(2f)@40，
   交错 stride 48，location 0/1/2/3
-- UBO 约定：slot0=FrameUBO(256B:viewProj|cameraPos|lightDir|lightColor|sh[9])，
-  slot1=ItemUBO(304B 块/512B 槽距:**per-(item,mesh)**——item 占 meshCount 个连续槽,
-  容量 128 槽(64KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源)；
+- UBO 约定：slot0=FrameUBO(272B:viewProj|cameraPos|lightDir|lightColor|sh[9]|
+  transmissionParams[x=1/transW,y=1/transH,z=maxLod])，
+  slot1=ItemUBO(336B 块/512B 槽距:**per-(item,mesh)**——item 占 meshCount 个连续槽,
+  容量 128 槽(64KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源);
   GLES uniform block 名表：UBO/FrameUBO→0，ItemUBO→1
 - 纹理槽位：0=baseColor，1=MR，2=normal，3=emissive，4=occlusion，5=prefilterCube，
   6=brdfLut(nearest 采样)，7=方向光阴影，8=聚光阴影(后两者均比较采样器,恒绑定,
   未激活绑 1x1 D32 占位)，9=clearcoat(R)，10=clearcoatRough(G)，11=clearcoatNormal，
-  12=sheenColor，13=sheenRough(A)，14=specularColor，15=specular(A)
-  ——共 16 槽(caps max_texture_slots=16;恰压 GLES 3.0 保证的 16 纹理单元线,真机普遍 32+);
-  Metal 侧 sampler 参数上限 0..15:槽 12..15(索引 16..19)折返借用空闲 sampler 0..3
-  (cmake/fixup_msl_samplers.cmake 后处理 + bindTexture 同映射)
+  12=sheenColor，13=sheenRough(A)，14=specularColor，15=specular(A)，
+  16=transmissionScene(全局,pass A 占位/pass B 真图,Renderer 经 RenderContext 注入)，
+  17=transmission(R)，18=thickness(G)
+  ——共 19 槽(caps max_texture_slots=19;GLES 真机普遍 32+)
+- pbr 系分离采样器模型：材质 2D 纹理声明 `texture2D` + 共享 `sampler smpMat`
+  (binding 23,状态=mesh sampler);cube/lut/shadow 保持 combined(binding 9..12=槽 5..8);
+  每阶段 sampler 描述符仅 5 个(MoltenVK/Metal 上限 16 的出路);
+  Vulkan 双描述符布局族(PipelineDesc.separateSamplers:pbr 族/blit 族,DescriptorKey
+  带 pbrFamily 维度);Metal 分离槽共享 sampler(0)(spirv-cross 自动分配,fixup 脚本
+  兜底);GLES spirv-cross 合并名 `SPIRV_Cross_Combinedtex*smpMat` 入 kSamplerTable
 - cubemap 方向约定：GL/Khronos(u 右向、v 顶向下)，环境生成/预滤波/采样三处必须一致
 - 深度：离屏目标 `OffscreenTargetDesc.depth=true` + pipeline `depthTest/depthWrite`；
   depth 管线须配 depth 目标；CompareOp 默认 Less（Reverse-Z 预留）
@@ -188,8 +211,16 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   texture-backed 返回源纹理，swapchain 返回无效）；`targetSize` 查询尺寸；
   `OffscreenTargetDesc.sampleCount>1` 创建 MSAA+resolve（texture-backed 不支持）
 - 上屏链：`Renderer::endScene` 两段（场景→内部 SceneTarget[尺寸×renderScale,MSAA 按画质档,
-  带 depth] → blit upscale pass→最终目标）；blit 纹理槽 0、UBO 块名 BlitUBO→slot0；
+  带 depth,preserveContent=true] → blit upscale pass→最终目标）；blit 纹理槽 0、UBO 块名 BlitUBO→slot0；
   GLES 渲染到纹理的 v 方向由 BlitUBO.params.x 翻转吸收（Metal/Vulkan 传 0）
+- transmission 两段 pass(P4-B)：endScene 三分区排序 opaque→transmission→blend
+  (后两者视距远→近);有透射项时场景 pass 拆两段——pass A 画 opaque,拷贝 SceneTarget
+  至 transTex(blit)+`cmd->generateMipmaps`(录制式,三后端帧内时序正确),
+  pass B `beginRenderPass(scene, clear, loadContent=true)` 续画 transmission/blend;
+  折射=屏幕空间偏移×thickness+roughness mip 模糊+Beer-Lambert 吸收;
+  门控=render.transmission 选项 × 画质档 transmission(High/Mid=1,Low=0)与关系,
+  关闭时 ext3 零值零操作+单段 pass;透射项不参与实例化分组;
+  已知限制:透射物体不互相折射/blend 不入折射图/单次折射近似
 - 画质：`rd_engine_set/get_quality(AUTO/HIGH/MID/LOW)`；AUTO=caps 启发式
   (msaa≥4 且 max_texture_size≥8192→High;msaa≥2→Mid;否则 Low)；
   预设表 renderer/quality.h(renderScale/msaa/IBL 尺寸/纹理上限)

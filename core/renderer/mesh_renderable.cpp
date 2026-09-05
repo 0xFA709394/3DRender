@@ -22,6 +22,8 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
     cmd->bindTexture(13, g.sheenRoughTex, mesh_->sampler());
     cmd->bindTexture(14, g.specularColorTex, mesh_->sampler());
     cmd->bindTexture(15, g.specularTex, mesh_->sampler());
+    cmd->bindTexture(17, g.transmissionTex, mesh_->sampler());  // R=透射强度
+    cmd->bindTexture(18, g.thicknessTex, mesh_->sampler());     // G=厚度
   };
   if (ctx.shadowPass) {  // 阴影:只写深度(位置语义;mask 材质采样 baseColor discard)
     const bool mask0 = !mesh_->meshes().empty() && mesh_->meshes()[0].material.alphaCutoff > 0.0f;

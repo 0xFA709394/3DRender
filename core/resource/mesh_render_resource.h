@@ -31,6 +31,9 @@ struct MeshGpuData {
   TextureHandle sheenRoughTex;     // 缺省绑 1x1 白
   TextureHandle specularColorTex;  // 缺省绑 1x1 白(白 × factor(1,1,1) = 恒等)
   TextureHandle specularTex;       // 缺省绑 1x1 白(A=1 → 因子直通)
+  // ---- KHR transmission/volume(P4-B;缺省白:因子默认 0 压制贡献)----
+  TextureHandle transmissionTex;   // R=透射强度
+  TextureHandle thicknessTex;      // G=厚度
   bool skinned = false;         // 蒙皮网格(80B 顶点布局)
 };
 

@@ -24,6 +24,12 @@ dl ClearCoatTest.glb ClearCoatTest/glTF-Binary/ClearCoatTest.glb
 dl SheenChair.glb SheenChair/glTF-Binary/SheenChair.glb
 dl SpecularTest.glb SpecularTest/glTF-Binary/SpecularTest.glb
 
+# P4-B KHR transmission/volume golden 模型
+dl TransmissionTest.glb TransmissionTest/glTF-Binary/TransmissionTest.glb
+dl TransmissionRoughnessTest.glb TransmissionRoughnessTest/glTF-Binary/TransmissionRoughnessTest.glb
+dl AttenuationTest.glb AttenuationTest/glTF-Binary/AttenuationTest.glb
+dl MosquitoInAmber.glb MosquitoInAmber/glTF-Binary/MosquitoInAmber.glb
+
 # Sponza(无 glb 形态):glTF 主文件 + 全部外链纹理到 assets/sponza/
 if [ -f assets/sponza/Sponza.gltf ]; then
   echo "已存在 assets/sponza/Sponza.gltf"

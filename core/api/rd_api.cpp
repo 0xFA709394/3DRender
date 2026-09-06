@@ -325,7 +325,11 @@ rd_result_t rd_engine_set_surface(rd_engine* e, void* nativeWindow, uint32_t wid
         !get("composite", rd::ShaderStage::Fragment, sd.compositeFs) ||
         !get("fxaa", rd::ShaderStage::Fragment, sd.fxaaFs) ||
         !get("pbr_forward_skinned", rd::ShaderStage::Vertex, sd.skinnedVs) ||
-        !get("shadow_depth_skinned", rd::ShaderStage::Vertex, sd.skinnedShadowVs)) {
+        !get("shadow_depth_skinned", rd::ShaderStage::Vertex, sd.skinnedShadowVs) ||
+        !get("pbr_forward_morph", rd::ShaderStage::Vertex, sd.morphVs) ||
+        !get("pbr_forward_morph_skinned", rd::ShaderStage::Vertex, sd.morphSkinnedVs) ||
+        !get("shadow_depth_morph", rd::ShaderStage::Vertex, sd.morphShadowVs) ||
+        !get("shadow_depth_morph_skinned", rd::ShaderStage::Vertex, sd.morphSkinnedShadowVs)) {
       setError(e, "内嵌 shader 缺失");
       return RD_ERROR_SHADER;
     }

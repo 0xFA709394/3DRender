@@ -1054,12 +1054,17 @@ void MetalCommandBuffer::bindIndexBuffer(BufferHandle buffer, uint64_t offset, I
 }
 
 /// 绑定约定：texture slot N ↔ fragment texture(N+4)(≤ 18 → ≤ 22 < 31 上限)。
+/// slot19(texMorph)=texture(24)(与 SPIR-V binding 一致的一次性例外)。
 /// sampler 参数上限 0..15:pbr 族(分离采样器)分离槽共享 sampler(0)(=smpMat,
 /// 与 fixup_msl_samplers 的 sampler(23)→sampler(0) 折返一致);combined 槽
 /// 5..8 用 index 9..12(cube/lut/shadow 在限内)。其余族:index = slot+4(4..7)。
 void MetalCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
                                      SamplerHandle sampler) {
-  [encoder_ setFragmentTexture:device_->texture(texture) atIndex:slot + 4];
+  const uint32_t tIdx = slot == 19 ? 24 : slot + 4;
+  id<MTLTexture> tex = device_->texture(texture);
+  [encoder_ setFragmentTexture:tex atIndex:tIdx];
+  // 顶点阶段同槽绑定(texMorph 在 vert 采样;其余 shader 不声明顶点纹理,多余绑定无害)
+  [encoder_ setVertexTexture:tex atIndex:tIdx];
   const uint32_t sIdx =
       (pipeline_.separate && !(slot >= 5 && slot <= 8)) ? 0 : slot + 4;
   [encoder_ setFragmentSamplerState:device_->sampler(sampler) atIndex:sIdx];

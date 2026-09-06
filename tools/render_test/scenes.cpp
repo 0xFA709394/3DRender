@@ -17,7 +17,7 @@ const char* const kNames[] = {"material_balls", "cornell_box", "light_playground
                               "emissive_bloom", "normal_map_wall",
                               "shadow_gallery", "ktx2_gallery", "alpha_blend",
                               "fox_anim",       "material_ext_gallery",
-                              "transmission_gallery"};
+                              "transmission_gallery", "morph_demo"};
 
 /// 单 mesh ModelAsset 包装(材质参数由调用方设)。
 ModelAsset wrapMesh(MeshData&& mesh) {
@@ -396,6 +396,41 @@ bool buildFamousGlb(Device& dev, DemoScene& out, ModelAsset& storage,
   return true;
 }
 
+// morph 演示:双目标球(径向膨胀 + Y 压扁),权重正弦呼吸
+void buildMorphDemo(Device& dev, DemoScene& out) {
+  auto mesh = primitives::makeSphere(0.6f, 48, 24);
+  const size_t vcount = mesh.vertices.size() / 12;
+  mesh.material.metallicFactor = 0.1f;
+  mesh.material.roughnessFactor = 0.35f;
+  mesh.morph = true;
+  mesh.morphPosDeltas.resize(vcount * 3 * 2);   // 2 目标
+  mesh.morphNormalDeltas.assign(vcount * 3 * 2, 0.0f);
+  for (size_t v = 0; v < vcount; ++v) {
+    const float* p = &mesh.vertices[v * 12];
+    const float len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    const float inv = len > 1e-5f ? 1.0f / len : 0.0f;
+    // t0:径向膨胀 0.2
+    mesh.morphPosDeltas[v * 3 + 0] = p[0] * inv * 0.2f;
+    mesh.morphPosDeltas[v * 3 + 1] = p[1] * inv * 0.2f;
+    mesh.morphPosDeltas[v * 3 + 2] = p[2] * inv * 0.2f;
+    // t1:Y 压扁 0.3
+    mesh.morphPosDeltas[vcount * 3 + v * 3 + 0] = 0.0f;
+    mesh.morphPosDeltas[vcount * 3 + v * 3 + 1] = -p[1] * 0.3f;
+    mesh.morphPosDeltas[vcount * 3 + v * 3 + 2] = 0.0f;
+  }
+  mesh.morphWeights.assign(2, 0.0f);
+  mesh.morphTargetNames = {"swell", "squash"};
+  uploadInto(dev, wrapMesh(std::move(mesh)), out, math::Mat4(1.0f));
+  out.morphPulse = true;
+  out.morphWeights.assign(2, 0.0f);
+  LightData dir;
+  dir.color[0] = dir.color[1] = dir.color[2] = 3.0f;
+  out.lights.push_back(dir);
+  out.camera.lookAt({0, 0.4f, 3.2f}, {0, 0, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 100.0f);
+  out.framingRadius = 1.2f;
+}
+
 // KHR 扩展材质三模型并排(资产缺失返回 false → 调用方 skip)
 bool buildMaterialExtGallery(Device& dev, DemoScene& out) {
   struct Entry {
@@ -526,6 +561,8 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
     if (!buildMaterialExtGallery(dev, out)) return false;
   } else if (n == "transmission_gallery") {
     buildTransmissionGallery(dev, out);
+  } else if (n == "morph_demo") {
+    buildMorphDemo(dev, out);
   } else {
     RD_LOGE("demo.scene", "未知场景: %s", name);
     return false;
@@ -559,6 +596,17 @@ void submitDemoScene(DemoScene& s, Renderer& renderer, float dt) {
       w[3][1] = std::sin(s.animTime * 2.0f + float(i) * 0.35f) * 0.35f + 0.35f;
       renderer.submit(s.resources[0], w);
     }
+    return;
+  }
+  if (s.morphPulse && !s.resources.empty()) {  // 权重正弦呼吸(t0/t1 反相)
+    const float t = s.animTime;
+    const float w[2] = {(std::sin(t * 1.5f) + 1.0f) * 0.5f,
+                        (std::cos(t * 1.1f) + 1.0f) * 0.5f};
+    s.morphWeights[0] = w[0];
+    s.morphWeights[1] = w[1];
+    renderer.submit(s.resources[0], s.worlds[0], nullptr, 0, w, 2);
+    for (size_t i = 1; i < s.resources.size(); ++i)
+      renderer.submit(s.resources[i], s.worlds[i]);
     return;
   }
   for (size_t i = 0; i < s.resources.size(); ++i) renderer.submit(s.resources[i], s.worlds[i]);

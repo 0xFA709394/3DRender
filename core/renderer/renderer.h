@@ -39,6 +39,10 @@ struct RendererShaderDesc {
   std::vector<uint8_t> instancedVs, instancedFs;  ///< 实例化 pbr(空=不启用分组)
   std::vector<uint8_t> shadowMaskVs, shadowMaskFs;  ///< cutout 阴影(空=阴影不裁剪)
   std::vector<uint8_t> shadowInstVs;  ///< 实例化阴影 vert(frag 复用空 shadow_depth.frag)
+  std::vector<uint8_t> morphVs;              ///< pbr_forward_morph.vert(空=不支持)
+  std::vector<uint8_t> morphSkinnedVs;       ///< pbr_forward_morph_skinned.vert
+  std::vector<uint8_t> morphShadowVs;        ///< shadow_depth_morph.vert
+  std::vector<uint8_t> morphSkinnedShadowVs; ///< shadow_depth_morph_skinned.vert
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
 };
@@ -158,6 +162,9 @@ private:
   TextureHandle shadowFallbackTex_;  // 1x1 D32(1.0,无阴影时的占位绑定)
   // ---- 蒙皮 ----
   ShaderModuleHandle skvs_, sdsvs_;   // skinned pbr/shadow 顶点模块(管线重建用)
+  ShaderModuleHandle morphVs_, morphSkvs_, morphSv_, morphSdsvs_;  // morph 系模块
+  PipelineHandle morphPipeline_, morphSkinnedPipeline_;
+  PipelineHandle morphShadowPipeline_, morphSkinnedShadowPipeline_;
   ShaderModuleHandle skyVs_, skyFs_;  // 天空盒模块(空码=不建)
   ShaderModuleHandle instVs_, instFs_;  // 实例化 pbr 模块(空码=不分组)
   PipelineHandle instancedPipeline_;    // 实例化管线(随场景管线重建)

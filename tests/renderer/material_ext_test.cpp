@@ -58,8 +58,7 @@ rd::test::Image renderModel(rd::Backend b, const rd::ModelAsset& model, bool ext
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
-                            cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {}, {}, {}, {}, {}, {}, {}, {}, unlitVs.entry,
+                            cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,{},{},{},{},{},{},{},{},{},{},{},{}, unlitVs.entry,
                             rd::Format::RGBA8_UNORM};
   rd::OffscreenTargetDesc td;
   td.width = kW;

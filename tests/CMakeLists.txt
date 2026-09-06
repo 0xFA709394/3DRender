@@ -34,6 +34,7 @@ add_executable(rd_tests
   scene/picking_test.cpp
   renderer/renderer_test.cpp
   renderer/box_render_test.cpp
+  renderer/water_surface_test.cpp
   renderer/pbr_test.cpp
   renderer/environment_test.cpp
   renderer/prefilter_test.cpp

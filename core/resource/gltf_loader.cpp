@@ -399,6 +399,60 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
       }
 
       out.material = readMaterial(prim, gltfDir.c_str(), pref);
+      // ---- morph targets(P4-C):POSITION/NORMAL 增量,TANGENT 忽略 ----
+      // 8 目标上限(glTF 一致性最低要求线);读 accessor 经 cgltf(sparse 自动展开)
+      if (prim.targets_count > 0 && vertexCount > 0) {
+        constexpr uint32_t kMaxMorphTargets = 8;
+        const uint32_t used =
+            std::min(uint32_t(prim.targets_count), kMaxMorphTargets);
+        if (prim.targets_count > kMaxMorphTargets)
+          RD_LOGW("resource.gltf", "mesh %s morph targets %u 超上限,截断到 %u",
+                  out.name.c_str(), uint32_t(prim.targets_count), kMaxMorphTargets);
+        out.morphPosDeltas.assign(size_t(used) * vertexCount * 3, 0.0f);
+        out.morphNormalDeltas.assign(size_t(used) * vertexCount * 3, 0.0f);
+        bool anyValid = false;
+        for (uint32_t t = 0; t < used; ++t) {
+          const cgltf_attribute *pos = nullptr, *nrm = nullptr;
+          for (cgltf_size a = 0; a < prim.targets[t].attributes_count; ++a) {
+            const auto& at = prim.targets[t].attributes[a];
+            if (at.type == cgltf_attribute_type_position) pos = &at;
+            else if (at.type == cgltf_attribute_type_normal) nrm = &at;
+            else if (at.type == cgltf_attribute_type_tangent)
+              RD_LOGW("resource.gltf", "mesh %s morph TANGENT 增量忽略(v1 限制)",
+                      out.name.c_str());
+          }
+          if (!pos) continue;  // glTF 语义:morph 目标须含 POSITION
+          float* pp = &out.morphPosDeltas[size_t(t) * vertexCount * 3];
+          float* nn = &out.morphNormalDeltas[size_t(t) * vertexCount * 3];
+          for (cgltf_size v = 0; v < vertexCount; ++v) {
+            cgltf_float d[3] = {0, 0, 0};
+            if (cgltf_accessor_read_float(pos->data, v, d, 3))
+              for (int c = 0; c < 3; ++c) pp[v * 3 + c] = float(d[c]);
+            if (nrm) {
+              cgltf_float dn[3] = {0, 0, 0};
+              if (cgltf_accessor_read_float(nrm->data, v, dn, 3))
+                for (int c = 0; c < 3; ++c) nn[v * 3 + c] = float(dn[c]);
+            }
+          }
+          anyValid = true;
+        }
+        if (anyValid) {
+          out.morph = true;
+          if (mesh.weights_count > 0) {
+            for (uint32_t t = 0; t < used && t < mesh.weights_count; ++t)
+              out.morphWeights.push_back(float(mesh.weights[t]));
+          } else {
+            out.morphWeights.assign(used, 0.0f);
+          }
+          for (uint32_t t = 0; t < used && t < mesh.target_names_count; ++t)
+            out.morphTargetNames.push_back(mesh.target_names[t]
+                                               ? mesh.target_names[t]
+                                               : "");
+        } else {
+          out.morphPosDeltas.clear();
+          out.morphNormalDeltas.clear();
+        }
+      }
       if (model.nodes[ni].mesh < 0)
         model.nodes[ni].mesh = int32_t(model.meshes.size());
       model.meshes.push_back(std::move(out));
@@ -548,6 +602,26 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
           for (int c = 0; c < 3; ++c) {
             if (p[c] < bmin[c]) bmin[c] = p[c];
             if (p[c] > bmax[c]) bmax[c] = p[c];
+          }
+        }
+        // morph 增量同步烘焙(线性部分:pos 增量=mat3(world),normal 增量=法线矩阵)
+        if (mesh.morph && wp) {
+          const glm::mat3 lp(*wp);
+          for (size_t i = 0; i + 2 < mesh.morphPosDeltas.size(); i += 3) {
+            math::Vec3 d(mesh.morphPosDeltas[i], mesh.morphPosDeltas[i + 1],
+                         mesh.morphPosDeltas[i + 2]);
+            d = lp * d;
+            mesh.morphPosDeltas[i] = d.x;
+            mesh.morphPosDeltas[i + 1] = d.y;
+            mesh.morphPosDeltas[i + 2] = d.z;
+          }
+          for (size_t i = 0; i + 2 < mesh.morphNormalDeltas.size(); i += 3) {
+            math::Vec3 d(mesh.morphNormalDeltas[i], mesh.morphNormalDeltas[i + 1],
+                         mesh.morphNormalDeltas[i + 2]);
+            d = nm * d;
+            mesh.morphNormalDeltas[i] = d.x;
+            mesh.morphNormalDeltas[i + 1] = d.y;
+            mesh.morphNormalDeltas[i + 2] = d.z;
           }
         }
       }

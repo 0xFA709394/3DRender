@@ -65,6 +65,7 @@ std::string writeDracoSphere(const std::string& dirStr) {
   for (uint32_t v = 0; v < vc; ++v) weights[v * 4] = 1.0f;
 
   draco::Mesh mesh;
+  mesh.set_num_points(vc);  // identity mapping 不自动推 point 数(缺失=编码器越界)
   mesh.SetNumFaces(tc);
   for (uint32_t f = 0; f < tc; ++f) {
     mesh.SetFace(draco::FaceIndex(f),

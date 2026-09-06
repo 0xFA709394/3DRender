@@ -192,8 +192,8 @@ struct DescriptorKey {
   VkBuffer ubo[4];
   uint64_t uboOffset[4];
   uint64_t uboSize[4];
-  VkImageView texView[19];
-  VkSampler texSampler[19];               // 仅 combined 槽 5..8 有效
+  VkImageView texView[20];
+  VkSampler texSampler[20];               // 仅 combined 槽 5..8 有效
   VkSampler sharedSampler = VK_NULL_HANDLE;  // pbr 族:binding 23(smpMat 状态)
   bool pbrFamily = false;                 // 布局族(键维度)
   bool operator<(const DescriptorKey& o) const {
@@ -502,7 +502,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
     VkPhysicalDeviceFeatures physFeats;
     vkGetPhysicalDeviceFeatures(phys_, &physFeats);
     caps_.set(Capability::max_texture_size, physProps.limits.maxImageDimension2D);
-    caps_.set(Capability::max_texture_slots, 19);  // slot0..18(transmission 三槽)
+    caps_.set(Capability::max_texture_slots, 20);  // slot0..19(morph)
     caps_.set(Capability::max_uniform_buffer_slots, kMaxUniformSlots);
     caps_.set(Capability::instancing, 1);  // Vulkan 核心能力
     // framebufferColorSampleCounts 是位掩码,取不超过 4 的最高档
@@ -604,7 +604,7 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   VkDescriptorPoolSize poolSizes[] = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxUniformSlots * kMaxDescSets},
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 * kMaxDescSets},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 15 * kMaxDescSets},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16 * kMaxDescSets},
       {VK_DESCRIPTOR_TYPE_SAMPLER, kMaxDescSets},
   };
   VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -623,8 +623,9 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   // 4..8/13..22 = SAMPLED_IMAGE(slot 0..4,9..18 分离纹理,每阶段 sampler 上限 16
   // 的出路——MoltenVK/Metal 实测 maxPerStageDescriptorSamplers=16);
   // 9..12 = COMBINED(slot 5..8 cube/lut/shadow,采样器状态特殊);
-  // 23 = SAMPLER(共享 smpMat = mesh sampler 状态)
-  VkDescriptorSetLayoutBinding pb[24]{};
+  // 23 = SAMPLER(共享 smpMat = mesh sampler 状态);
+  // 24 = SAMPLED_IMAGE(slot19 texMorph;binding=slot+4 的一次性例外)
+  VkDescriptorSetLayoutBinding pb[25]{};
   for (uint32_t i = 0; i < kMaxUniformSlots; ++i) {
     pb[i].binding = i;
     pb[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -641,8 +642,9 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   for (uint32_t s = 5; s <= 8; ++s) setPb(4 + s, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
   for (uint32_t s = 9; s <= 18; ++s) setPb(4 + s, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
   setPb(23, VK_DESCRIPTOR_TYPE_SAMPLER);
+  setPb(24, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);  // slot19 texMorph
   VkDescriptorSetLayoutCreateInfo pbci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  pbci.bindingCount = 24;
+  pbci.bindingCount = 25;
   pbci.pBindings = pb;
   VK_CHECK(vkCreateDescriptorSetLayout(device_, &pbci, nullptr, &pbrSetLayout_));
   VkPipelineLayoutCreateInfo pblci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -674,7 +676,7 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
     RD_LOGE("rhi.vk", "descriptor 池耗尽(绑定组合过多)");
     return VK_NULL_HANDLE;
   }
-  VkWriteDescriptorSet writes[24]{};
+  VkWriteDescriptorSet writes[25]{};
   VkDescriptorBufferInfo uboInfos[4]{};
   VkDescriptorImageInfo imgInfos[20]{};  // 19 槽 + smpMat(binding 23)
   uint32_t count = 0;
@@ -689,13 +691,14 @@ VkDescriptorSet VulkanDevice::descriptorSetFor(const DescriptorKey& key) {
     w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     w.pBufferInfo = &uboInfos[i];
   }
-  for (uint32_t i = 0; i < 19; ++i) {
+  for (uint32_t i = 0; i < 20; ++i) {
     if (key.texView[i] == VK_NULL_HANDLE) continue;
     imgInfos[i] = {key.texSampler[i], key.texView[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     auto& w = writes[count++];
     w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = set;
-    w.dstBinding = i + 4;
+    // slot19(texMorph)=binding 24(pbr 布局一次性例外;23 被 smpMat 占用)
+    w.dstBinding = (key.pbrFamily && i == 19) ? 24u : i + 4;
     w.descriptorCount = 1;
     // pbr 族:槽 5..8(combined,cube/lut/shadow 状态特殊)之外的槽为分离
     //   SAMPLED_IMAGE(sampler=共享 smpMat@23;view 未绑的 binding 跳过不写,
@@ -2051,7 +2054,7 @@ void VulkanCommandBuffer::bindTexture(uint32_t slot, TextureHandle texture,
                                       SamplerHandle sampler) {
   const TextureRec* rec = device_->texture(texture);
   VkSampler s = device_->sampler(sampler);
-  if (!rec || s == VK_NULL_HANDLE || slot >= 19) return;
+  if (!rec || s == VK_NULL_HANDLE || slot >= 20) return;
   bound_.texView[slot] = rec->view;
   if (bound_.pbrFamily && !(slot >= 5 && slot <= 8)) {
     bound_.sharedSampler = s;  // 全部分离槽共享同一采样器状态(mesh/全局)

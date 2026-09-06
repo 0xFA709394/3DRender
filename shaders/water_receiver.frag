@@ -82,15 +82,18 @@ void main() {
         shadowF = sum / 9.0;
       }
     }
-    // 焦散:水下(低于水面)按吸收衰减;水线上方为 0
-    float caust = 0.0;
+    // 焦散:纹理基线 1=平态零偏差;偏差项按水下深度衰减,水线上方为 0。
+    // (静态场/平态 → 纹理恒 1 → 偏差 0 → 任意强度 = 零操作门控)
+    float caust = 1.0;
     if (water[1].z > 0.5) {
       vec2 wuv = vWorldPos.xz / water[0].xy + 0.5;
       float underWater = clamp((water[0].z - vWorldPos.y) / max(water[1].x, 1e-3), 0.0, 1.0);
-      caust = texture(texCaustics, clamp(wuv, vec2(0.0), vec2(1.0))).r;
-      caust *= exp(-2.0 * (1.0 - underWater) - 0.4) * underWater;  // 近水面亮,深处/线上衰减
+      float atten = underWater * exp(-1.0 * (1.0 - underWater) - 0.4);  // 近水面亮,线上 0
+      float c = texture(texCaustics, clamp(wuv, vec2(0.0), vec2(1.0))).r;
+      caust = 1.0 + (c - 1.0) * atten;
     }
-    direct = lu.lights[2].rgb * ndl * shadowF * (1.0 + caust * water[1].y);
+    direct = lu.lights[2].rgb * ndl * shadowF *
+             clamp(1.0 + (caust - 1.0) * water[1].y, 0.0, 8.0);
   }
   vec3 ambient = evalIrradiance(n) * albedo * 0.45;
   vec3 color = albedo / PI * direct + ambient;

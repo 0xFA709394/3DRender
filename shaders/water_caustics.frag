@@ -5,22 +5,29 @@
 #version 450
 layout(location = 0) in vec2 vUV;
 layout(binding = 0) uniform WaterCausticsUBO {
-  vec4 c0;  // x=texel y=eta(1/1.33) z=depth(焦散衰减) w=unused
+  vec4 c0;  // x=texel y=eta(1/1.33) z=depth(焦散衰减) w=waveScale(0=静态,焦散归零)
   vec4 c1;  // x=worldPerTexelX y=worldPerTexelZ z=unused w=unused
   vec4 c2;  // xyz=lightDir(指向光源) w=unused
 } wc;
 layout(binding = 5) uniform sampler2D texWave;
 layout(location = 0) out vec4 outColor;
-// 折射后水平落点(uv 域;视差近似:uv + worldOffset/poolSize)
+// 折射后水平落点(uv 域;视差近似)。扣除平面参考折射的常量偏移——
+// 平态(无波/waveScale=0)落点偏移=0 → det=1 → 焦散恒 1(门控零操作)。
 vec2 floorPos(vec2 uv) {
   float t = wc.c0.x;
   float hx = texture(texWave, uv + vec2(t, 0.0)).r - texture(texWave, uv - vec2(t, 0.0)).r;
   float hz = texture(texWave, uv + vec2(0.0, t)).r - texture(texWave, uv - vec2(0.0, t)).r;
-  vec3 nrm = normalize(vec3(-hx * wc.c1.x, 2.0, -hz * wc.c1.y));  // 世界尺度梯度
+  hx *= wc.c0.w;  // 波幅缩放(waveScale=0 → 平面)
+  hz *= wc.c0.w;
+  // 斜率 = 高度差/世界距离(2·texel 跨度);normal ∝ (-hx/wpx, 2, -hz/wpz)
+  vec3 nrm = normalize(vec3(-hx / max(wc.c1.x, 1e-6), 2.0,
+                            -hz / max(wc.c1.y, 1e-6)));
   vec3 d = -normalize(wc.c2.xyz);                                  // 入射(指向下)
   vec3 refr = refract(d, nrm, wc.c0.y);
   if (dot(refr, refr) < 1e-6) refr = d;
-  return uv + refr.xz * wc.c0.z / vec2(wc.c1.x, wc.c1.y) / max(wc.c0.x, 1e-6);
+  vec3 refrFlat = refract(d, vec3(0.0, 1.0, 0.0), wc.c0.y);
+  vec2 pool = vec2(wc.c1.x, wc.c1.y) / max(wc.c0.x, 1e-6);  // worldPerTexel/texel=池边长
+  return uv + (refr.xz - refrFlat.xz) * wc.c0.z / pool;
 }
 void main() {
   float t = wc.c0.x;

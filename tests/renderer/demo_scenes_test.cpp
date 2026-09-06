@@ -36,6 +36,12 @@ rd::test::Image renderScene(rd::Backend b, const char* name, rd::ModelAsset& sto
   auto mSkVs = load("pbr_forward_morph_skinned.vert");
   auto mSv = load("shadow_depth_morph.vert");
   auto mSdVs = load("shadow_depth_morph_skinned.vert");
+  auto wStepFs = load("water_step.frag");
+  auto wCauFs = load("water_caustics.frag");
+  auto wSv = load("water_surface.vert");
+  auto wSf = load("water_surface.frag");
+  auto wRv = load("water_receiver.vert");
+  auto wRf = load("water_receiver.frag");
   rd::Renderer renderer;
   // instanced_field 场景走实例化路径(instanced shader 加载 → 分组生效;golden 应不变)
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
@@ -44,7 +50,9 @@ rd::test::Image renderScene(rd::Backend b, const char* name, rd::ModelAsset& sto
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
                             {}, {}, {}, instVs.code, instFs.code, {}, {}, {},
                             mVs.code, mSkVs.code, mSv.code, mSdVs.code,
-                            unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            unlitVs.entry, rd::Format::RGBA8_UNORM,
+                            wStepFs.code, wCauFs.code, wSv.code, wSf.code, wRv.code,
+                            wRf.code};
   rd::OffscreenTargetDesc td;
   td.width = kW;
   td.height = kH;

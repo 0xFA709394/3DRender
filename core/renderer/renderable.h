@@ -14,7 +14,7 @@ class Environment;
 /// ItemUBO 布局常量(P4-A:块 304B,槽距 512B;renderer/mesh_renderable 共用,
 /// 改动须与 renderer.cpp 的 ItemUBOData static_assert 联动)。
 inline constexpr uint32_t kItemUboStride = 512;   ///< 槽距(256 对齐下一档,三后端 minUniformBufferOffsetAlignment)
-inline constexpr uint32_t kItemUboSize = 336;     ///< 块大小 = sizeof(ItemUBOData);ext3/ext4=transmission/volume
+inline constexpr uint32_t kItemUboSize = 368;     ///< 块大小 = sizeof(ItemUBOData);ext3/ext4=transmission,ext5/ext6=morph 权重
 inline constexpr uint32_t kItemUboMaxSlots = 128; ///< UBO 缓冲槽位(per-mesh)
 
 /// 渲染项录制上下文:per-frame 与 per-item UBO + 环境/灯光纹理(Renderer 注入)。

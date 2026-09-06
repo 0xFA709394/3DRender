@@ -68,10 +68,12 @@ struct ItemUBOData {
   float ext0[4];            // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor
   float ext1[4];            // xyz=sheenColorFactor w=sheenRoughnessFactor
   float ext2[4];            // xyz=specularColorFactor w=ior
-  float ext3[4];            // x=transmissionFactor y=thicknessFactor z=attenuationDistance(0=∞) w=0
-  float ext4[4];            // xyz=attenuationColor w=0
+  float ext3[4];            // x=transmissionFactor y=thicknessFactor z=attenuationDistance(0=∞) w=morphTargetCount
+  float ext4[4];            // xyz=attenuationColor w=morphTargetCount(与 ext3.w 同值,vert 就近读)
+  float ext5[4];            // morph weights[0..3]
+  float ext6[4];            // morph weights[4..7]
 };
-static_assert(sizeof(ItemUBOData) == kItemUboSize, "ItemUBO 必须 336B(槽距 512)");
+static_assert(sizeof(ItemUBOData) == kItemUboSize, "ItemUBO 必须 368B(槽距 512)");
 
 } // namespace
 

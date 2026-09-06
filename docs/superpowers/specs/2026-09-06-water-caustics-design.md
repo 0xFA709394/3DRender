@@ -102,11 +102,14 @@ pattern 与波场同源联动。Low 档跳过此 pass(焦散纹理绑 1×1 黑�
 Lambert 漫反射 × 方向光 + 阴影 PCF(slot7 比较采样)+ SH 环境项,
 `× (1 + caustics × water.caustics_intensity)`;焦散按世界 xz → 池 UV 采样。
 
-### 4.3 纹理槽(独立管线族,不占 pbr 槽位)
+### 4.3 纹理槽与 UBO(独立管线族,不占 pbr 槽位)
 
-0=材质贴图(可选)、1=波场、2=焦散、5=prefilterCube、7=方向光阴影;
-UBO:slot0=FrameUBO 复用、slot2=LightUBO 复用、slot4=WaterUBO(新,
-池参数:尺寸/波幅/深度/焦散强度/步进参数)。
+0=材质贴图(可选)、1=波场、2=焦散、5=prefilterCube、7=方向光阴影
+(combined 采样器族,同 blit/skybox;GLES 语义名表加 texWave→1/texCaustics→2);
+UBO:slot0=FrameUBO 复用(**尾部扩展 272→336B,water[3] 参数组**——RHI uniform
+slot 仅 0..3,不新增 slot;未激活时全零)、slot1=ItemUBO 复用(mvp/world/factors)、
+slot2=LightUBO 复用(阴影矩阵/hdrMode);step/caustics 全屏 pass 用各自小 UBO
+(slot0,块名 WaterStepUBO/WaterCausticsUBO,GLES 块名表增补)。
 
 ## 5. 画质档(QualityPreset 扩展)
 

@@ -49,6 +49,12 @@ TEST(Embedded, MetalShaders) {
   expectEmbeddedVert(rd::Backend::Metal, "pbr_forward_morph_skinned");
   expectEmbeddedVert(rd::Backend::Metal, "shadow_depth_morph");
   expectEmbeddedVert(rd::Backend::Metal, "shadow_depth_morph_skinned");
+  // water 系(water_pool 场景;step/caustics frag-only,vert 复用 blit——
+  // 曾因 rd_api set_surface 漏加载致 iOS load_scene 全败)
+  expectEmbeddedFrag(rd::Backend::Metal, "water_step");
+  expectEmbeddedFrag(rd::Backend::Metal, "water_caustics");
+  expectEmbedded(rd::Backend::Metal, "water_surface");
+  expectEmbedded(rd::Backend::Metal, "water_receiver");
 #endif
 }
 TEST(Embedded, VulkanShaders) {
@@ -67,6 +73,10 @@ TEST(Embedded, VulkanShaders) {
   expectEmbeddedVert(rd::Backend::Vulkan, "pbr_forward_morph_skinned");
   expectEmbeddedVert(rd::Backend::Vulkan, "shadow_depth_morph");
   expectEmbeddedVert(rd::Backend::Vulkan, "shadow_depth_morph_skinned");
+  expectEmbeddedFrag(rd::Backend::Vulkan, "water_step");
+  expectEmbeddedFrag(rd::Backend::Vulkan, "water_caustics");
+  expectEmbedded(rd::Backend::Vulkan, "water_surface");
+  expectEmbedded(rd::Backend::Vulkan, "water_receiver");
 #endif
 }
 TEST(Embedded, UnknownNameReturnsFalse) {

@@ -644,3 +644,102 @@ TEST(Gltf, TransmissionVolumeDefaults) {
   EXPECT_EQ(m.transmissionTex.width, 0u);
   EXPECT_EQ(m.thicknessTex.width, 0u);
 }
+
+// morph targets:双目标增量 + 初始权重 + targetNames + 超限截断
+TEST(Gltf, MorphTargets) {
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"weights": [0.5, 1.0],
+      "extras": {"targetNames": ["swell", "lift"]},
+      "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1},
+                      "indices": 2, "targets": [
+        {"POSITION": 3},
+        {"POSITION": 4, "NORMAL": 5}]}]}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 186}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0,   "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36,  "byteLength": 36},
+      {"buffer": 0, "byteOffset": 72,  "byteLength": 6},
+      {"buffer": 0, "byteOffset": 78,  "byteLength": 36},
+      {"buffer": 0, "byteOffset": 114, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 150, "byteLength": 36}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"},
+      {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 5, "componentType": 5126, "count": 3, "type": "VEC3"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_morph").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  {
+    FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const float nrm[9] = {0,0,1, 0,0,1, 0,0,1};
+    const uint16_t idx[3] = {0, 1, 2};
+    const float d0[9] = {0.1f,0,0, 0.1f,0,0, 0.1f,0,0};      // t0 pos
+    const float d1[9] = {0,0.2f,0, 0,0.2f,0, 0,0.2f,0};      // t1 pos
+    const float dn[9] = {1,0,0, 1,0,0, 1,0,0};               // t1 normal
+    fwrite(pos, 4, 9, f); fwrite(nrm, 4, 9, f); fwrite(idx, 2, 3, f);
+    fwrite(d0, 4, 9, f); fwrite(d1, 4, 9, f); fwrite(dn, 4, 9, f);
+    fclose(f);
+  }
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  const auto& m = model.meshes[0];
+  EXPECT_TRUE(m.morph);
+  ASSERT_EQ(m.morphPosDeltas.size(), size_t(2 * 9));
+  EXPECT_FLOAT_EQ(m.morphPosDeltas[0], 0.1f);
+  EXPECT_FLOAT_EQ(m.morphPosDeltas[10], 0.2f);
+  ASSERT_EQ(m.morphNormalDeltas.size(), size_t(2 * 9));
+  EXPECT_FLOAT_EQ(m.morphNormalDeltas[3], 0.0f);             // t0 normal 未声明 → 0
+  EXPECT_FLOAT_EQ(m.morphNormalDeltas[9 + 3], 1.0f);         // t1 normal x
+  ASSERT_EQ(m.morphWeights.size(), 2u);
+  EXPECT_FLOAT_EQ(m.morphWeights[0], 0.5f);
+  EXPECT_FLOAT_EQ(m.morphWeights[1], 1.0f);
+  ASSERT_EQ(m.morphTargetNames.size(), 2u);
+  EXPECT_EQ(m.morphTargetNames[0], "swell");
+}
+
+// 超限截断:10 目标 → 8 + morphWeights 同步截断
+TEST(Gltf, MorphTargetTruncation) {
+  std::string tgts;
+  for (int i = 0; i < 10; ++i) tgts += "{\"POSITION\": 0},";
+  tgts.pop_back();
+  std::string wts;
+  for (int i = 0; i < 10; ++i) wts += "0.1,";
+  wts.pop_back();
+  const std::string gltf = std::string(R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"weights": [)" + wts + R"(],
+      "primitives": [{"attributes": {"POSITION": 0}, "indices": 1,
+                      "targets": [)" + tgts + R"(]}]}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 42}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}]
+  })");
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_morph_t").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf.c_str(), f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f); fclose(f); }
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  const auto& m = model.meshes[0];
+  EXPECT_TRUE(m.morph);
+  EXPECT_EQ(m.morphPosDeltas.size() / 9, 8u);
+  EXPECT_EQ(m.morphNormalDeltas.size() / 9, 8u);
+  EXPECT_EQ(m.morphWeights.size(), 8u);
+}

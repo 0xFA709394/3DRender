@@ -78,6 +78,12 @@ struct MeshData {
   MaterialData material;
   bool skinned = false;           // 蒙皮网格(80B 布局)
   int32_t nodeIndex = -1;         // 所属 nodes[] 下标(无节点层级为 -1)
+  // ---- morph targets(P4-C;增量 = target 主序 [dx,dy,dz]×vertexCount)----
+  bool morph = false;                    // 有 ≥1 有效目标(管线选型用)
+  std::vector<float> morphPosDeltas;     // 每目标连续(NORMAL 缺失的目标零行在纹理层补)
+  std::vector<float> morphNormalDeltas;
+  std::vector<float> morphWeights;       // 初始权重(glTF mesh.weights;截断同步)
+  std::vector<std::string> morphTargetNames;  // extras.targetNames(元数据)
 };
 
 /// 层级节点(蒙皮模型用;非蒙皮模型 nodes 为空)。

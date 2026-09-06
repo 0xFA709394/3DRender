@@ -58,7 +58,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
   for (const auto& g : mesh_->meshes()) {
     if (g.material.alphaBlend && !g.skinned) {  // blend 路径(skinned 按 opaque)
       cmd->bindPipeline(ctx.blendPipeline);  // morph+blend 不支持(退 blend)
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 320);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B)
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
@@ -87,7 +87,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       cmd->bindPipeline(g.morph && ctx.morphSkinnedPipeline.valid()
                             ? ctx.morphSkinnedPipeline
                             : ctx.skinnedPipeline);
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 320);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B)
       cmd->bindUniformBuffer(3, ctx.jointUbo, ctx.jointOffset, 8192);
@@ -120,7 +120,7 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
           RD_LOGW("renderer", "morph 管线不可用,按基础管线渲染(形变不生效)");
         cmd->bindPipeline(ctx.pbrPipeline);
       }
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);  // FrameUBO
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 320);  // FrameUBO
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);  // ItemUBO
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B,多光源+阴影)
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());

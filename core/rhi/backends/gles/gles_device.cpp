@@ -629,7 +629,7 @@ bool GLESDevice::init(const DeviceDesc&) {
   GLint maxTex = 0;
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
   caps_.set(Capability::max_texture_size, static_cast<uint32_t>(maxTex));
-  caps_.set(Capability::max_texture_slots, 19);  // slot0..18(transmission;真机普遍 32+)
+  caps_.set(Capability::max_texture_slots, 20);  // slot0..19(morph;真机普遍 32+)
   caps_.set(Capability::max_uniform_buffer_slots, 4);
   caps_.set(Capability::instancing, 1);  // ES3 核心
   GLint maxSamples = 0;
@@ -851,6 +851,7 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
       {"SPIRV_Cross_CombinedtexSheenRoughsmpMat", 13},
       {"SPIRV_Cross_CombinedtexSpecularColorsmpMat", 14},
       {"SPIRV_Cross_CombinedtexSpecularsmpMat", 15},
+      {"SPIRV_Cross_CombinedtexMorphsmpMat", 19},
   };
   glUseProgram(program);
   for (const auto& s : kSamplerTable) {

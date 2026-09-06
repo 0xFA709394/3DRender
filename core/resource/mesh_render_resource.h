@@ -34,6 +34,10 @@ struct MeshGpuData {
   // ---- KHR transmission/volume(P4-B;缺省白:因子默认 0 压制贡献)----
   TextureHandle transmissionTex;   // R=透射强度
   TextureHandle thicknessTex;      // G=厚度
+  // ---- morph targets(P4-C)----
+  TextureHandle morphTex;          // RGBA16F:宽=顶点数,高=目标数×2(偶=POS 奇=NORMAL)
+  bool morph = false;              // 管线选型(创建失败降级 false)
+  std::vector<float> morphWeights; // 权重宿主副本(静态初始值;Animator/手动覆盖)
   bool skinned = false;         // 蒙皮网格(80B 顶点布局)
 };
 

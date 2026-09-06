@@ -27,6 +27,7 @@ void readFloatAttr(const cgltf_attribute* attrs, cgltf_size attrCount,
     }
   }
   if (!found) return;
+  if (!found->data || !found->data->buffer_view) return;  // draco/无数据 → 解码层填充前跳过
   for (cgltf_size v = 0; v < vertexCount; ++v) {
     float tmp[4] = {0, 0, 0, 0};
     cgltf_accessor_read_float(found->data, v, tmp, compCount);
@@ -267,6 +268,13 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
           weightsAcc = prim.attributes[ai].data;
       }
       if (!pos) continue;
+      // draco 未解码(解码失败/未接线):数据 accessor 无 bufferView → 跳过该 primitive
+      if (prim.has_draco_mesh_compression && (!pos->buffer_view ||
+          (prim.indices && !prim.indices->buffer_view))) {
+        RD_LOGW("resource.gltf", "mesh %s draco primitive 未解码,跳过",
+                mesh.name ? mesh.name : "");
+        continue;
+      }
       out.skinned = jointsAcc != nullptr;
       const uint32_t strideFloats = out.skinned ? 20 : 12;
       const cgltf_size vertexCount = pos->count;

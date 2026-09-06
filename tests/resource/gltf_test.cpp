@@ -4,6 +4,7 @@
 #include "common/image.h"
 #include "common/ktx2_gen.h"
 #include "common/skinned_gen.h"
+#include "common/draco_gen.h"
 #include "resource/gltf_loader.h"
 #include "resource/mesh_render_resource.h"
 #include "rhi/rhi_device.h"
@@ -790,4 +791,41 @@ TEST(Gltf, MorphWeightAnimation) {
   EXPECT_FLOAT_EQ(ch.values[1], 1.0f);
   EXPECT_FLOAT_EQ(ch.values[3], 0.0f);
   EXPECT_FLOAT_EQ(model.animations[0].duration, 1.0f);
+}
+
+// KHR_draco_mesh_compression 解码 round-trip(位置量化容差,其余精确)
+TEST(Gltf, DracoRoundTrip) {
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_draco").string();
+  const std::string glb = rd::test::writeDracoSphere(dir);
+  ASSERT_FALSE(glb.empty());
+  auto model = rd::loadGltf(glb.c_str());
+  ASSERT_TRUE(model.valid());
+  ASSERT_EQ(model.meshes.size(), 1u);
+  const auto& m = model.meshes[0];
+  std::vector<float> pos, nrm, uv;
+  std::vector<uint16_t> idx;
+  rd::test::dracoSphereSource(pos, nrm, uv, idx);
+  const size_t vc = pos.size() / 3;
+  EXPECT_TRUE(m.skinned);  // JOINTS/WEIGHTS 在
+  ASSERT_EQ(m.vertices.size() / 20, vc);
+  // 位置:14bit 量化 → 容差(球径 1.0 → 1e-4 量级,断言 1e-3)
+  for (size_t v = 0; v < vc; ++v)
+    for (int c = 0; c < 3; ++c)
+      EXPECT_NEAR(m.vertices[v * 20 + c], pos[v * 3 + c], 1e-3) << "v=" << v;
+  // 法线/UV:未量化 → 精确
+  for (size_t v = 0; v < vc; ++v) {
+    for (int c = 0; c < 3; ++c)
+      EXPECT_FLOAT_EQ(m.vertices[v * 20 + 3 + c], nrm[v * 3 + c]);
+    for (int c = 0; c < 2; ++c)
+      EXPECT_FLOAT_EQ(m.vertices[v * 20 + 10 + c], uv[v * 2 + c]);
+    // 蒙皮:关节 0 / 权重 (1,0,0,0)
+    for (int c = 0; c < 4; ++c) {
+      EXPECT_FLOAT_EQ(m.vertices[v * 20 + 12 + c], float(c == 0 ? 0 : 0));
+      EXPECT_FLOAT_EQ(m.vertices[v * 20 + 16 + c], float(c == 0 ? 1 : 0));
+    }
+  }
+  // 索引
+  ASSERT_EQ(m.indexCount, idx.size());
+  const uint16_t* got = reinterpret_cast<const uint16_t*>(m.indices.data());
+  for (size_t i = 0; i < idx.size(); ++i) EXPECT_EQ(got[i], idx[i]);
 }

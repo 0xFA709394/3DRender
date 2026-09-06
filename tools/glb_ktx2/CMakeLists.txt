@@ -4,4 +4,4 @@
 # → libktx RGBA8 KTX2 → CompressAstcEx(4x4)→ 追加 BIN + 改 JSON mimeType/bufferView。
 add_executable(glb_ktx2 main.cpp)
 target_include_directories(glb_ktx2 PRIVATE ${ktx_SOURCE_DIR}/include)
-target_link_libraries(glb_ktx2 PRIVATE rd_core nlohmann_json::nlohmann_json)
+target_link_libraries(glb_ktx2 PRIVATE rd_core nlohmann_json::nlohmann_json draco_static)

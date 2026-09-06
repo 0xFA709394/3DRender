@@ -134,11 +134,11 @@ std::string writeDracoSphere(const std::string& dirStr) {
   w32(0x46546C67);
   w32(2);
   w32(total);
-  w32(uint32_t(8 + jsonLen + jsonPad));
+  w32(uint32_t(jsonLen + jsonPad));
   w32(0x4E4F534A);
   fwrite(json, 1, size_t(jsonLen), f);
   for (int i = 0; i < jsonPad; ++i) fputc(' ', f);
-  w32(uint32_t(8 + bin.size() + binPad));
+  w32(uint32_t(bin.size() + binPad));
   w32(0x004E4942);
   fwrite(bin.data(), 1, bin.size(), f);
   for (size_t i = 0; i < size_t(binPad); ++i) fputc(0, f);

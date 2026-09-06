@@ -1,6 +1,7 @@
 // gltf_loader 的实现:cgltf 解析 → 固定交错布局顶点(stride 48,含切线)
 // + 自适应索引 + 全材质纹理解码 + 包围球计算。
 #include "resource/gltf_loader.h"
+#include "resource/draco_decode.h"
 #include "resource/mesh_utils.h"
 #include "foundation/log.h"
 #include "foundation/math.h"
@@ -214,6 +215,11 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
     cgltf_free(data);
     return model;
   }
+
+  // KHR_draco_mesh_compression 就地解码(P4-D;无扩展零开销)。
+  // storage 保活到函数尾:合成 accessor 指向其中内存,mesh 遍历/烘焙均在后续。
+  std::vector<std::unique_ptr<rd::DracoPrimBlock>> dracoStorage;
+  applyDracoDecoding(data, dracoStorage);
 
   float bmin[3] = {1e30f, 1e30f, 1e30f};
   float bmax[3] = {-1e30f, -1e30f, -1e30f};

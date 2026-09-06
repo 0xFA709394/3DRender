@@ -153,7 +153,8 @@ void WaterSurface::disturb(float u, float v, float strength, float radius) {
   inject_[injectCount_][0] = u;
   inject_[injectCount_][1] = v;
   inject_[injectCount_][2] = strength;
-  inject_[injectCount_][3] = radius;
+  // radius=256 参考系的 texel 数;按实际 simSize 换算(高档不缩小涟漪物理尺寸)
+  inject_[injectCount_][3] = radius * float(desc_.simSize) / 256.0f;
   ++injectCount_;
 }
 

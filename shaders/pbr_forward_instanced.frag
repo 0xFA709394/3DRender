@@ -32,9 +32,11 @@ struct Item {
   vec4 ext0;  // x=clearcoatFactor y=clearcoatRoughness z=clearcoatNormalScale w=specularFactor
   vec4 ext1;  // xyz=sheenColorFactor w=sheenRoughnessFactor
   vec4 ext2;  // xyz=specularColorFactor w=ior
-  vec4 ext3;  // x=transmissionFactor y=thicknessFactor z=attenuationDistance(0=∞) w=0
-  vec4 ext4;  // xyz=attenuationColor w=0
-  vec4 _pad[11];  // std140 数组元素 stride 对齐 CPU 槽距 512B(336+176)
+  vec4 ext3;  // x=transmissionFactor y=thicknessFactor z=attenuationDistance(0=∞) w=morphTargetCount
+  vec4 ext4;  // xyz=attenuationColor w=morphTargetCount(同 ext3.w)
+  vec4 ext5;  // morph weights[0..3](instanced 不消费;块对齐)
+  vec4 ext6;  // morph weights[4..7]
+  vec4 _pad[9];  // std140 数组元素 stride 对齐 CPU 槽距 512B(368+144)
 };
 layout(binding = 1) uniform ItemUBO { Item items[32]; } iu;  // 组上限 32(16KB 线)
 layout(binding = 2) uniform LightUBO {

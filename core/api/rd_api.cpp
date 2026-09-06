@@ -51,6 +51,7 @@ struct rd_engine {
   rd::CommandBus bus;                   ///< 命令总线(create 时注册内建命令)
   char cmdOutput[256] = {};             ///< 最近一次命令输出(get 等)
   rd::ModelAsset modelAsset;            ///< 当前模型 CPU 资产(Animator 绑定源)
+  std::vector<float> morphOverride_;    ///< 手动 morph 权重(加载时=静态初始值)
   rd::scene::Animator animator;
   bool hasAnimation = false;
   char lastError[256] = {};             ///< 最近错误描述（rd_get_last_error 返回）
@@ -113,7 +114,14 @@ void installModel(rd_engine* e, rd::ModelAsset&& model) {
   e->lightsDirty = true;
   e->renderer.setLightFraming(model.boundingCenter, model.boundingRadius);
   e->modelAsset = std::move(model);
-  e->hasAnimation = !e->modelAsset.animations.empty() && !e->modelAsset.skins.empty();
+  const bool hasMorph = !e->modelAsset.meshes.empty() && e->modelAsset.meshes[0].morph;
+  e->hasAnimation = !e->modelAsset.animations.empty() &&
+                    (!e->modelAsset.skins.empty() || hasMorph);
+  e->morphOverride_.clear();
+  if (hasMorph) {
+    e->morphOverride_ = e->modelAsset.meshes[0].morphWeights;
+    e->morphOverride_.resize(std::min<size_t>(e->morphOverride_.size(), 8), 0.0f);
+  }
   if (e->hasAnimation) {
     e->animator.bind(e->modelAsset);
     e->animator.play(0);
@@ -375,11 +383,23 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
   e->orbit.update(dt);  // 惯性积分(无指针按下时生效)
   applyCamera(e, float(e->width), float(e->height));
   e->renderer.beginScene(e->camera, {0.05f, 0.05f, 0.06f, 1.0f});
-  if (e->hasAnimation && e->model) {  // 蒙皮路径:Animator 驱动 + 关节调色板
+  if (e->hasAnimation && e->model) {  // 蒙皮/morph 路径:Animator 驱动
     e->animator.update(dt);
+    // 权重:动画播放中用采样值;暂停/静止用手动覆盖(加载时=静态初始值)
+    const float* mw = nullptr;
+    uint32_t mc = 0;
+    if (!e->morphOverride_.empty()) {
+      if (e->animator.playing()) {
+        mw = e->animator.morphWeights().data();
+        mc = e->animator.morphTargetCount();
+      } else {
+        mw = e->morphOverride_.data();
+        mc = uint32_t(e->morphOverride_.size());
+      }
+    }
     e->renderer.submit(e->model, rd::math::Mat4(1.0f),
                        e->animator.jointMatrices().data(),
-                       uint32_t(e->animator.jointMatrices().size()));
+                       uint32_t(e->animator.jointMatrices().size()), mw, mc);
   } else {
     e->scene->collect(e->renderer);
   }
@@ -388,6 +408,15 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
   e->device->submit(cmd);
   e->device->present(e->swapChain);
   e->device->endFrame();
+}
+
+rd_result rd_engine_set_morph_weight(rd_engine* e, uint32_t target, float weight) {
+  if (!e) return RD_ERROR_INVALID_ARG;
+  if (target >= e->morphOverride_.size()) return RD_ERROR_INVALID_ARG;
+  e->morphOverride_[target] = weight;
+  e->animator.pause(true);  // 手动值生效(暂停动画轨道)
+  e->renderDirty = true;
+  return RD_OK;
 }
 
 void rd_engine_play_animation(rd_engine* e, int32_t clip) {

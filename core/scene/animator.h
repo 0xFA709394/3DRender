@@ -23,6 +23,9 @@ public:
   const std::vector<math::Mat4>& jointMatrices() const { return jointMatrices_; }
   /// 节点全局矩阵(mesh 节点变换用)。
   const std::vector<math::Mat4>& nodeGlobals() const { return nodeGlobals_; }
+  /// 当前 morph 权重(模型首个 morph mesh;播放/暂停均输出最近采样值)。
+  const std::vector<float>& morphWeights() const { return morphWeights_; }
+  uint32_t morphTargetCount() const { return uint32_t(morphWeights_.size()); }
   bool playing() const { return playing_; }
   uint32_t clipCount() const { return uint32_t(clips_); }
 
@@ -35,6 +38,8 @@ private:
                   std::vector<math::Quat>& outR, std::vector<math::Vec3>& outS);
   void computeGlobals();   // locals → nodeGlobals_(沿 parent 链)
   void computeJoints();    // nodeGlobals_ × IBM → jointMatrices_
+  /// weights 通道采样(path=3 → morphNode_ 目标;blend<1 时与现值线性混合)
+  void sampleWeights(const AnimClipData& clip, float time, float blend);
 
   const ModelAsset* model_ = nullptr;
   ClipState active_, fadeIn_;
@@ -46,6 +51,9 @@ private:
   std::vector<math::Vec3> localS_;
   std::vector<math::Mat4> nodeGlobals_;
   std::vector<math::Mat4> jointMatrices_;
+  std::vector<float> morphWeights_;   // 首个 morph mesh 的当前权重
+  int32_t morphNode_ = -1;            // 该 mesh 的节点下标(权重通道目标)
+  uint32_t morphComps_ = 0;           // 每关键帧权重分量数(=目标数)
 };
 
 } // namespace rd::scene

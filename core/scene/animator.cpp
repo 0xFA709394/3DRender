@@ -27,6 +27,19 @@ bool Animator::bind(const ModelAsset& model) {
     localR_[i] = math::Quat(nd.rotation[3], nd.rotation[0], nd.rotation[1], nd.rotation[2]);
     localS_[i] = math::Vec3(nd.scale[0], nd.scale[1], nd.scale[2]);
   }
+  // morph:首个 morph mesh 的静态权重(节点用于匹配 weights 动画通道)
+  morphWeights_.clear();
+  morphNode_ = -1;
+  morphComps_ = 0;
+  for (const auto& mesh : model.meshes) {
+    if (mesh.morph) {
+      morphWeights_ = mesh.morphWeights;
+      morphNode_ = mesh.nodeIndex;
+      morphComps_ = std::min<uint32_t>(uint32_t(mesh.morphWeights.size()), 8);
+      morphWeights_.resize(morphComps_, 0.0f);
+      break;
+    }
+  }
   computeGlobals();
   computeJoints();
   return true;
@@ -85,6 +98,7 @@ void Animator::sampleClip(const AnimClipData& clip, float time,
                           std::vector<math::Vec3>& outS) {
   const float t = clip.duration > 0 ? std::fmod(time, clip.duration) : 0.0f;
   for (const auto& ch : clip.channels) {
+    if (ch.path == 3) continue;  // morph weights → sampleWeights 处理
     uint32_t i = 0;
     float frac = 0;
     findSegment(ch.times, t, i, frac);
@@ -107,11 +121,31 @@ void Animator::sampleClip(const AnimClipData& clip, float time,
   }
 }
 
+void Animator::sampleWeights(const AnimClipData& clip, float time, float blend) {
+  if (morphNode_ < 0 || morphComps_ == 0) return;
+  const float t = clip.duration > 0 ? std::fmod(time, clip.duration) : 0.0f;
+  for (const auto& ch : clip.channels) {
+    if (ch.path != 3 || ch.node != morphNode_) continue;
+    uint32_t i = 0;
+    float frac = 0;
+    findSegment(ch.times, t, i, frac);
+    const size_t o0 = size_t(i) * morphComps_;
+    const size_t o1 = size_t(i + 1) * morphComps_;
+    for (uint32_t c = 0; c < morphComps_; ++c) {
+      const float v0 = o0 + c < ch.values.size() ? ch.values[o0 + c] : 0.0f;
+      const float v1 = o1 + c < ch.values.size() ? ch.values[o1 + c] : v0;
+      const float v = v0 + (v1 - v0) * frac;
+      morphWeights_[c] = morphWeights_[c] + (v - morphWeights_[c]) * blend;
+    }
+  }
+}
+
 void Animator::update(float dt) {
   if (!model_ || !playing_ || paused_) return;
   active_.time += dt;
   sampleClip(model_->animations[size_t(active_.index)], active_.time, localT_, localR_,
              localS_);
+  sampleWeights(model_->animations[size_t(active_.index)], active_.time, 1.0f);
   if (fadeIn_.index >= 0) {
     fadeIn_.time += dt;
     fadeElapsed_ += dt;
@@ -121,6 +155,14 @@ void Animator::update(float dt) {
     std::vector<math::Quat> r2 = localR_;
     std::vector<math::Vec3> s2 = localS_;
     sampleClip(model_->animations[size_t(fadeIn_.index)], fadeIn_.time, t2, r2, s2);
+    // weights 淡入:淡入 clip 权重按 w 混合
+    {
+      std::vector<float> w0 = morphWeights_;
+      sampleWeights(model_->animations[size_t(fadeIn_.index)], fadeIn_.time, 1.0f);
+      std::vector<float> w1 = morphWeights_;
+      for (size_t c = 0; c < w0.size(); ++c)
+        morphWeights_[c] = w0[c] + (w1[c] - w0[c]) * w;
+    }
     for (size_t i = 0; i < localT_.size(); ++i) {
       localT_[i] = glm::mix(localT_[i], t2[i], w);
       localR_[i] = glm::slerp(localR_[i], r2[i], w);

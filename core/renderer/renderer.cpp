@@ -857,6 +857,7 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
   queue_.push_back(std::make_unique<MeshRenderable>(mesh));
   worldStack_.push_back(world);
   jointSlot_.push_back(-1);
+  morphOverride_.emplace_back();
   const auto& md = mesh ? mesh->meshes() : std::vector<MeshGpuData>();
   meshCount_.push_back(uint32_t(std::max<size_t>(1, md.size())));
 }
@@ -877,8 +878,34 @@ void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
   queue_.push_back(std::make_unique<MeshRenderable>(mesh));
   worldStack_.push_back(world);
   jointSlot_.push_back(int32_t(slot));
+  morphOverride_.emplace_back();
   const auto& md2 = mesh ? mesh->meshes() : std::vector<MeshGpuData>();
   meshCount_.push_back(uint32_t(std::max<size_t>(1, md2.size())));
+}
+
+void Renderer::submit(const std::shared_ptr<MeshRenderResource>& mesh,
+                      const math::Mat4& world, const math::Mat4* jointPalette,
+                      uint32_t jointCount, const float* morphWeights,
+                      uint32_t morphCount) {
+  if (!jointPalette || jointCount == 0) {
+    // 非蒙皮:morph-only 路径(复用基础 submit + 权重覆盖)
+    if (queue_.size() >= kMaxItems) {
+      RD_LOGW("renderer", "渲染项超出 %u,截断", kMaxItems);
+      return;
+    }
+    queue_.push_back(std::make_unique<MeshRenderable>(mesh));
+    worldStack_.push_back(world);
+    jointSlot_.push_back(-1);
+    const auto& md = mesh ? mesh->meshes() : std::vector<MeshGpuData>();
+    meshCount_.push_back(uint32_t(std::max<size_t>(1, md.size())));
+    morphOverride_.emplace_back();
+    if (morphWeights && morphCount > 0)
+      morphOverride_.back().assign(morphWeights, morphWeights + std::min(morphCount, 8u));
+    return;
+  }
+  submit(mesh, world, jointPalette, jointCount);
+  if (morphWeights && morphCount > 0 && !morphOverride_.empty())
+    morphOverride_.back().assign(morphWeights, morphWeights + std::min(morphCount, 8u));
 }
 
 void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
@@ -1061,14 +1088,21 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       }
       // ---- morph 权重(ext5/ext6;ext3/ext4.w=目标数;零权重=零操作)----
       {
+        const uint32_t idx = order[i];
         const MeshGpuData* mg =
             (!meshes.empty() && mi < meshes.size()) ? &meshes[mi] : nullptr;
-        const uint32_t mc =
-            (mg && mg->morph)
-                ? std::min<uint32_t>(uint32_t(mg->morphWeights.size()), 8) : 0;
-        iu.ext3[3] = iu.ext4[3] = float(mc);
-        for (uint32_t t = 0; t < 4 && t < mc; ++t) iu.ext5[t] = mg->morphWeights[t];
-        for (uint32_t t = 4; t < mc; ++t) iu.ext6[t - 4] = mg->morphWeights[t];
+        const float* wts = nullptr;  // 覆盖优先(Animator/手动),否则静态初始值
+        uint32_t mc = 0;
+        if (size_t(idx) < morphOverride_.size() && !morphOverride_[idx].empty()) {
+          wts = morphOverride_[idx].data();
+          mc = std::min<uint32_t>(uint32_t(morphOverride_[idx].size()), 8);
+        } else if (mg && mg->morph) {
+          wts = mg->morphWeights.data();
+          mc = std::min<uint32_t>(uint32_t(mg->morphWeights.size()), 8);
+        }
+        iu.ext3[3] = iu.ext4[3] = float(wts ? mc : 0);
+        for (uint32_t t = 0; t < 4 && t < mc; ++t) iu.ext5[t] = wts[t];
+        for (uint32_t t = 4; t < mc; ++t) iu.ext6[t - 4] = wts[t];
       }
       dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(slot) * kUboStride);
     }
@@ -1381,6 +1415,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   queue_.clear();
   worldStack_.clear();
   jointSlot_.clear();
+  morphOverride_.clear();
 }
 
 } // namespace rd

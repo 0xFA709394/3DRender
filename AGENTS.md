@@ -80,7 +80,17 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   + transmission_gallery 场景 + golden 四件(ext_transmission/roughness/
   volume/amber 双后端)+ 门控语义测试(开关可见/零操作逐像素一致);
   已知限制:不互相折射/blend 不入折射/屏幕空间单次折射近似/Low 档退化 opaque
-- 下一步:P4-C(morph/Draco),或 P3(AR+鸿蒙)
+- P4-C 完成：glTF morph targets(GPU 纹理形变——RGBA16F 增量纹理双行/目标,
+  vert texelFetch 按权重累加;ItemUBO 368B(ext5/ext6 权重,ext3/ext4.w=目标数);
+  4 个 vert 变体(pbr/morph、pbr/morph+skin、shadow/morph、shadow/morph+skin,
+  均分离采样器族);槽19=texMorph(binding24 一次性例外,复用 smpMat;caps 20);
+  动画 weights 通道进 Animator(含 crossfade 混合)+ 手动
+  rd_engine_set_morph_weight(调用即暂停动画);8 目标上限(glTF 一致性最低线);
+  顺带修复 Metal bindTexture 未设顶点阶段纹理;golden 三件
+  (morph_cube/morph_primitives/morph_combo)+ morph_demo 场景;
+  已知限制:TANGENT 增量忽略/unlit+morph 不支持/mask+morph 阴影不裁剪/
+  增量 16F 量化/拾取绑定姿态/排除实例化与剔除(同蒙皮)
+- 下一步:P4-D(Draco),或 P3(AR+鸿蒙)
 
 ## 构建与测试
 ```bash
@@ -149,6 +159,10 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   ext_amber`(TransmissionTest/Roughness/Attenuation/MosquitoInAmber;缺失自动 skip);
   交互 `--interactive --scene transmission_gallery`(棋盘地板+清/毛/红吸收三球);
   门控命令:`set render.transmission false`
+- morph golden:`morph_cube/morph_primitives/morph_combo`(AnimatedMorphCube/
+  MorphPrimitivesTest + 运行时生成 morph+skin 组合;缺失自动 skip);
+  交互 `--interactive --scene morph_demo`(双目标球呼吸形变);
+  手动权重:`rd_engine_set_morph_weight(e, target, w)`(调用即暂停动画)
 
 ## 移动端构建
 - 环境：`source /tmp/rd_env.sh`（JAVA_HOME/ANDROID_HOME/PATH）；JDK 须 17~22（openjdk@21）
@@ -181,7 +195,8 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   交错 stride 48，location 0/1/2/3
 - UBO 约定：slot0=FrameUBO(272B:viewProj|cameraPos|lightDir|lightColor|sh[9]|
   transmissionParams[x=1/transW,y=1/transH,z=maxLod])，
-  slot1=ItemUBO(336B 块/512B 槽距:**per-(item,mesh)**——item 占 meshCount 个连续槽,
+  slot1=ItemUBO(368B 块/512B 槽距:ext5/ext6=morph 权重,ext3/ext4.w=目标数;
+  **per-(item,mesh)**——item 占 meshCount 个连续槽,
   容量 128 槽(64KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源);
   GLES uniform block 名表：UBO/FrameUBO→0，ItemUBO→1
 - 纹理槽位：0=baseColor，1=MR，2=normal，3=emissive，4=occlusion，5=prefilterCube，
@@ -189,8 +204,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   未激活绑 1x1 D32 占位)，9=clearcoat(R)，10=clearcoatRough(G)，11=clearcoatNormal，
   12=sheenColor，13=sheenRough(A)，14=specularColor，15=specular(A)，
   16=transmissionScene(全局,pass A 占位/pass B 真图,Renderer 经 RenderContext 注入)，
-  17=transmission(R)，18=thickness(G)
-  ——共 19 槽(caps max_texture_slots=19;GLES 真机普遍 32+)
+  17=transmission(R)，18=thickness(G)，19=texMorph(RGBA16F 双行/目标,复用 smpMat,
+  binding24 一次性例外——binding=slot+4 在 23 被 smpMat 占用)
+  ——共 20 槽(caps max_texture_slots=20;GLES 真机普遍 32+)
 - pbr 系分离采样器模型：材质 2D 纹理声明 `texture2D` + 共享 `sampler smpMat`
   (binding 23,状态=mesh sampler);cube/lut/shadow 保持 combined(binding 9..12=槽 5..8);
   每阶段 sampler 描述符仅 5 个(MoltenVK/Metal 上限 16 的出路);
@@ -270,6 +286,14 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   **场景管线含 skinned 变体,首帧 ensureScenePipelines 统一重建(pipeSamples_ 初始 0)**
 - Animator:clip 线性插值(rotation slerp),STEP 退化保持;节点父先子后序依赖
   (反序模型已知限制);C API play/crossfade/pause;load_gltf 自动播放 clip0
+- morph targets(P4-C):增量纹理 RGBA16F(宽=顶点数,高=目标数×2;行 t*2=POSITION
+  增量、t*2+1=NORMAL;TANGENT 忽略);vert texelFetch 累加,**先 morph 后 skin**
+  (绑定姿态空间形变);8 目标上限(超出截断+告警,sparse accessor 自动展开);
+  权重经 ItemUBO ext5/ext6(目标数 ext3/ext4.w,零权重=零操作);
+  morph 项排除实例化分组与视锥剔除(同蒙皮);**无画质门控**;
+  Animator weights 通道(path=3)采样含 crossfade 混合;
+  Metal bindTexture 同时设 fragment+vertex 纹理(morph 在 vert 采样);
+  submit 重载(mesh,world,jointPalette,jointCount,morphWeights,morphCount)
 - 拾取:`scene::picking` screenRay(屏幕 y 翻转 NDC)+ pickModel(world 逆变换入模型空间,
   Möller–Trumbore;包围球随调随算预筛;48B/80B 布局兼容);
   `rd_engine_pick` 无 surface 时用 512×512 默认投影

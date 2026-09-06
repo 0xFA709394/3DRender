@@ -43,6 +43,7 @@ add_executable(rd_tests
   renderer/material_ext_test.cpp
   renderer/material_transmission_test.cpp
   renderer/morph_test.cpp
+  renderer/draco_test.cpp
   renderer/post_test.cpp
   renderer/skinned_test.cpp
   renderer/demo_scenes_test.cpp

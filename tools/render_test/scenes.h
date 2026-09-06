@@ -23,6 +23,7 @@ struct DemoScene {
   bool morphPulse = false;                     // morph_demo:权重正弦驱动
   std::vector<float> morphWeights;             // morph_demo:当前权重(2 目标)
   std::shared_ptr<MeshRenderResource> skinnedRes;
+  std::shared_ptr<MeshRenderResource> waterSurface;  // water_pool 水面(空=非水场景)
   float framingCenter[3] = {0, 0, 0};
   float framingRadius = 1.0f;
   /// 可选画质档(默认 nullptr=legacy 档;Bloom/阴影场景显式指定)。

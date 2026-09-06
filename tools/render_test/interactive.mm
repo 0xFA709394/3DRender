@@ -9,6 +9,7 @@
 #include "renderer/renderer.h"
 #include "rhi/rhi_device.h"
 #include "scene/orbit_controller.h"
+#include "scene/picking.h"
 #include "rd_shader_dir.h"
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_COCOA
@@ -29,6 +30,9 @@ struct Ctx {
   double lastClickTime = 0;
   FILE* recordFile = nullptr;               // 录制输出(非空则写事件)
   int winW = 960, winH = 720;
+  bool waterScene = false;                  // 场景直驱水场景(单击涟漪)
+  bool tapPending = false;
+  double tapX = 0, tapY = 0, downX = 0, downY = 0;
 };
 
 /// 录制一行:t(ms) action id x y(归一化)。
@@ -50,6 +54,8 @@ void onMouseButton(GLFWwindow* w, int button, int action, int) {
   const float px = float(x * sx), py = float(y * sy);
   if (action == GLFW_PRESS) {
     c->dragging = true;
+    c->downX = x;
+    c->downY = y;
     recordEvent(c, "down", 0, px, py);
     if (c->orbit) c->orbit->onPointerDown(0, px, py);
     else rd_engine_on_pointer(c->engine, RD_POINTER_DOWN, 0, px, py);
@@ -65,6 +71,12 @@ void onMouseButton(GLFWwindow* w, int button, int action, int) {
     recordEvent(c, "up", 0, px, py);
     if (c->orbit) c->orbit->onPointerUp(0, px, py);
     else rd_engine_on_pointer(c->engine, RD_POINTER_UP, 0, px, py);
+    // 单击(位移 < 6px)→ 涟漪注入(场景直驱水场景)
+    if (c->waterScene && std::fabs(x - c->downX) < 6 && std::fabs(y - c->downY) < 6) {
+      c->tapPending = true;
+      c->tapX = x;
+      c->tapY = y;
+    }
   }
 }
 void onCursorPos(GLFWwindow* w, double x, double y) {
@@ -110,12 +122,19 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
   auto mSkVs = load("pbr_forward_morph_skinned.vert");
   auto mSv = load("shadow_depth_morph.vert");
   auto mSdVs = load("shadow_depth_morph_skinned.vert");
+  auto wStepFs = load("water_step.frag");
+  auto wCauFs = load("water_caustics.frag");
+  auto wSv = load("water_surface.vert");
+  auto wSf = load("water_surface.frag");
+  auto wRv = load("water_receiver.vert");
+  auto wRf = load("water_receiver.frag");
   rd::Renderer renderer;
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {},{}, {},{}, {},{}, {}, {}, mVs.code, mSkVs.code, mSv.code, mSdVs.code, unlitVs.entry, scFmt};
+                            {},{}, {},{}, {},{}, {}, {}, mVs.code, mSkVs.code, mSv.code, mSdVs.code, unlitVs.entry, scFmt,
+                            wStepFs.code, wCauFs.code, wSv.code, wSf.code, wRv.code, wRf.code};
   if (!renderer.init(*device, sd)) return 1;
   rd::ModelAsset storage;
   rd::tool::DemoScene scene;
@@ -129,6 +148,7 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
   orbit.frameModel(scene.framingCenter, scene.framingRadius);
   Ctx ctx;
   ctx.orbit = &orbit;
+  ctx.waterScene = scene.waterSurface != nullptr;
   glfwSetWindowUserPointer(win, &ctx);
 
   const char* framesEnv = getenv("RD_INTERACTIVE_FRAMES");
@@ -147,6 +167,23 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
     const auto now = std::chrono::steady_clock::now();
     const float dt = std::chrono::duration<float>(now - last).count();
     last = now;
+    if (ctx.tapPending) {  // 单击涟漪:相机 ray ∩ y=0 平面 → 池 uv
+      ctx.tapPending = false;
+      float sx, sy;
+      glfwGetWindowContentScale(win, &sx, &sy);
+      scene.camera.setPerspective(0.78539816f, float(fbw) / float(fbh),
+                                  std::max(0.01f, orbit.distance() * 0.02f),
+                                  orbit.distance() * 20.0f);
+      float o[3], dir[3];
+      rd::scene::screenRay(scene.camera, float(ctx.tapX * sx), float(ctx.tapY * sy),
+                           float(fbw * sx), float(fbh * sy), o, dir);
+      if (std::fabs(dir[1]) > 1e-5f) {
+        const float t = -o[1] / dir[1];
+        const float px = o[0] + dir[0] * t, pz = o[2] + dir[2] * t;
+        const float u = px / 4.0f + 0.5f, v = pz / 4.0f + 0.5f;
+        if (u >= 0 && u <= 1 && v >= 0 && v <= 1) renderer.disturbWater(u, v, 0.06f, 5.0f);
+      }
+    }
     orbit.update(dt);
     orbit.applyTo(scene.camera);
     scene.camera.setPerspective(0.78539816f, float(fbw) / float(fbh),

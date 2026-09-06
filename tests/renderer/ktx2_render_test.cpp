@@ -91,8 +91,7 @@ rd::test::Image renderKtx2(rd::Backend b) {
   rd::Renderer renderer;
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code, sdVs.code, sdFs.code,
-                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {},{}, {},{}, {},{}, {}, {}, unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            exFs.code,   bbFs.code,   cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,{},{},{},{},{},{},{},{},{},{},{},{}, unlitVs.entry, rd::Format::RGBA8_UNORM};
   if (!(renderer.init(*device, sd))) return {};
   rd::OffscreenTargetDesc td;
   td.width = kW;

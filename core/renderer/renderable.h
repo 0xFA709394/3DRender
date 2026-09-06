@@ -40,6 +40,11 @@ struct RenderContext {
   PipelineHandle shadowMaskPipe;
   /// 混合管线(alphaBlend 材质用;pbr 布局,blend 开 depthWrite 关)
   PipelineHandle blendPipeline;
+  /// morph 管线(空=不支持;选路见 MeshRenderable::record)
+  PipelineHandle morphPipeline;
+  PipelineHandle morphSkinnedPipeline;
+  PipelineHandle morphShadowPipe;
+  PipelineHandle morphSkinnedShadowPipe;
   /// 共享 JointUBO(slot3;per-item 偏移)
   BufferHandle jointUbo;
   uint64_t jointOffset = 0;               ///< 本项在 JointUBO 中的偏移(蒙皮项)

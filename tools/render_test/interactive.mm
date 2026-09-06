@@ -106,12 +106,16 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
   auto cpFs = load("composite.frag");
   auto fxFs = load("fxaa.frag");
   auto skVs = load("pbr_forward_skinned.vert");
+  auto mVs = load("pbr_forward_morph.vert");
+  auto mSkVs = load("pbr_forward_morph_skinned.vert");
+  auto mSv = load("shadow_depth_morph.vert");
+  auto mSdVs = load("shadow_depth_morph_skinned.vert");
   rd::Renderer renderer;
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
                             cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
-                            {},{}, {},{}, {},{}, {}, {}, unlitVs.entry, scFmt};
+                            {},{}, {},{}, {},{}, {}, {}, mVs.code, mSkVs.code, mSv.code, mSdVs.code, unlitVs.entry, scFmt};
   if (!renderer.init(*device, sd)) return 1;
   rd::ModelAsset storage;
   rd::tool::DemoScene scene;

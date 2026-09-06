@@ -142,6 +142,16 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   // 蒙皮 shader 模块(管线随 SceneTarget 重建时复用)
   skvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skinnedVs, desc.entry});
   sdsvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skinnedShadowVs, desc.entry});
+  // morph 系模块(空码=不建,向后兼容)
+  if (!desc.morphVs.empty())
+    morphVs_ = dev.createShaderModule({ShaderStage::Vertex, desc.morphVs, desc.entry});
+  if (!desc.morphSkinnedVs.empty())
+    morphSkvs_ = dev.createShaderModule({ShaderStage::Vertex, desc.morphSkinnedVs, desc.entry});
+  if (!desc.morphShadowVs.empty())
+    morphSv_ = dev.createShaderModule({ShaderStage::Vertex, desc.morphShadowVs, desc.entry});
+  if (!desc.morphSkinnedShadowVs.empty())
+    morphSdsvs_ =
+        dev.createShaderModule({ShaderStage::Vertex, desc.morphSkinnedShadowVs, desc.entry});
   if (!desc.skyboxVs.empty() && !desc.skyboxFs.empty()) {
     skyVs_ = dev.createShaderModule({ShaderStage::Vertex, desc.skyboxVs, desc.entry});
     skyFs_ = dev.createShaderModule({ShaderStage::Fragment, desc.skyboxFs, desc.entry});
@@ -359,6 +369,46 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
   skinnedShadowPipeline_ = dev_->createPipeline(ssd);
   if (!skinnedPipeline_.valid() || !skinnedShadowPipeline_.valid())
     RD_LOGE("renderer", "蒙皮管线重建失败(fmt=%d samples=%u)", int(fmt), samples);
+  // ---- morph 管线 ×4(48B/80B × 场景/阴影;均 pbr 分离采样器族——
+  // shadow 变体声明 texMorph/smpMat 分离采样器,pbr 布局为其超集)----
+  if (morphVs_.valid() && fs_.valid()) {
+    PipelineDesc mpd;
+    mpd.vertexShader = morphVs_;
+    mpd.fragmentShader = fs_;
+    fillVertexLayout(mpd);
+    mpd.cullMode = CullMode::None;
+    mpd.depthTest = true;
+    mpd.depthWrite = true;
+    mpd.colorFormat = fmt;
+    mpd.sampleCount = samples;
+    mpd.separateSamplers = true;
+    if (morphPipeline_.valid()) dev_->destroyPipeline(morphPipeline_);
+    morphPipeline_ = dev_->createPipeline(mpd);
+  }
+  if (morphSkvs_.valid() && fs_.valid()) {
+    PipelineDesc msd = skd;  // 80B 六属性;separateSamplers 已 true
+    msd.vertexShader = morphSkvs_;
+    if (morphSkinnedPipeline_.valid()) dev_->destroyPipeline(morphSkinnedPipeline_);
+    morphSkinnedPipeline_ = dev_->createPipeline(msd);
+  }
+  if (morphSv_.valid() && sfs_.valid()) {
+    PipelineDesc msd2;
+    msd2.vertexShader = morphSv_;
+    msd2.fragmentShader = sfs_;
+    fillVertexLayout(msd2);
+    msd2.depthOnly = true;
+    msd2.separateSamplers = true;  // shadow_morph 声明分离采样器 → pbr 布局
+    if (morphShadowPipeline_.valid()) dev_->destroyPipeline(morphShadowPipeline_);
+    morphShadowPipeline_ = dev_->createPipeline(msd2);
+  }
+  if (morphSdsvs_.valid() && sfs_.valid()) {
+    PipelineDesc mssd = ssd;  // 80B depthOnly
+    mssd.vertexShader = morphSdsvs_;
+    mssd.separateSamplers = true;  // 同上:分离采样器 → pbr 布局
+    if (morphSkinnedShadowPipeline_.valid())
+      dev_->destroyPipeline(morphSkinnedShadowPipeline_);
+    morphSkinnedShadowPipeline_ = dev_->createPipeline(mssd);
+  }
   // 天空盒管线(depthTest/Write 关,场景 pass 首画;物体后画覆盖)
   if (skyVs_.valid() && skyFs_.valid()) {
     PipelineDesc skyd;
@@ -492,6 +542,11 @@ void Renderer::shutdown() {
   if (sdsvs_.valid()) dev_->destroyShaderModule(sdsvs_);
   if (skinnedPipeline_.valid()) dev_->destroyPipeline(skinnedPipeline_);
   if (skinnedShadowPipeline_.valid()) dev_->destroyPipeline(skinnedShadowPipeline_);
+  for (PipelineHandle p : {morphPipeline_, morphSkinnedPipeline_, morphShadowPipeline_,
+                           morphSkinnedShadowPipeline_})
+    if (p.valid()) dev_->destroyPipeline(p);
+  for (ShaderModuleHandle m : {morphVs_, morphSkvs_, morphSv_, morphSdsvs_})
+    if (m.valid()) dev_->destroyShaderModule(m);
   if (skyboxPipeline_.valid()) dev_->destroyPipeline(skyboxPipeline_);
   if (skyVs_.valid()) dev_->destroyShaderModule(skyVs_);
   if (skyFs_.valid()) dev_->destroyShaderModule(skyFs_);
@@ -538,6 +593,9 @@ void Renderer::shutdown() {
   sdsvs_ = {};
   skinnedPipeline_ = {};
   skinnedShadowPipeline_ = {};
+  morphPipeline_ = morphSkinnedPipeline_ = {};
+  morphShadowPipeline_ = morphSkinnedShadowPipeline_ = {};
+  morphVs_ = morphSkvs_ = morphSv_ = morphSdsvs_ = {};
   skyboxPipeline_ = {};
   skyVs_ = {};
   skyFs_ = {};
@@ -895,7 +953,11 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   const FrustumPlanes camFrustum = extractFrustum(viewProj_);
   const FrustumPlanes lightFrustum = extractFrustum(lvp);
   auto culledBy = [&](uint32_t idx, const FrustumPlanes& f) {
-    if (!frustumCulling_ || jointSlot_[idx] >= 0) return false;  // 蒙皮不剔除
+    const auto* r0 = static_cast<const MeshRenderable*>(queue_[idx].get());
+    const bool dynamic0 =
+        jointSlot_[idx] >= 0 ||
+        (!r0->meshData().empty() && r0->meshData()[0].morph);  // 蒙皮/morph 不剔除
+    if (!frustumCulling_ || dynamic0) return false;
     const auto* r = static_cast<const MeshRenderable*>(queue_[idx].get());
     if (r->meshData().empty()) return false;
     return !sphereVisible(f, worldStack_[idx], r->boundingCenter(), r->boundingRadius());
@@ -997,6 +1059,17 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
         iu.ext2[3] = 1.5f;   // ior 默认(f0=0.04 与现状一致)
         // ext3/ext4 零值 = transmissionFactor 0/attenuationColor(0,0,0) → 零操作 ✓
       }
+      // ---- morph 权重(ext5/ext6;ext3/ext4.w=目标数;零权重=零操作)----
+      {
+        const MeshGpuData* mg =
+            (!meshes.empty() && mi < meshes.size()) ? &meshes[mi] : nullptr;
+        const uint32_t mc =
+            (mg && mg->morph)
+                ? std::min<uint32_t>(uint32_t(mg->morphWeights.size()), 8) : 0;
+        iu.ext3[3] = iu.ext4[3] = float(mc);
+        for (uint32_t t = 0; t < 4 && t < mc; ++t) iu.ext5[t] = mg->morphWeights[t];
+        for (uint32_t t = 4; t < mc; ++t) iu.ext6[t - 4] = mg->morphWeights[t];
+      }
       dev_->updateBuffer(itemUbo_, &iu, sizeof(iu), uint64_t(slot) * kUboStride);
     }
   }
@@ -1011,6 +1084,8 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     sctx.shadowPipe = shadowPipeline_;
     sctx.skinnedShadowPipe = skinnedShadowPipeline_;
     sctx.shadowMaskPipe = shadowMaskPipeline_;
+    sctx.morphShadowPipe = morphShadowPipeline_;
+    sctx.morphSkinnedShadowPipe = morphSkinnedShadowPipeline_;
     sctx.jointUbo = jointUbo_;
     // 阴影实例化:lightVis 同资源相邻项(非蒙皮/非 mask,组≥2)合并
     for (uint32_t li = 0; li < lightVis.size();) {
@@ -1067,6 +1142,8 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     sctx.shadowPipe = shadowPipeline_;
     sctx.skinnedShadowPipe = skinnedShadowPipeline_;
     sctx.shadowMaskPipe = shadowMaskPipeline_;
+    sctx.morphShadowPipe = morphShadowPipeline_;
+    sctx.morphSkinnedShadowPipe = morphSkinnedShadowPipeline_;
     sctx.jointUbo = jointUbo_;
     for (uint32_t idx : lightVis) {
       sctx.itemOffset = uint64_t(slotOf[idx]) * kUboStride;
@@ -1136,6 +1213,10 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.skinnedPipeline = skinnedPipeline_;
   ctx.skinnedShadowPipe = skinnedShadowPipeline_;
   ctx.blendPipeline = blendPipeline_;
+  ctx.morphPipeline = morphPipeline_;
+  ctx.morphSkinnedPipeline = morphSkinnedPipeline_;
+  ctx.morphShadowPipe = morphShadowPipeline_;
+  ctx.morphSkinnedShadowPipe = morphSkinnedShadowPipeline_;
   ctx.jointUbo = jointUbo_;
   ctx.transSceneTex = transPlaceholderTex_;  // pass A 占位(透射采样只在 pass B)
   ctx.transSampler = transSampler_;
@@ -1146,7 +1227,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
     uint32_t groupEnd = vi + 1;
     const void* rid =
         r && !r->meshData().empty() && !r->meshData()[0].skinned &&
-                !r->meshData()[0].material.alphaBlend &&
+                !r->meshData()[0].material.alphaBlend && !r->meshData()[0].morph &&
                 !(transOn && r->meshData()[0].material.transmissionFactor > 0.0f)
             ? r->resourceId()
             : nullptr;
@@ -1155,6 +1236,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
         auto* n = static_cast<MeshRenderable*>(queue_[camVis[groupEnd]].get());
         if (!n || n->resourceId() != rid || n->meshData().empty() ||
             n->meshData()[0].skinned || n->meshData()[0].material.alphaBlend ||
+            n->meshData()[0].morph ||
             (transOn && n->meshData()[0].material.transmissionFactor > 0.0f))
           break;
         ++groupEnd;

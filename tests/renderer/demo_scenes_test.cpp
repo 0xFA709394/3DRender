@@ -32,12 +32,19 @@ rd::test::Image renderScene(rd::Backend b, const char* name, rd::ModelAsset& sto
   auto fxFs = load("fxaa.frag");
   auto instVs = load("pbr_forward_instanced.vert");
   auto instFs = load("pbr_forward_instanced.frag");
+  auto mVs = load("pbr_forward_morph.vert");
+  auto mSkVs = load("pbr_forward_morph_skinned.vert");
+  auto mSv = load("shadow_depth_morph.vert");
+  auto mSdVs = load("shadow_depth_morph_skinned.vert");
   rd::Renderer renderer;
   // instanced_field 场景走实例化路径(instanced shader 加载 → 分组生效;golden 应不变)
   rd::RendererShaderDesc sd{unlitVs.code, unlitFs.code, pbrVs.code, pbrFs.code,
                             pfVs.code,   pfFs.code,   blitVs.code, blitFs.code,
                             sdVs.code,   sdFs.code,   exFs.code,   bbFs.code,
-                            cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code, instVs.code, instFs.code, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, unlitVs.entry, rd::Format::RGBA8_UNORM};
+                            cpFs.code,   fxFs.code,   skVs.code,   sdsVs.code,
+                            {}, {}, {}, instVs.code, instFs.code, {}, {}, {},
+                            mVs.code, mSkVs.code, mSv.code, mSdVs.code,
+                            unlitVs.entry, rd::Format::RGBA8_UNORM};
   rd::OffscreenTargetDesc td;
   td.width = kW;
   td.height = kH;
@@ -123,6 +130,7 @@ TEST(DemoScenes, SmokeAll) {
   const char* const* names = rd::tool::demoSceneNames(count);
   for (uint32_t i = 0; i < count; ++i) {
     rd::ModelAsset storage;
+    fprintf(stderr, "[smoke] scene %u/%u: %s\n", i, count, names[i]);
     auto img = renderScene(rd::Backend::Metal, names[i], storage);
     if (img.pixels.empty()) continue;  // 资产缺失 skip
     EXPECT_GT(coverage(img), 0.03) << names[i] << " 覆盖率不足";

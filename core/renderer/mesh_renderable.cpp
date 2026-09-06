@@ -1,6 +1,7 @@
 // MeshRenderable 的实现:逐 mesh 选管线(unlit/pbr)、绑 UBO 与全纹理、索引绘制。
 #include "renderer/mesh_renderable.h"
 #include "renderer/environment.h"
+#include "foundation/log.h"
 
 namespace rd {
 
@@ -28,11 +29,15 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
   if (ctx.shadowPass) {  // 阴影:只写深度(位置语义;mask 材质采样 baseColor discard)
     const bool mask0 = !mesh_->meshes().empty() && mesh_->meshes()[0].material.alphaCutoff > 0.0f;
     const bool morph0 = !mesh_->meshes().empty() && mesh_->meshes()[0].morph;
-    // morph 阴影优先于 skinned(组合模型两者兼用);mask+morph → morph(不裁剪)
+    // morph 阴影优先于 skinned(组合模型两者兼用);mask+morph → morph(不裁剪);
+    // morph 管线不可用(嵌入方未提供 shader)时回退既有路径
+    const PipelineHandle morphShadowPipe =
+        skinned ? ctx.morphSkinnedShadowPipe : ctx.morphShadowPipe;
     const PipelineHandle pipe =
-        morph0 ? (skinned ? ctx.morphSkinnedShadowPipe : ctx.morphShadowPipe)
-               : skinned ? ctx.skinnedShadowPipe
-                         : (mask0 ? ctx.shadowMaskPipe : ctx.shadowPipe);
+        morph0 && morphShadowPipe.valid()
+            ? morphShadowPipe
+            : skinned ? ctx.skinnedShadowPipe
+                      : (mask0 ? ctx.shadowMaskPipe : ctx.shadowPipe);
     cmd->bindPipeline(pipe);
     cmd->bindUniformBuffer(0, ctx.lightUbo, ctx.lightUboOffset, 64);  // dir=0/spot=64
     cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);
@@ -79,7 +84,9 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
     }
     if (g.skinned) {
       // 蒙皮 PBR 路径(skinned 恒 PBR;unlit+蒙皮组合不支持)
-      cmd->bindPipeline(g.morph ? ctx.morphSkinnedPipeline : ctx.skinnedPipeline);
+      cmd->bindPipeline(g.morph && ctx.morphSkinnedPipeline.valid()
+                            ? ctx.morphSkinnedPipeline
+                            : ctx.skinnedPipeline);
       cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B)
@@ -106,7 +113,13 @@ void MeshRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), 64);  // ItemUBO 前 64B=mvp
       cmd->bindTexture(0, g.baseColorTex, mesh_->sampler());
     } else {
-      cmd->bindPipeline(g.morph ? ctx.morphPipeline : ctx.pbrPipeline);
+      if (g.morph && ctx.morphPipeline.valid()) {
+        cmd->bindPipeline(ctx.morphPipeline);
+      } else {
+        if (g.morph)
+          RD_LOGW("renderer", "morph 管线不可用,按基础管线渲染(形变不生效)");
+        cmd->bindPipeline(ctx.pbrPipeline);
+      }
       cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 272);  // FrameUBO
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff(), kItemUboSize);  // ItemUBO
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);  // LightUBO(432B,多光源+阴影)

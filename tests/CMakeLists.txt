@@ -54,6 +54,7 @@ add_executable(rd_tests
   common/golden_test.cpp
   common/skinned_gen.cpp
   common/morph_gen.cpp
+  common/draco_gen.cpp
   common/shader_code.cpp
   rhi/cube_test.cpp
   rhi/swapchain_test.cpp
@@ -66,6 +67,7 @@ add_executable(rd_tests
   api/command_bus_test.cpp
 )
 target_link_libraries(rd_tests PRIVATE rd_core GTest::gtest_main ktx draco_static)
+target_include_directories(rd_tests PRIVATE ${draco_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
 target_include_directories(rd_tests PRIVATE
   ${CMAKE_BINARY_DIR}/generated
   ${CMAKE_CURRENT_SOURCE_DIR}

@@ -10,8 +10,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     /// 状态机:画质档轮换(helmet 三档)+ 模型轮换(bundle 内全部 glb,High 档)。
     private struct DemoState {
         let quality: Int      // 1=High,2=Mid,3=Low
-        let model: String     // bundle 资源名
+        let model: String     // bundle 资源名(场景型忽略)
         let label: String
+        var scene: String? = nil  // 非空=程序场景(water_pool)
     }
     /// 模型友好名(bundle 扫描顺序即轮换顺序)。
     private static let modelLabels: [String: String] = [
@@ -22,7 +23,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     private func states() -> [DemoState] {
         var s = [DemoState(quality: 1, model: "DamagedHelmet", label: "High"),
                  DemoState(quality: 2, model: "DamagedHelmet", label: "Mid"),
-                 DemoState(quality: 3, model: "DamagedHelmet", label: "Low")]
+                 DemoState(quality: 3, model: "DamagedHelmet", label: "Low"),
+                 DemoState(quality: 1, model: "water_pool", label: "水波纹",
+                           scene: "water_pool")]
         // bundle 内全部 glb(除 helmet)按 High 档追加
         // 双扩展剥离(BoomBox.ktx2.glb → BoomBox.ktx2,显示名再去 .ktx2)
         let extras = Bundle.main.paths(forResourcesOfType: "glb", inDirectory: nil)
@@ -31,7 +34,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         for name in extras where name != "DamagedHelmet" {
             let base = name.hasSuffix(".ktx2") ? String(name.dropLast(5)) : name
             s.append(DemoState(quality: 1, model: name,
-                               label: AppDelegate.modelLabels[base] ?? base))
+                               label: AppDelegate.modelLabels[base] ?? base, scene: nil))
         }
         return s
     }
@@ -74,7 +77,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         guard let renderView else { return }
         let st = states()[stateIndex]
         renderView.setQuality(st.quality)
-        if let path = Bundle.main.path(forResource: st.model, ofType: "glb") {
+        if let scene = st.scene {
+            renderView.loadScene(scene)
+        } else if let path = Bundle.main.path(forResource: st.model, ofType: "glb") {
             renderView.loadModel(path)
         }
         print("RD: demo 状态 -> \(st.label)/\(st.model)")

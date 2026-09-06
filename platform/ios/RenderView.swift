@@ -80,6 +80,10 @@ import UIKit
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(onDoubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
         addGestureRecognizer(doubleTap)
+        // 单击涟漪(等双击失败才触发;非水场景 engine 内部 no-op)
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(onSingleTap(_:)))
+        singleTap.require(toFail: doubleTap)
+        addGestureRecognizer(singleTap)
         // common mode：滚动/追踪期间也不断帧
         let displayLink = CADisplayLink(target: self, selector: #selector(tick(_:)))
         displayLink.add(to: .main, forMode: .common)
@@ -93,6 +97,15 @@ import UIKit
         guard let engine else { return false }
         let r = rd_engine_load_gltf(engine, path)
         print("RD: load_gltf -> \(r)")
+        return r == RD_OK
+    }
+
+    /// 加载程序场景（如 water_pool；主线程）。成功返回 true。
+    @discardableResult
+    public func loadScene(_ name: String) -> Bool {
+        guard let engine else { return false }
+        let r = rd_engine_load_scene(engine, name)
+        print("RD: load_scene \(name) -> \(r)")
         return r == RD_OK
     }
 
@@ -171,6 +184,12 @@ import UIKit
         guard let engine else { return }
         let p = g.location(in: self)
         rd_engine_on_double_tap(engine, Float(p.x), Float(p.y))
+    }
+    @objc private func onSingleTap(_ g: UITapGestureRecognizer) {
+        guard let engine else { return }
+        let p = g.location(in: self)
+        rd_engine_water_disturb(engine, Float(p.x * contentScaleFactor),
+                                Float(p.y * contentScaleFactor))
     }
 
     /// 垂直同步回调：计算 dt 并渲染一帧。

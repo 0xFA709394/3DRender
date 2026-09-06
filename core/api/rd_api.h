@@ -128,6 +128,13 @@ void rd_engine_on_double_tap(rd_engine* engine, float x, float y);
  */
 rd_result_t rd_engine_load_gltf(rd_engine* engine, const char* path);
 
+/// 加载程序场景(当前支持 "water_pool":波动方程水面+焦散池)。
+/// 需 surface 就绪(renderer init 后);未知名返回 RD_ERROR_ASSET。
+rd_result_t rd_engine_load_scene(rd_engine* engine, const char* name);
+
+/// 屏幕像素坐标点按注入涟漪(相机 ray∩水面;未命中忽略)。water_pool 场景外 no-op。
+void rd_engine_water_disturb(rd_engine* engine, float x, float y);
+
 /// 清空全部手动灯光（清空后回落 glTF 灯/默认灯）。
 void rd_engine_clear_lights(rd_engine* engine);
 /// 加方向光（dir=指向光源方向，无需归一化；color×intensity）。

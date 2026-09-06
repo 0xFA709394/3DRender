@@ -16,9 +16,11 @@
 #include "options_generated.h"
 #include "renderer/quality.h"
 #include "renderer/renderer.h"
+#include "renderer/water.h"
 #include "resource/gltf_loader.h"
 #include "resource/hdr_env.h"
 #include "resource/mesh_render_resource.h"
+#include "resource/primitives.h"
 #include "rhi/rhi_device.h"
 #include "scene/animator.h"
 #include "scene/camera.h"
@@ -54,6 +56,15 @@ struct rd_engine {
   std::vector<float> morphOverride_;    ///< 手动 morph 权重(加载时=静态初始值)
   rd::scene::Animator animator;
   bool hasAnimation = false;
+  // ---- water_pool 程序场景 ----
+  struct WaterScene {
+    bool active = false;
+    std::shared_ptr<rd::MeshRenderResource> surface;
+    std::vector<std::shared_ptr<rd::MeshRenderResource>> receivers;
+    std::vector<rd::math::Mat4> worlds;
+    float rainTimer = 0.4f;
+    uint32_t rainSeed = 0x9E3779B9u;  // LCG(确定性)
+  } waterScene;
   char lastError[256] = {};             ///< 最近错误描述（rd_get_last_error 返回）
   // 异步加载:工作线程解析;完成队列由 render_frame 消费(含无 surface 早退前)
   rd::TaskQueue loadWork;               ///< 渲染线程投递 → 工作线程消费
@@ -97,6 +108,13 @@ void applyCamera(rd_engine* e, float vw, float vh) {
 /// 安装模型:GPU 上传 + 场景重建 + 取景 + 灯光 + 动画(渲染线程)。
 void installModel(rd_engine* e, rd::ModelAsset&& model) {
   e->device->waitIdle();  // 防旧模型在飞引用
+  if (e->waterScene.active) {  // 模型替换程序场景:卸载水
+    e->waterScene.active = false;
+    e->waterScene.receivers.clear();
+    e->waterScene.worlds.clear();
+    e->waterScene.surface = nullptr;
+    e->renderer.disableWater();
+  }
   auto res = rd::MeshRenderResource::upload(*e->device, model);
   if (!res) {
     setError(e, "模型 GPU 上传失败");
@@ -129,6 +147,110 @@ void installModel(rd_engine* e, rd::ModelAsset&& model) {
   e->renderDirty = true;
 }
 
+/// water_pool 池场景:池底/四壁/两球一柱(受水体)+ 水面网格。
+/// 布局常量与 tools/render_test/scenes.cpp 的 buildWaterPool 保持一致(池 4×4,底 y=-1)。
+bool buildWaterPoolScene(rd_engine* e) {
+  if (!e->rendererReady) {
+    setError(e, "load_scene 需 surface 就绪后调用");
+    return false;
+  }
+  // 卸载模型路径状态
+  if (e->model) {
+    e->device->waitIdle();
+    e->model->destroy(*e->device);
+    e->model = nullptr;
+  }
+  e->scene = std::make_unique<rd::scene::Scene>();
+  e->modelAsset = rd::ModelAsset();
+  e->hasAnimation = false;
+  e->animator = rd::scene::Animator();
+  auto& ws = e->waterScene;
+  ws.receivers.clear();
+  ws.worlds.clear();
+  auto put = [&](rd::MeshData&& m, const rd::math::Mat4& w) {
+    rd::ModelAsset a;
+    a.meshes.push_back(std::move(m));
+    a.boundingRadius = 3.0f;
+    auto res = rd::MeshRenderResource::upload(*e->device, a);
+    if (!res) return false;
+    ws.receivers.push_back(res);
+    ws.worlds.push_back(w);
+    return true;
+  };
+  const rd::math::Mat4 I(1.0f);
+  // 池底(y=-1)
+  auto floor = rd::primitives::makePlane(4.0f, 4.0f);
+  floor.material.roughnessFactor = 0.9f;
+  floor.material.baseColorFactor[0] = floor.material.baseColorFactor[1] =
+      floor.material.baseColorFactor[2] = 0.72f;
+  if (!put(std::move(floor), glm::translate(I, rd::math::Vec3(0, -1.0f, 0)))) return false;
+  // 四壁(薄盒 4×1.25×0.1,y -1..0.25;左右壁绕 Y 转 90°)
+  const rd::math::Vec3 wallPos[4] = {{0, -0.375f, -2.0f}, {0, -0.375f, 2.0f},
+                                     {-2.0f, -0.375f, 0}, {2.0f, -0.375f, 0}};
+  for (int i = 0; i < 4; ++i) {
+    auto wm = rd::primitives::makeBox(4.0f, 1.25f, 0.1f);
+    wm.material.roughnessFactor = 0.85f;
+    wm.material.baseColorFactor[0] = 0.8f;
+    wm.material.baseColorFactor[1] = 0.78f;
+    wm.material.baseColorFactor[2] = 0.74f;
+    rd::math::Mat4 w = glm::translate(I, wallPos[i]);
+    if (i >= 2) w = w * glm::rotate(I, 1.5707963f, rd::math::Vec3(0, 1, 0));
+    if (!put(std::move(wm), w)) return false;
+  }
+  // 两球 + 一柱(水下物体)
+  auto sph = rd::primitives::makeSphere(0.4f, 32, 16);
+  sph.material.roughnessFactor = 0.4f;
+  sph.material.baseColorFactor[2] = 0.9f;
+  if (!put(std::move(sph), glm::translate(I, rd::math::Vec3(-0.9f, -0.6f, -0.6f))))
+    return false;
+  auto sph2 = rd::primitives::makeSphere(0.4f, 32, 16);
+  sph2.material.roughnessFactor = 0.4f;
+  sph2.material.baseColorFactor[0] = 0.9f;
+  if (!put(std::move(sph2), glm::translate(I, rd::math::Vec3(0.9f, -0.55f, 0.7f))))
+    return false;
+  auto col = rd::primitives::makeBox(0.5f, 1.6f, 0.5f);
+  col.material.roughnessFactor = 0.7f;
+  if (!put(std::move(col), glm::translate(I, rd::math::Vec3(0.1f, -0.2f, -1.2f))))
+    return false;
+  // 水面网格
+  auto surf = rd::primitives::makeGrid(4.0f, 128);
+  surf.material.alphaBlend = true;
+  surf.material.roughnessFactor = 0.05f;
+  surf.material.baseColorFactor[0] = 0.15f;
+  surf.material.baseColorFactor[1] = 0.35f;
+  surf.material.baseColorFactor[2] = 0.4f;
+  rd::ModelAsset sm;
+  sm.meshes.push_back(std::move(surf));
+  sm.boundingRadius = 3.0f;
+  ws.surface = rd::MeshRenderResource::upload(*e->device, sm);
+  if (!ws.surface) return false;
+  // 水系统(默认 desc;simSize/caustics 走画质档联动)
+  rd::WaterDesc wd;
+  if (!e->renderer.enableWater(wd)) {
+    setError(e, "水面不可用(caps/shader 缺失)");
+    return false;
+  }
+  ws.active = true;
+  // 取景 + 灯光(暖方向光)
+  e->orbit.frameModel((const float[]){0, -0.3f, 0}, 3.2f);
+  e->manualLights.clear();
+  rd::LightData dl;
+  dl.type = rd::LightType::Directional;
+  const float n = std::sqrt(0.3f * 0.3f + 1.0f + 0.45f * 0.45f);
+  dl.direction[0] = 0.3f / n;
+  dl.direction[1] = 1.0f / n;
+  dl.direction[2] = 0.45f / n;
+  dl.color[0] = 3.2f;
+  dl.color[1] = 3.0f;
+  dl.color[2] = 2.7f;
+  e->manualLights.push_back(dl);
+  e->gltfLights.clear();
+  e->lightsDirty = true;
+  e->renderer.setLightFraming((const float[]){0, -0.5f, 0}, 2.8f);
+  e->renderDirty = true;
+  return true;
+}
+
 /// 把 options 映射进 renderer(每帧开头;幂等——setQuality/setShadow* 内部按值去重)。
 void applyOptions(rd_engine* e) {
   if (!e->rendererReady) return;
@@ -156,6 +278,11 @@ void applyOptions(rd_engine* e) {
   e->renderer.setSkyboxEnabled(o.env.skybox);
   e->renderer.setFrustumCulling(o.render.frustum_culling);
   e->renderer.setEnvYaw(o.env.yaw_deg);
+  rd::WaterParams wp;
+  wp.waveScale = o.water.wave_scale;
+  wp.causticsIntensity = o.water.caustics_intensity;
+  wp.depth = o.water.depth;
+  e->renderer.setWaterParams(wp);
 }
 
 /// increase/decrease:range 域按 step 增减并钳制。
@@ -213,6 +340,16 @@ void registerCommands(rd_engine* e) {
   // ---- 引擎族 ----
   bus.add("load_model", [e](const std::string& a, std::string&) {
     return rd_engine_load_gltf(e, a.c_str()) == RD_OK;
+  });
+  bus.add("load_scene", [e](const std::string& a, std::string&) {
+    return rd_engine_load_scene(e, a.c_str()) == RD_OK;
+  });
+  bus.add("water_disturb", [e](const std::string& a, std::string&) {
+    const auto sp = a.find(' ');
+    if (sp == std::string::npos) return false;
+    rd_engine_water_disturb(e, float(atof(a.substr(0, sp).c_str())),
+                            float(atof(a.substr(sp + 1).c_str())));
+    return true;
   });
   bus.add("play_animation", [e](const std::string& a, std::string&) {
     rd_engine_play_animation(e, atoi(a.c_str()));
@@ -368,8 +505,10 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
               e ? e->swapChain.value() : 0, e ? int(e->rendererReady) : -1);
     return;
   }
-  // 按需渲染:干净且无动画/惯性时零 GPU 工作(平台 vsync 照常调,省电)
-  if (!e->renderDirty && !e->animator.playing() && !e->orbit.isMoving()) return;
+  // 按需渲染:干净且无动画/惯性/水面时零 GPU 工作(平台 vsync 照常调,省电)
+  if (!e->renderDirty && !e->animator.playing() && !e->orbit.isMoving() &&
+      !e->waterScene.active)
+    return;
   e->renderDirty = false;
   e->device->beginFrame();  // 帧括号:驱动资源退休
   rd::TargetHandle target = e->device->acquireSwapChainTarget(e->swapChain);
@@ -384,10 +523,29 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
     e->lightsDirty = false;
   }
   applyOptions(e);  // 选项映射(幂等)
+  // 雨滴:确定性 LCG,~0.8s 一滴(避开池边 12%)
+  if (e->waterScene.active && e->options.water.rain) {
+    e->waterScene.rainTimer -= dt;
+    if (e->waterScene.rainTimer <= 0.0f) {
+      e->waterScene.rainTimer = 0.8f;
+      uint32_t& r = e->waterScene.rainSeed;
+      r = r * 1664525u + 1013904223u;
+      const float u = float((r >> 16) & 0xFFFF) / 65535.0f;
+      r = r * 1664525u + 1013904223u;
+      const float v = float((r >> 16) & 0xFFFF) / 65535.0f;
+      e->renderer.disturbWater(0.12f + u * 0.76f, 0.12f + v * 0.76f, 0.03f, 2.0f);
+    }
+  }
   e->orbit.update(dt);  // 惯性积分(无指针按下时生效)
   applyCamera(e, float(e->width), float(e->height));
   e->renderer.beginScene(e->camera, {0.05f, 0.05f, 0.06f, 1.0f});
-  if (e->hasAnimation && e->model) {  // 蒙皮/morph 路径:Animator 驱动
+  if (e->waterScene.active) {  // water_pool:受水体 + 水面(tick 驱动仿真)
+    e->renderer.tick(dt);
+    for (size_t i = 0; i < e->waterScene.receivers.size(); ++i)
+      e->renderer.submitWaterReceiver(e->waterScene.receivers[i],
+                                      e->waterScene.worlds[i]);
+    e->renderer.submitWaterSurface(e->waterScene.surface, rd::math::Mat4(1.0f));
+  } else if (e->hasAnimation && e->model) {  // 蒙皮/morph 路径:Animator 驱动
     e->animator.update(dt);
     // 权重:动画播放中用采样值;暂停/静止用手动覆盖(加载时=静态初始值)
     const float* mw = nullptr;
@@ -566,6 +724,34 @@ rd_result_t rd_engine_load_gltf_async(rd_engine* e, const char* path,
     });
   });
   return RD_OK;
+}
+
+rd_result_t rd_engine_load_scene(rd_engine* e, const char* name) {
+  if (!e || !name) return RD_ERROR_INVALID_ARG;
+  if (std::string(name) != "water_pool") {
+    setError(e, (std::string("未知场景: ") + name).c_str());
+    return RD_ERROR_ASSET;
+  }
+  if (!buildWaterPoolScene(e)) return RD_ERROR_SCENE;
+  return RD_OK;
+}
+
+void rd_engine_water_disturb(rd_engine* e, float x, float y) {
+  if (!e || !e->waterScene.active || !e->rendererReady) return;
+  const float vw = e->width ? float(e->width) : 512.0f;
+  const float vh = e->height ? float(e->height) : 512.0f;
+  applyCamera(e, vw, vh);
+  float o[3], d[3];
+  rd::scene::screenRay(e->camera, x, y, vw, vh, o, d);
+  const float planeY = 0.0f;  // water_pool 水面高度(WaterDesc 默认)
+  if (std::fabs(d[1]) < 1e-5f) return;
+  const float t = (planeY - o[1]) / d[1];
+  if (t <= 0.0f) return;
+  const float px = o[0] + d[0] * t, pz = o[2] + d[2] * t;
+  const float u = px / 4.0f + 0.5f, v = pz / 4.0f + 0.5f;  // 池 4×4
+  if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) return;
+  e->renderer.disturbWater(u, v, 0.045f, 3.0f);
+  e->renderDirty = true;
 }
 
 void rd_engine_clear_lights(rd_engine* e) {

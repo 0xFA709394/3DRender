@@ -46,5 +46,21 @@
   },
   "shadow.spot": {"type": "bool", "default": true, "doc": "聚光灯阴影开关(首盏聚光)"},
   "render.ext_materials": {"type": "bool", "default": true, "doc": "KHR 材质扩展四件套(clearcoat/sheen/specular/ior)开关"},
-  "render.transmission": {"type": "bool", "default": true, "doc": "KHR transmission/volume(透射/体积吸收)开关"}
+  "render.transmission": {"type": "bool", "default": true, "doc": "KHR transmission/volume(透射/体积吸收)开关"},
+  "water.rain": {"type": "bool", "default": true, "doc": "自动雨滴(引擎 water_pool 场景)"},
+  "water.wave_scale": {
+    "type": "float", "default": 1.0,
+    "domain": {"style": "range", "min": 0.0, "max": 2.0, "step": 0.05},
+    "doc": "波幅缩放(0=静止)"
+  },
+  "water.caustics_intensity": {
+    "type": "float", "default": 1.0,
+    "domain": {"style": "range", "min": 0.0, "max": 3.0, "step": 0.05},
+    "doc": "焦散亮度"
+  },
+  "water.depth": {
+    "type": "float", "default": 1.0,
+    "domain": {"style": "range", "min": 0.2, "max": 3.0, "step": 0.05},
+    "doc": "水深(吸收/焦散衰减)"
+  }
 }

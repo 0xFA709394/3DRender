@@ -30,6 +30,10 @@ dl TransmissionRoughnessTest.glb TransmissionRoughnessTest/glTF-Binary/Transmiss
 dl AttenuationTest.glb AttenuationTest/glTF-Binary/AttenuationTest.glb
 dl MosquitoInAmber.glb MosquitoInAmber/glTF-Binary/MosquitoInAmber.glb
 
+# P4-C morph targets golden 模型
+dl AnimatedMorphCube.glb AnimatedMorphCube/glTF-Binary/AnimatedMorphCube.glb
+dl MorphPrimitivesTest.glb MorphPrimitivesTest/glTF-Binary/MorphPrimitivesTest.glb
+
 # Sponza(无 glb 形态):glTF 主文件 + 全部外链纹理到 assets/sponza/
 if [ -f assets/sponza/Sponza.gltf ]; then
   echo "已存在 assets/sponza/Sponza.gltf"

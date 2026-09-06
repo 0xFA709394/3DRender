@@ -642,7 +642,10 @@ bool VulkanDevice::init(const DeviceDesc& desc) {
   for (uint32_t s = 5; s <= 8; ++s) setPb(4 + s, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
   for (uint32_t s = 9; s <= 18; ++s) setPb(4 + s, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
   setPb(23, VK_DESCRIPTOR_TYPE_SAMPLER);
-  setPb(24, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);  // slot19 texMorph
+  pb[24].binding = 24;
+  pb[24].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  pb[24].descriptorCount = 1;
+  pb[24].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
   VkDescriptorSetLayoutCreateInfo pbci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   pbci.bindingCount = 25;
   pbci.pBindings = pb;

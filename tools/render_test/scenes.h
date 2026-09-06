@@ -20,6 +20,8 @@ struct DemoScene {
   bool animated = false;
   float animTime = 0.0f;                       // instanced_field 相位驱动
   bool waveField = false;                      // instanced_field 标记
+  bool morphPulse = false;                     // morph_demo:权重正弦驱动
+  std::vector<float> morphWeights;             // morph_demo:当前权重(2 目标)
   std::shared_ptr<MeshRenderResource> skinnedRes;
   float framingCenter[3] = {0, 0, 0};
   float framingRadius = 1.0f;

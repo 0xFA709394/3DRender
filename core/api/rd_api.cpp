@@ -470,6 +470,13 @@ rd_result_t rd_engine_set_surface(rd_engine* e, void* nativeWindow, uint32_t wid
       setError(e, "内嵌 shader 缺失");
       return RD_ERROR_SHADER;
     }
+    // water 系(可选:缺失只禁用水面,不阻塞引擎;enableWater 优雅降级)
+    get("water_step", rd::ShaderStage::Fragment, sd.waterStepFs);
+    get("water_caustics", rd::ShaderStage::Fragment, sd.waterCausticsFs);
+    get("water_surface", rd::ShaderStage::Vertex, sd.waterSurfaceVs);
+    get("water_surface", rd::ShaderStage::Fragment, sd.waterSurfaceFs);
+    get("water_receiver", rd::ShaderStage::Vertex, sd.waterReceiverVs);
+    get("water_receiver", rd::ShaderStage::Fragment, sd.waterReceiverFs);
     if (!e->renderer.init(*e->device, sd)) {
       setError(e, "渲染器初始化失败");
       return RD_ERROR_SCENE;

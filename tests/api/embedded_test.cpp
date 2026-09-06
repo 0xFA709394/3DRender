@@ -14,6 +14,14 @@ void expectEmbedded(rd::Backend b, const char* name) {
       << name << " frag 缺失";
   EXPECT_GT(size, 1u);
 }
+// vert-only shader(morph/skinned 系;frag 复用 pbr/shadow 族)
+void expectEmbeddedVert(rd::Backend b, const char* name) {
+  const uint8_t* data = nullptr;
+  size_t size = 0;
+  EXPECT_TRUE(rd::embeddedShader(b, name, rd::ShaderStage::Vertex, &data, &size))
+      << name << " vert 缺失";
+  EXPECT_GT(size, 1u);
+}
 // frag-only shader(post 链,vert 复用 blit.vert)
 void expectEmbeddedFrag(rd::Backend b, const char* name) {
   const uint8_t* data = nullptr;
@@ -36,6 +44,11 @@ TEST(Embedded, MetalShaders) {
   expectEmbeddedFrag(rd::Backend::Metal, "bloom_blur");
   expectEmbeddedFrag(rd::Backend::Metal, "composite");
   expectEmbeddedFrag(rd::Backend::Metal, "fxaa");
+  // morph 系(P4-C,vert-only;rd_api 初始化强制要求——曾因漏注册名单致 iOS demo 全黑)
+  expectEmbeddedVert(rd::Backend::Metal, "pbr_forward_morph");
+  expectEmbeddedVert(rd::Backend::Metal, "pbr_forward_morph_skinned");
+  expectEmbeddedVert(rd::Backend::Metal, "shadow_depth_morph");
+  expectEmbeddedVert(rd::Backend::Metal, "shadow_depth_morph_skinned");
 #endif
 }
 TEST(Embedded, VulkanShaders) {
@@ -50,6 +63,10 @@ TEST(Embedded, VulkanShaders) {
   expectEmbeddedFrag(rd::Backend::Vulkan, "bloom_blur");
   expectEmbeddedFrag(rd::Backend::Vulkan, "composite");
   expectEmbeddedFrag(rd::Backend::Vulkan, "fxaa");
+  expectEmbeddedVert(rd::Backend::Vulkan, "pbr_forward_morph");
+  expectEmbeddedVert(rd::Backend::Vulkan, "pbr_forward_morph_skinned");
+  expectEmbeddedVert(rd::Backend::Vulkan, "shadow_depth_morph");
+  expectEmbeddedVert(rd::Backend::Vulkan, "shadow_depth_morph_skinned");
 #endif
 }
 TEST(Embedded, UnknownNameReturnsFalse) {

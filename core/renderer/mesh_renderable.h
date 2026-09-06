@@ -27,6 +27,8 @@ public:
   const void* resourceId() const { return mesh_.get(); }
   /// 网格共享采样器(instancing 路径用)。
   SamplerHandle meshSampler() const { return mesh_->sampler(); }
+  /// 水渲染项标记(实例化分组/视锥剔除排除用;WaterRenderable 覆写为 true)。
+  virtual bool waterItem() const { return false; }
 
 private:
   std::shared_ptr<MeshRenderResource> mesh_;

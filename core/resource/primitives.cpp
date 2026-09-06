@@ -102,4 +102,38 @@ MeshData makeBox(float sx, float sy, float sz) {
   return m;
 }
 
+} // namespace
+
+namespace rd::primitives {
+
+MeshData makeGrid(float size, uint32_t segments) {
+  segments = std::max(segments, 1u);
+  MeshData m;
+  const float half = size * 0.5f;
+  const uint32_t n = segments + 1;
+  m.vertices.reserve(size_t(n) * n * 12);
+  m.indices.reserve(size_t(segments) * segments * 6 * 2);
+  for (uint32_t j = 0; j < n; ++j)
+    for (uint32_t i = 0; i < n; ++i) {
+      const float u = float(i) / float(segments), v = float(j) / float(segments);
+      const float x = -half + u * size, z = -half + v * size;
+      // pos3|normal3(+Y)|tangent4|uv2(48B 交错)
+      const float vs[12] = {x, 0.0f, z, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, u, v};
+      m.vertices.insert(m.vertices.end(), vs, vs + 12);
+    }
+  std::vector<uint16_t> idx;
+  idx.reserve(size_t(segments) * segments * 6);
+  for (uint32_t j = 0; j < segments; ++j)
+    for (uint32_t i = 0; i < segments; ++i) {
+      const uint16_t a = uint16_t(j * n + i), b = uint16_t(a + 1), c = uint16_t(a + n),
+                     d = uint16_t(c + 1);
+      idx.insert(idx.end(), {a, c, b, b, c, d});
+    }
+  m.indices.resize(idx.size() * 2);
+  memcpy(m.indices.data(), idx.data(), m.indices.size());
+  m.indexType = IndexType::UInt16;
+  m.indexCount = uint32_t(idx.size());
+  return m;
+}
+
 } // namespace rd::primitives

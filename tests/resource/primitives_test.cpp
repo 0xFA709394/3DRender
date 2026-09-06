@@ -39,3 +39,23 @@ TEST(Primitives, Box) {
     maxY = std::max(maxY, std::abs(b.vertices[i * 12 + 1]));
   EXPECT_FLOAT_EQ(maxY, 1.0f);
 }
+
+TEST(Primitives, MakeGrid) {
+  auto m = rd::primitives::makeGrid(4.0f, 8);
+  ASSERT_FALSE(m.vertices.empty());
+  ASSERT_FALSE(m.indices.empty());
+  // 顶点数 =(8+1)²,索引字节 = 8²×6×2(UInt16)
+  ASSERT_EQ(m.vertices.size() / 12, 81u);
+  ASSERT_EQ(m.indexCount, 8u * 8u * 6u);
+  ASSERT_EQ(m.indices.size(), 8u * 8u * 6u * 2);
+  // 四角坐标:±2(y=0)
+  const float* p0 = m.vertices.data();
+  const float* pN = m.vertices.data() + (81 - 1) * 12;
+  EXPECT_NEAR(p0[0], -2.0f, 1e-5);
+  EXPECT_NEAR(p0[2], -2.0f, 1e-5);
+  EXPECT_NEAR(p0[1], 0.0f, 1e-6);
+  EXPECT_NEAR(pN[0], 2.0f, 1e-5);
+  EXPECT_NEAR(pN[2], 2.0f, 1e-5);
+  // 法线朝上
+  EXPECT_NEAR(p0[4], 1.0f, 1e-6);
+}

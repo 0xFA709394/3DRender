@@ -52,6 +52,12 @@ struct RenderContext {
   /// 无效则不绑——shader 槽位声明前向后兼容)
   TextureHandle transSceneTex;
   SamplerHandle transSampler;             ///< slot16 采样器(linear+mipmap)
+  /// Water(Renderer 注入;管线随 SceneTarget 格式重建;无效=WaterRenderable 跳过绘制)
+  PipelineHandle waterSurfacePipeline;
+  PipelineHandle waterReceiverPipeline;
+  TextureHandle waterWave;         ///< slot1:当前高度场
+  TextureHandle waterCaustics;     ///< slot2:焦散(Low 档=1×1 黑占位)
+  SamplerHandle waterSampler;
 };
 
 class Renderable {

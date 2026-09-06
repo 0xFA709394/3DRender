@@ -104,6 +104,25 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   其余精确);已知限制:加载期解码阻塞(异步加载线程天然受益)/
   uid ≤ accessors_count(cgltf 解析硬约束,工具分配已遵守)/morph 不支持
 - 下一步:P3(AR+鸿蒙)
+- 水波纹完成:波动方程水面(RGBA16F ping-pong,R=高/G=上帧;固定 1/60 子步×≤2/帧,
+  CFL k=0.42 阻尼 0.02;clamp 边界=池壁反射;注入 UBO 高斯脉冲×8,disturb 半径按
+  256 参考系 texel 换算——高档不缩小涟漪物理尺寸)+ Jacobian 汇聚焦散(视差近似,
+  扣平面折射基线→平态恒 1=门控零操作;法线=高度差/worldPerTexel)+ 水面管线
+  (顶点 fetch 位移+差分法线+Fresnel/IBL 反射/太阳 GGX+Beer-Lambert 水色,blend 半透明)
+  + 受水体管线(漫反射+阴影 PCF+SH+焦散偏差调制,水线上方无焦散);独立 combined
+  管线族(槽 1=texWave/2=texCaustics/5=prefilter/7=shadow;GLES 语义名表
+  texWave→1/texCaustics→2 + 块名表 WaterStepUBO/WaterCausticsUBO→0);
+  **FrameUBO 272→320B(water[3] 尾部,未激活全零;全部绑定点 320)**;
+  WaterRenderable(surface 不投影/receiver 常规深度;不参与实例化分组与视锥剔除);
+  画质档 simSize 512/256/128+焦散 1/1/0 联动重建;选项 water.rain/wave_scale/
+  caustics_intensity/depth;C API rd_engine_load_scene("water_pool")/water_disturb
+  (屏幕 ray∩水面)+ 命令 load_scene/water_disturb + 确定性 LCG 雨滴(0.8s;
+  render_frame 水活动时持续渲)+ installModel 卸载水场景;render_test
+  --scene water_pool + golden 双后端(48 帧两注入确定性)+ interactive 单击涟漪;
+  iOS demo 场景菜单「水波纹」+ 单击涟漪(singleTap require(toFail: doubleTap));
+  语义测试 Water.*(平态零漂移/注入可见/阻尼归零/静态场焦散零操作);
+  已知限制:焦散单次折射视差近似/水面不投影不接收阴影/不反射场景几何(仅 IBL)/
+  GLES 无 half-float caps 整体禁用/iOS 水场景人工目验
 
 ## 构建与测试
 ```bash
@@ -138,6 +157,11 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   render_test `--interactive --script <path>`
 - 选项持久化:`rd_engine_save_options/load_options`(扁平 JSON 名值对;
   原子写;未知名跳过向前兼容)
+- 水波纹:`./build/tools/render_test/render_test --scene water_pool --out x.png`;
+  交互 `--interactive --scene water_pool`(单击涟漪/拖拽 orbit/双击重置);
+  golden water_pool 双后端(48 帧 2 注入确定性);语义测试 Water.*(平态零漂移/
+  注入可见/阻尼归零/静态场零操作);引擎侧 `rd_engine_load_scene(e,"water_pool")`
+  + `water_disturb`,雨滴 `set water.rain false` 关
 - 视锥剔除(P4 性能):endScene 排序后按包围球×world 测 6 平面;
   场景 pass 用相机 VP、阴影 pass 用光源 VP(屏外物体可向屏内投影);
   ItemUBO 槽位=两可见集并集 slotOf 映射;蒙皮项跳过(动态包围);
@@ -209,8 +233,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   + bindTexture 回放期 `tex%u`→slot N(blit/composite 等 texN 命名的简单 shader)
 - 顶点布局约定（glTF 模型）：pos(3f)@0 | normal(3f)@12 | tangent(4f)@24 | uv(2f)@40，
   交错 stride 48，location 0/1/2/3
-- UBO 约定：slot0=FrameUBO(272B:viewProj|cameraPos|lightDir|lightColor|sh[9]|
-  transmissionParams[x=1/transW,y=1/transH,z=maxLod])，
+- UBO 约定：slot0=FrameUBO(320B:viewProj|cameraPos|lightDir|lightColor|sh[9]|
+  transmissionParams[x=1/transW,y=1/transH,z=maxLod]|water[3] 尾部
+  [0=sizeX,sizeZ,planeY,waveScale|1=depth,causticsI,causticsOn,simSize|2=texel],未激活全零)，
   slot1=ItemUBO(368B 块/512B 槽距:ext5/ext6=morph 权重,ext3/ext4.w=目标数;
   **per-(item,mesh)**——item 占 meshCount 个连续槽,
   容量 128 槽(64KB);多材质模型逐 mesh 材质;实例化分组限单 mesh 资源);

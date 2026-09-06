@@ -414,7 +414,7 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
   e->device->endFrame();
 }
 
-rd_result rd_engine_set_morph_weight(rd_engine* e, uint32_t target, float weight) {
+rd_result_t rd_engine_set_morph_weight(rd_engine* e, uint32_t target, float weight) {
   if (!e) return RD_ERROR_INVALID_ARG;
   if (target >= e->morphOverride_.size()) return RD_ERROR_INVALID_ARG;
   e->morphOverride_[target] = weight;

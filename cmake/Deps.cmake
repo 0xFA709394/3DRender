@@ -52,6 +52,20 @@ foreach(astcenc_tgt astcenc-neon-static astcenc-avx2-static astcenc-sse4.1-stati
   endif()
 endforeach()
 
+# Draco:KHR_draco_mesh_compression 解码(rd_core)/编码(glb_ktx2 工具/测试生成器)
+# 弱网/CI 可用 $ENV{RD_DEPS_MIRROR}/draco 指向本地 draco 源码副本跳过下载
+if(EXISTS "$ENV{RD_DEPS_MIRROR}/draco/CMakeLists.txt")
+  FetchContent_Declare(draco SOURCE_DIR $ENV{RD_DEPS_MIRROR}/draco)
+else()
+  FetchContent_Declare(draco
+    URL https://github.com/google/draco/archive/refs/tags/1.5.7.tar.gz)
+endif()
+FetchContent_MakeAvailable(draco)
+# draco 若污染 iOS 部署目标(同 ktx 教训),覆盖回 16.0
+if(IOS)
+  set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "" FORCE)
+endif()
+
 if(ANDROID)
   FetchContent_Declare(VulkanHeaders
     URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.3.296.0.tar.gz)

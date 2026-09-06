@@ -65,7 +65,7 @@ add_executable(rd_tests
   api/options_test.cpp
   api/command_bus_test.cpp
 )
-target_link_libraries(rd_tests PRIVATE rd_core GTest::gtest_main ktx)
+target_link_libraries(rd_tests PRIVATE rd_core GTest::gtest_main ktx draco_static)
 target_include_directories(rd_tests PRIVATE
   ${CMAKE_BINARY_DIR}/generated
   ${CMAKE_CURRENT_SOURCE_DIR}

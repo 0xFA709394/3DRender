@@ -493,17 +493,36 @@ ModelAsset loadGltf(const char* path, const TextureLoadPref& pref) {
       chd.path = ch.target_path == cgltf_animation_path_type_translation ? 0
                  : ch.target_path == cgltf_animation_path_type_rotation ? 1
                  : ch.target_path == cgltf_animation_path_type_scale    ? 2
+                 : ch.target_path == cgltf_animation_path_type_weights  ? 3
                                                                         : -1;
-      if (chd.path < 0) continue;  // weights(morph)跳过
+      if (chd.path < 0) continue;
       const cgltf_accessor* in = ch.sampler->input;
       const cgltf_accessor* out = ch.sampler->output;
       chd.times.resize(in->count);
       for (cgltf_size k = 0; k < in->count; ++k)
         cgltf_accessor_read_float(in, k, &chd.times[k], 1);
-      const uint32_t comps = chd.path == 1 ? 4 : 3;
-      chd.values.resize(out->count * comps);
-      for (cgltf_size k = 0; k < out->count; ++k)
-        cgltf_accessor_read_float(out, k, &chd.values[k * comps], comps);
+      uint32_t comps;
+      if (chd.path == 3) {
+        // weights:输出 SCALAR 扁平 keys×targets;目标数取目标 mesh(截断同静态解析)
+        uint32_t targets = 0;
+        if (ch.target_node->mesh && ch.target_node->mesh->primitives_count > 0)
+          targets = std::min(uint32_t(ch.target_node->mesh->primitives[0].targets_count),
+                             8u);
+        if (targets == 0) continue;  // 无 morph 目标:通道无意义
+        comps = targets;
+      } else {
+        comps = chd.path == 1 ? 4 : 3;
+      }
+      if (chd.path == 3) {
+        // weights:输出 accessor 为逐标量扁平(keys×targets),逐元素读
+        chd.values.resize(out->count);
+        for (cgltf_size k = 0; k < out->count; ++k)
+          cgltf_accessor_read_float(out, k, &chd.values[k], 1);
+      } else {
+        chd.values.resize(out->count * comps);
+        for (cgltf_size k = 0; k < out->count; ++k)
+          cgltf_accessor_read_float(out, k, &chd.values[k * comps], comps);
+      }
       if (in->count > 0) clip.duration = std::max(clip.duration, chd.times[in->count - 1]);
       clip.channels.push_back(std::move(chd));
     }

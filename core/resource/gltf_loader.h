@@ -105,9 +105,9 @@ struct SkinData {
 /// 动画通道:目标节点某属性的关键帧序列。
 struct AnimChannelData {
   int32_t node = -1;
-  int32_t path = 0;                   // 0=translation,1=rotation,2=scale
+  int32_t path = 0;                   // 0=translation,1=rotation,2=scale,3=morph weights
   std::vector<float> times;
-  std::vector<float> values;          // vec3(t/s)或 quat(r)扁平序列
+  std::vector<float> values;          // vec3(t/s)/quat(r)/keys×targets 扁平(w)序列
 };
 
 /// 动画 clip。

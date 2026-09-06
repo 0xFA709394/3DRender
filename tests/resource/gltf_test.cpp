@@ -743,3 +743,51 @@ TEST(Gltf, MorphTargetTruncation) {
   EXPECT_EQ(m.morphNormalDeltas.size() / 9, 8u);
   EXPECT_EQ(m.morphWeights.size(), 8u);
 }
+
+// 动画 weights 通道:path=3,values=keys×targets 扁平
+TEST(Gltf, MorphWeightAnimation) {
+  const char* gltf = R"({
+    "asset": {"version": "2.0"},
+    "scenes": [{"nodes": [0]}], "scene": 0,
+    "nodes": [{"mesh": 0}],
+    "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1,
+                    "targets": [{"POSITION": 0}, {"POSITION": 0}]}]}],
+    "animations": [{"channels": [{
+      "sampler": 0,
+      "target": {"node": 0, "path": "weights"}}],
+      "samplers": [{"input": 2, "output": 3, "interpolation": "LINEAR"}]}],
+    "buffers": [{"uri": "tri.bin", "byteLength": 66}],
+    "bufferViews": [
+      {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+      {"buffer": 0, "byteOffset": 36, "byteLength": 6},
+      {"buffer": 0, "byteOffset": 42, "byteLength": 8},
+      {"buffer": 0, "byteOffset": 50, "byteLength": 16}],
+    "accessors": [
+      {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+      {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"},
+      {"bufferView": 2, "componentType": 5126, "count": 2, "type": "SCALAR"},
+      {"bufferView": 3, "componentType": 5126, "count": 4, "type": "SCALAR"}]
+  })";
+  const std::string dir = (std::filesystem::temp_directory_path() / "rd_gltf_morph_a").string();
+  std::filesystem::create_directories(dir);
+  { FILE* f = fopen((dir + "/tri.gltf").c_str(), "w"); fputs(gltf, f); fclose(f); }
+  { FILE* f = fopen((dir + "/tri.bin").c_str(), "wb");
+    const float pos[9] = {0,0,0, 1,0,0, 0,1,0};
+    const uint16_t idx[3] = {0, 1, 2};
+    const float times[2] = {0.0f, 1.0f};
+    const float w[4] = {0.0f, 1.0f, 1.0f, 0.0f};  // 2 key × 2 target
+    fwrite(pos, 4, 9, f); fwrite(idx, 2, 3, f);
+    fwrite(times, 4, 2, f); fwrite(w, 4, 4, f); fclose(f); }
+  auto model = rd::loadGltf((dir + "/tri.gltf").c_str());
+  ASSERT_TRUE(model.valid());
+  ASSERT_EQ(model.animations.size(), 1u);
+  ASSERT_EQ(model.animations[0].channels.size(), 1u);
+  const auto& ch = model.animations[0].channels[0];
+  EXPECT_EQ(ch.path, 3);
+  ASSERT_EQ(ch.times.size(), 2u);
+  ASSERT_EQ(ch.values.size(), 4u);           // 2 key × 2 target
+  EXPECT_FLOAT_EQ(ch.values[0], 0.0f);
+  EXPECT_FLOAT_EQ(ch.values[1], 1.0f);
+  EXPECT_FLOAT_EQ(ch.values[3], 0.0f);
+  EXPECT_FLOAT_EQ(model.animations[0].duration, 1.0f);
+}

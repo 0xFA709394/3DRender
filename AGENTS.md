@@ -90,7 +90,20 @@ docs/superpowers/specs/2026-08-09-mobile-3d-renderer-design.md
   (morph_cube/morph_primitives/morph_combo)+ morph_demo 场景;
   已知限制:TANGENT 增量忽略/unlit+morph 不支持/mask+morph 阴影不裁剪/
   增量 16F 量化/拾取绑定姿态/排除实例化与剔除(同蒙皮)
-- 下一步:P4-D(Draco),或 P3(AR+鸿蒙)
+- P4-D 完成:KHR_draco_mesh_compression(加载链就地解码——draco 流展开为合成
+  cgltf_buffer/buffer_view/accessor 链改写 prim 指针,现有 loader 全复用;
+  uid 还原=cgltf PTRINDEX 约定(扩展值=accessor 下标+1,指针差取回);
+  draco 1.5.7 经 FetchContent(RD_DEPS_MIRROR 旁路;include 需 SOURCE_DIR/src
+  + CMAKE_BINARY_DIR——draco_features.h 生成在顶层 build/draco);
+  glb_ktx2 --draco 几何重打包(量化 --qp/--qn/--qt 默认 14/10/12;
+  uid=accessor 下标;无收益保留原样;旧几何 bufferView 置零回收;
+  TANGENT 走 GENERIC 不量化;morph primitive 拒绝);
+  Duck 120KB→37KB,与 KTX2 正交叠加(Lantern 9.1MB→1.0MB);
+  顺带修复:未解码 draco primitive 跳过守卫 + readFloatAttr 无数据守卫;
+  golden draco_sphere 双后端(生成器资产)+ round-trip 单测(位置量化容差,
+  其余精确);已知限制:加载期解码阻塞(异步加载线程天然受益)/
+  uid ≤ accessors_count(cgltf 解析硬约束,工具分配已遵守)/morph 不支持
+- 下一步:P3(AR+鸿蒙)
 
 ## 构建与测试
 ```bash
@@ -163,6 +176,9 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   MorphPrimitivesTest + 运行时生成 morph+skin 组合;缺失自动 skip);
   交互 `--interactive --scene morph_demo`(双目标球呼吸形变);
   手动权重:`rd_engine_set_morph_weight(e, target, w)`(调用即暂停动画)
+- draco golden:`draco_sphere` 双后端(运行时生成器资产,不依赖下载);
+  工具冒烟:`./build/tools/glb_ktx2/glb_ktx2 <in.glb> <out.glb> --draco
+  [--qp N --qn N --qt N]` → render_test --model 渲染验证(与 KTX2 正交叠加)
 
 ## 移动端构建
 - 环境：`source /tmp/rd_env.sh`（JAVA_HOME/ANDROID_HOME/PATH）；JDK 须 17~22（openjdk@21）
@@ -248,7 +264,7 @@ brew install molten-vk cmake   # 一次性（注意公式名是 molten-vk）
   astc>etc2>rgba32 由 caps 推导（pickTranscodeTarget）;测试资产运行时生成
   （tests/common/ktx2_gen,勿提交二进制）;Vulkan 描述符按绑定状态缓存
   （bind 只记状态、draw 时绑定,支持逐 draw 异构绑定）
-- 依赖弱网旁路：`$ENV{RD_DEPS_MIRROR}/ktx|glfw` 指向本地源码副本可跳过 FetchContent 下载
+- 依赖弱网旁路：`$ENV{RD_DEPS_MIRROR}/ktx|glfw|draco` 指向本地源码副本可跳过 FetchContent 下载
 - iOS 部署目标：**ktx CMakeLists 会强设 `CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=11.0`
   (CACHE 全局,污染所有目标;std::filesystem 需 13+)**——Deps.cmake 在拉取后覆盖回 16.0;
   toolchain 的 CMAKE_OSX_DEPLOYMENT_TARGET 须 CACHE FORCE(project() 平台初始化回填普通 set)

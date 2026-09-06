@@ -114,8 +114,8 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
   ppd.separateSamplers = true;  // pbr 族:分离采样器布局
   pbrPipeline_ = dev.createPipeline(ppd);
 
-  // 双层 UBO
-  frameUbo_ = dev.createBuffer({272, BufferUsage::Uniform, true, false, nullptr});
+  // 双层 UBO(FrameUBO 320B = 272 + water[3] 尾部)
+  frameUbo_ = dev.createBuffer({320, BufferUsage::Uniform, true, false, nullptr});
   itemUbo_ = dev.createBuffer({uint64_t(kUboStride) * kMaxItemSlots, BufferUsage::Uniform, true,
                                false, nullptr});
 
@@ -243,6 +243,22 @@ bool Renderer::init(Device& dev, const RendererShaderDesc& desc) {
     ttd.dataSize = 4;
     transPlaceholderTex_ = dev.createTexture(ttd);
     transSampler_ = dev.createSampler({});  // linear+mipmap(与 mesh sampler 同状态)
+  }
+
+  // Water shader 模块与产物暂存(空码=不支持;enableWater 时用)
+  waterStepFs_ = desc.waterStepFs;
+  waterCausticsFs_ = desc.waterCausticsFs;
+  waterSvCode_ = desc.waterSurfaceVs;
+  waterSfCode_ = desc.waterSurfaceFs;
+  waterRvCode_ = desc.waterReceiverVs;
+  waterRfCode_ = desc.waterReceiverFs;
+  if (!waterSvCode_.empty() && !waterSfCode_.empty()) {
+    waterSvs_ = dev.createShaderModule({ShaderStage::Vertex, waterSvCode_, desc.entry});
+    waterSfs_ = dev.createShaderModule({ShaderStage::Fragment, waterSfCode_, desc.entry});
+  }
+  if (!waterRvCode_.empty() && !waterRfCode_.empty()) {
+    waterRvs_ = dev.createShaderModule({ShaderStage::Vertex, waterRvCode_, desc.entry});
+    waterRfs_ = dev.createShaderModule({ShaderStage::Fragment, waterRfCode_, desc.entry});
   }
 
   // PostChain 管线(vert 复用 blit;extract/blur 输出 R16F,composite/fxaa 输出目标格式)
@@ -439,6 +455,38 @@ void Renderer::ensureScenePipelines(Format fmt, uint32_t samples) {
     if (instancedPipeline_.valid()) dev_->destroyPipeline(instancedPipeline_);
     instancedPipeline_ = dev_->createPipeline(ipd);
   }
+  // ---- Water 管线(独立 combined 族;Surface=blend+depthTest 关写,Receiver=opaque)----
+  if (waterSvs_.valid() && waterSfs_.valid()) {
+    PipelineDesc wpd;
+    wpd.vertexShader = waterSvs_;
+    wpd.fragmentShader = waterSfs_;
+    fillVertexLayout(wpd);
+    wpd.cullMode = CullMode::None;
+    wpd.depthTest = true;
+    wpd.depthWrite = false;
+    wpd.blend.enable = true;
+    wpd.blend.srcColor = BlendFactor::SrcAlpha;
+    wpd.blend.dstColor = BlendFactor::OneMinusSrcAlpha;
+    wpd.blend.srcAlpha = BlendFactor::One;
+    wpd.blend.dstAlpha = BlendFactor::OneMinusSrcAlpha;
+    wpd.colorFormat = fmt;
+    wpd.sampleCount = samples;
+    if (waterSurfacePipeline_.valid()) dev_->destroyPipeline(waterSurfacePipeline_);
+    waterSurfacePipeline_ = dev_->createPipeline(wpd);
+  }
+  if (waterRvs_.valid() && waterRfs_.valid()) {
+    PipelineDesc rpd;
+    rpd.vertexShader = waterRvs_;
+    rpd.fragmentShader = waterRfs_;
+    fillVertexLayout(rpd);
+    rpd.cullMode = CullMode::None;
+    rpd.depthTest = true;
+    rpd.depthWrite = true;
+    rpd.colorFormat = fmt;
+    rpd.sampleCount = samples;
+    if (waterReceiverPipeline_.valid()) dev_->destroyPipeline(waterReceiverPipeline_);
+    waterReceiverPipeline_ = dev_->createPipeline(rpd);
+  }
   pipeFmt_ = fmt;
   pipeSamples_ = samples;
 }
@@ -564,6 +612,16 @@ void Renderer::shutdown() {
   if (transPlaceholderTex_.valid()) dev_->destroyTexture(transPlaceholderTex_);
   if (transBlitPipeline_.valid()) dev_->destroyPipeline(transBlitPipeline_);
   if (transSampler_.valid()) dev_->destroySampler(transSampler_);
+  // Water 资源
+  if (water_) water_->destroy(*dev_);
+  water_.reset();
+  if (waterSurfacePipeline_.valid()) dev_->destroyPipeline(waterSurfacePipeline_);
+  if (waterReceiverPipeline_.valid()) dev_->destroyPipeline(waterReceiverPipeline_);
+  for (ShaderModuleHandle m : {waterSvs_, waterSfs_, waterRvs_, waterRfs_})
+    if (m.valid()) dev_->destroyShaderModule(m);
+  waterSurfacePipeline_ = {};
+  waterReceiverPipeline_ = {};
+  waterSvs_ = waterSfs_ = waterRvs_ = waterRfs_ = {};
   fxaaTarget_ = {};
   blurUbo1_ = blurUbo2_ = blurUbo3_ = fxaaUbo_ = compositeUbo_ = {};
   extractPipeline_ = blurPipeline_ = compositePipeline_ = fxaaPipeline_ = {};
@@ -664,6 +722,20 @@ void Renderer::setQuality(const QualityPreset& q) {
                     iblSize_, iblMips_))
       RD_LOGE("renderer", "IBL 环境重建失败(size=%u mips=%u)", iblSize_, iblMips_);
   }
+  // Water 画质档联动(simSize/焦散开关变化 → 重建 WaterSurface)
+  const uint32_t wantSim = q.waterSimSize ? q.waterSimSize : 128;
+  const uint32_t wantCaustics = q.waterCaustics ? 1u : 0u;
+  if (water_ && water_->valid() &&
+      (wantSim != waterSimSize_ || wantCaustics != waterCaustics_)) {
+    WaterDesc d = waterDesc_;
+    d.simSize = wantSim;
+    d.caustics = wantCaustics != 0;
+    WaterParams p = water_->params();
+    disableWater();
+    if (enableWater(d)) water_->setParams(p);
+  }
+  waterSimSize_ = wantSim;
+  waterCaustics_ = wantCaustics;
 }
 
 TargetHandle Renderer::ensureSceneTarget(uint32_t targetW, uint32_t targetH) {
@@ -820,7 +892,7 @@ void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) 
   clear_ = clear;
   cameraEye_ = camera.eye();
 
-  // FrameUBO:viewProj|cameraPos|lightDir|lightColor|sh[9×vec4]|transmissionParams
+  // FrameUBO:viewProj|cameraPos|lightDir|lightColor|sh[9×vec4]|transmissionParams|water[3]
   struct {
     math::Mat4 viewProj;
     math::Vec4 cameraPos;
@@ -828,8 +900,10 @@ void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) 
     math::Vec4 lightColor;
     float sh[9][4];
     float transmissionParams[4];  // x=1/transW y=1/transH z=maxLod w=0(Task 6 填真值)
+    float waterParams[3][4];      // 0=(sizeX,sizeZ,planeY,waveScale)
+                                  // 1=(depth,causticsI,on,simSize) 2=(texel,0,0,0)
   } fu;
-  static_assert(sizeof(fu) == 272, "FrameUBO 必须 272B");
+  static_assert(sizeof(fu) == 320, "FrameUBO 必须 320B(272+water 48B)");
   fu.viewProj = viewProj_;
   const auto& eye = camera.eye();
   fu.cameraPos = math::Vec4(eye, 1.0f);
@@ -845,6 +919,22 @@ void Renderer::beginScene(const scene::Camera& camera, const ClearColor& clear) 
   }
   fu.transmissionParams[0] = fu.transmissionParams[1] = fu.transmissionParams[2] =
       fu.transmissionParams[3] = 0.0f;
+  for (int i = 0; i < 3; ++i)
+    fu.waterParams[i][0] = fu.waterParams[i][1] = fu.waterParams[i][2] =
+        fu.waterParams[i][3] = 0.0f;
+  if (water_ && water_->valid()) {
+    const auto& wd = water_->desc();
+    const auto& wp = water_->params();
+    fu.waterParams[0][0] = wd.sizeX;
+    fu.waterParams[0][1] = wd.sizeZ;
+    fu.waterParams[0][2] = wd.planeY;
+    fu.waterParams[0][3] = wp.waveScale;
+    fu.waterParams[1][0] = wp.depth;
+    fu.waterParams[1][1] = wp.causticsIntensity;
+    fu.waterParams[1][2] = water_->causticsOn() ? 1.0f : 0.0f;
+    fu.waterParams[1][3] = float(wd.simSize);
+    fu.waterParams[2][0] = 1.0f / float(wd.simSize);
+  }
   dev_->updateBuffer(frameUbo_, &fu, sizeof(fu), 0);
 }
 
@@ -982,8 +1072,8 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   auto culledBy = [&](uint32_t idx, const FrustumPlanes& f) {
     const auto* r0 = static_cast<const MeshRenderable*>(queue_[idx].get());
     const bool dynamic0 =
-        jointSlot_[idx] >= 0 ||
-        (!r0->meshData().empty() && r0->meshData()[0].morph);  // 蒙皮/morph 不剔除
+        jointSlot_[idx] >= 0 || r0->waterItem() ||
+        (!r0->meshData().empty() && r0->meshData()[0].morph);  // 蒙皮/morph/水 不剔除
     if (!frustumCulling_ || dynamic0) return false;
     const auto* r = static_cast<const MeshRenderable*>(queue_[idx].get());
     if (r->meshData().empty()) return false;
@@ -1127,7 +1217,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       auto* r = static_cast<MeshRenderable*>(queue_[idx].get());
       uint32_t groupEnd = li + 1;
       const void* rid =
-          r && r->meshData().size() == 1 && jointSlot_[idx] < 0 &&
+          r && r->meshData().size() == 1 && jointSlot_[idx] < 0 && !r->waterItem() &&
                   r->meshData()[0].material.alphaCutoff <= 0.0f
               ? r->resourceId()
               : nullptr;
@@ -1187,6 +1277,16 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       queue_[idx]->record(cmd, sctx);
     }
     cmd->endRenderPass();
+  }
+
+  // ---- Water 仿真步进 + 焦散 pass(场景 pass 前;方向光喂焦散)----
+  if (water_ && water_->valid()) {
+    if (dirLight)
+      water_->setLightDir(dirLight->direction[0], dirLight->direction[1],
+                          dirLight->direction[2]);
+    else
+      water_->setLightDir(-0.5f, 0.8f, 0.3f);
+    water_->step(cmd);
   }
 
   // 上屏链:场景 → 内部 SceneTarget(分辨率缩放/MSAA 按画质档;post 开=R16F)
@@ -1254,13 +1354,20 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   ctx.jointUbo = jointUbo_;
   ctx.transSceneTex = transPlaceholderTex_;  // pass A 占位(透射采样只在 pass B)
   ctx.transSampler = transSampler_;
+  ctx.waterSurfacePipeline = waterSurfacePipeline_;
+  ctx.waterReceiverPipeline = waterReceiverPipeline_;
+  if (water_ && water_->valid()) {
+    ctx.waterWave = water_->waveTex();
+    ctx.waterCaustics = water_->causticsTex();
+    ctx.waterSampler = water_->sampler();
+  }
   for (uint32_t vi = 0; vi < camVis.size();) {
     const uint32_t idx = camVis[vi];
     auto* r = static_cast<MeshRenderable*>(queue_[idx].get());
     // 实例化分组:同资源 + 非蒙皮 + 非 blend + 非 transmission 的相邻可见项(组 ≥2)
     uint32_t groupEnd = vi + 1;
     const void* rid =
-        r && !r->meshData().empty() && !r->meshData()[0].skinned &&
+        r && !r->meshData().empty() && !r->meshData()[0].skinned && !r->waterItem() &&
                 !r->meshData()[0].material.alphaBlend && !r->meshData()[0].morph &&
                 !(transOn && r->meshData()[0].material.transmissionFactor > 0.0f)
             ? r->resourceId()
@@ -1280,7 +1387,7 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
       // 实例化路径:bind UBO 组偏移 + 一次 drawIndexedInstanced
       const uint32_t slotBase = uint32_t(slotOf[idx]);
       cmd->bindPipeline(instancedPipeline_);
-      cmd->bindUniformBuffer(0, frameUbo_, 0, 272);
+      cmd->bindUniformBuffer(0, frameUbo_, 0, 320);
       cmd->bindUniformBuffer(1, itemUbo_, uint64_t(slotBase) * kUboStride,
                             uint64_t(groupSize) * kUboStride);
       cmd->bindUniformBuffer(2, lightUbo_, 0, 352);
@@ -1416,6 +1523,74 @@ void Renderer::endScene(CommandBuffer* cmd, TargetHandle target) {
   worldStack_.clear();
   jointSlot_.clear();
   morphOverride_.clear();
+}
+
+bool Renderer::enableWater(const WaterDesc& desc) {
+  if (!dev_) return false;
+  if (waterStepFs_.empty() || waterCausticsFs_.empty() || waterSvCode_.empty() ||
+      waterSfCode_.empty() || waterRvCode_.empty() || waterRfCode_.empty()) {
+    RD_LOGW("renderer", "water shader 未随 init 提供,水面不可用");
+    return false;
+  }
+  disableWater();
+  WaterDesc d = desc;
+  if (waterSimSize_) {  // 画质档已定:立刻对齐(默认 Low 兜底 128)
+    d.simSize = waterSimSize_;
+    d.caustics = waterCaustics_ != 0;
+  }
+  water_ = std::make_unique<WaterSurface>();
+  if (!water_->create(*dev_, d, blitVsCode_, waterStepFs_, waterCausticsFs_, entry_)) {
+    water_.reset();
+    RD_LOGW("renderer", "WaterSurface 创建失败");
+    return false;
+  }
+  waterDesc_ = d;
+  water_->setParams(waterParams_);
+  pipeSamples_ = 0;  // 强制下帧 ensureScenePipelines 重建 water 管线
+  return true;
+}
+
+void Renderer::disableWater() {
+  if (water_) water_->destroy(*dev_);
+  water_.reset();
+}
+
+void Renderer::setWaterParams(const WaterParams& p) {
+  waterParams_ = p;
+  if (water_) water_->setParams(p);
+}
+
+void Renderer::disturbWater(float u, float v, float strength, float radius) {
+  if (water_) water_->disturb(u, v, strength, radius);
+}
+
+void Renderer::pushWaterItem(std::unique_ptr<WaterRenderable> r,
+                             const std::shared_ptr<MeshRenderResource>& mesh,
+                             const math::Mat4& world) {
+  if (queue_.size() >= kMaxItems) {
+    RD_LOGW("renderer", "渲染项超出 %u,截断", kMaxItems);
+    return;
+  }
+  queue_.push_back(std::move(r));
+  worldStack_.push_back(world);
+  jointSlot_.push_back(-1);
+  morphOverride_.emplace_back();
+  const auto& md = mesh ? mesh->meshes() : std::vector<MeshGpuData>();
+  meshCount_.push_back(uint32_t(std::max<size_t>(1, md.size())));
+}
+
+void Renderer::submitWaterSurface(const std::shared_ptr<MeshRenderResource>& mesh,
+                                  const math::Mat4& world) {
+  if (!waterActive()) return;
+  pushWaterItem(std::make_unique<WaterRenderable>(mesh, WaterRenderable::Mode::Surface),
+                mesh, world);
+}
+
+void Renderer::submitWaterReceiver(const std::shared_ptr<MeshRenderResource>& mesh,
+                                   const math::Mat4& world) {
+  if (!waterActive()) return;
+  pushWaterItem(std::make_unique<WaterRenderable>(mesh, WaterRenderable::Mode::Receiver),
+                mesh, world);
 }
 
 } // namespace rd

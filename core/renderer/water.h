@@ -81,7 +81,7 @@ class WaterRenderable : public MeshRenderable {
 public:
   enum class Mode { Surface, Receiver };
   WaterRenderable(std::shared_ptr<MeshRenderResource> mesh, Mode mode)
-      : MeshRenderable(std::move(mesh)), res_(mesh), mode_(mode) {}
+      : MeshRenderable(mesh), res_(mesh), mode_(mode) {}
   void record(CommandBuffer* cmd, const RenderContext& ctx) override;
   bool waterItem() const override { return true; }
   Mode mode() const { return mode_; }

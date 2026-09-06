@@ -11,6 +11,7 @@
 #include "renderer/renderable.h"
 #include "renderer/environment.h"
 #include "renderer/quality.h"
+#include "renderer/water.h"
 #include "foundation/math.h"
 #include "resource/gltf_loader.h"  // LightData
 #include <memory>
@@ -45,6 +46,9 @@ struct RendererShaderDesc {
   std::vector<uint8_t> morphSkinnedShadowVs; ///< shadow_depth_morph_skinned.vert
   std::string entry;                            // Metal="main0",其他="main"
   Format colorFormat = Format::RGBA8_UNORM;
+  std::vector<uint8_t> waterStepFs, waterCausticsFs;      ///< 水全屏 pass(空=无水)
+  std::vector<uint8_t> waterSurfaceVs, waterSurfaceFs;    ///< 水面(空=无水)
+  std::vector<uint8_t> waterReceiverVs, waterReceiverFs;  ///< 受水体(空=无水)
 };
 
 class Renderer {
@@ -107,6 +111,22 @@ public:
   void setExtMaterialsEnabled(bool on) { extMaterialsManual_ = on; }
   /// KHR transmission/volume 开关(选项 render.transmission;与画质档为与关系)。
   void setTransmissionEnabled(bool on) { transmissionManual_ = on; }
+
+  /// ---- Water(波动方程水面;默认未激活)----
+  /// 激活水面系统(画质档 simSize/caustics 由 setQuality 联动重建;
+  /// shader 未随 init 提供或 caps 缺失返回 false)。
+  bool enableWater(const WaterDesc& desc);
+  void disableWater();
+  bool waterActive() const { return water_ && water_->valid(); }
+  void setWaterParams(const WaterParams& p);
+  /// 注入涟漪(uv∈[0,1]² 池面俯视域)。
+  void disturbWater(float u, float v, float strength, float radius);
+  /// 帧时间累计(render_frame/submitDemoScene 传入;固定子步)。
+  void tick(float dt) { if (water_) water_->tick(dt); }
+  void submitWaterSurface(const std::shared_ptr<MeshRenderResource>& mesh,
+                          const math::Mat4& world);
+  void submitWaterReceiver(const std::shared_ptr<MeshRenderResource>& mesh,
+                           const math::Mat4& world);
 
 private:
   static constexpr uint32_t kUboStride = kItemUboStride;      // 512(块 304B)
@@ -233,6 +253,21 @@ private:
   Format transFmt_ = Format::RGBA8_UNORM;
   /// 按场景尺寸/格式确保 transmission 纹理(全 mip)与拷贝目标;变化重建。
   bool ensureTransmissionTarget(uint32_t w, uint32_t h, Format fmt);
+
+  // ---- Water(波动方程水面)----
+  std::unique_ptr<WaterSurface> water_;
+  WaterDesc waterDesc_{};             ///< 最近一次 enableWater 描述(setQuality 重建用)
+  WaterParams waterParams_{};
+  uint32_t waterSimSize_ = 0;         ///< 画质档联动(0=未设置)
+  uint32_t waterCaustics_ = 1;
+  std::vector<uint8_t> waterStepFs_, waterCausticsFs_, waterSvCode_, waterSfCode_,
+      waterRvCode_, waterRfCode_;     ///< enableWater 暂存(init 期拷贝)
+  ShaderModuleHandle waterSvs_, waterSfs_, waterRvs_, waterRfs_;
+  PipelineHandle waterSurfacePipeline_, waterReceiverPipeline_;
+  /// submit 共用尾部(queue/world/joint/meshCount 登记与容量检查)。
+  void pushWaterItem(std::unique_ptr<WaterRenderable> r,
+                     const std::shared_ptr<MeshRenderResource>& mesh,
+                     const math::Mat4& world);
 };
 
 } // namespace rd

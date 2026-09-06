@@ -9,7 +9,7 @@ namespace rd {
 namespace {
 constexpr float kStepDt = 1.0f / 60.0f;   // 固定子步(确定性)
 constexpr float kCflK = 0.42f;            // c²dt²/dx² ≤ 0.5(CFL)
-constexpr float kDamping = 0.006f;
+constexpr float kDamping = 0.02f;
 } // namespace
 
 bool WaterSurface::create(Device& dev, const WaterDesc& desc,
@@ -200,7 +200,7 @@ void WaterSurface::step(CommandBuffer* cmd) {
     cu.c0[0] = texel;
     cu.c0[1] = 1.0f / 1.33f;
     cu.c0[2] = params_.depth;
-    cu.c0[3] = params_.causticsIntensity;
+    cu.c0[3] = params_.waveScale;  // 波幅缩放(0=平面,焦散恒 1=门控零操作)
     cu.c1[0] = desc_.sizeX * texel;
     cu.c1[1] = desc_.sizeZ * texel;
     cu.c2[0] = lightDir_[0];
@@ -230,7 +230,7 @@ void WaterRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
     if (mode_ == Mode::Surface) {
       if (!ctx.waterSurfacePipeline.valid() || !ctx.waterWave.valid()) return;
       cmd->bindPipeline(ctx.waterSurfacePipeline);
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 336);
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 320);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff, kItemUboSize);
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);
       cmd->bindTexture(1, ctx.waterWave, ctx.waterSampler);
@@ -239,7 +239,7 @@ void WaterRenderable::record(CommandBuffer* cmd, const RenderContext& ctx) {
     } else {
       if (!ctx.waterReceiverPipeline.valid()) return;
       cmd->bindPipeline(ctx.waterReceiverPipeline);
-      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 336);
+      cmd->bindUniformBuffer(0, ctx.frameUbo, 0, 320);
       cmd->bindUniformBuffer(1, ctx.itemUbo, itemOff, kItemUboSize);
       cmd->bindUniformBuffer(2, ctx.lightUbo, 0, 432);
       cmd->bindTexture(0, g.baseColorTex, res_->sampler());

@@ -21,6 +21,8 @@ struct QualityPreset {
   uint32_t fxaaEnabled;       ///< FXAA(与 MSAA 互斥,仅 msaa==1 时生效)
   uint32_t extMaterials;      ///< KHR 扩展材质四件套(clearcoat/sheen/specular/ior)
   uint32_t transmission;      ///< KHR transmission/volume(两段 pass 透射/体积吸收)
+  uint32_t waterSimSize;      ///< 水仿真/焦散纹理边长(0=128 兜底)
+  uint32_t waterCaustics;     ///< 焦散 pass(0=关)
 };
 
 /// 三档预设表。

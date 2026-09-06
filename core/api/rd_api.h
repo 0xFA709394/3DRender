@@ -146,6 +146,9 @@ void rd_engine_set_shadow_enabled(rd_engine* engine, int enabled);
 
 /// 播放动画 clip（立即切换，loop）。越界/无动画记警告 no-op。
 void rd_engine_play_animation(rd_engine* engine, int32_t clip_index);
+/// 手动设置 morph 目标权重(当前模型首个 morph mesh;调用即暂停动画,手动值生效;
+/// 置渲染脏)。target 越界返回 RD_ERROR_INVALID_ARG。
+rd_result rd_engine_set_morph_weight(rd_engine* engine, uint32_t target, float weight);
 /// 交叉淡入到目标 clip（fade_seconds 秒过渡）。
 void rd_engine_crossfade_animation(rd_engine* engine, int32_t clip_index,
                                    float fade_seconds);

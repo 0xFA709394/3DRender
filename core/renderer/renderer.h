@@ -59,6 +59,10 @@ public:
   void beginScene(const scene::Camera& camera, const ClearColor& clear);
   /// 提交一个网格渲染项(资源 shared_ptr 持久持有,本帧引用)。
   void submit(const std::shared_ptr<MeshRenderResource>& mesh, const math::Mat4& world);
+  /// 提交形变/蒙皮渲染项(morphWeights 覆盖静态初始权重;jointPalette 可空)。
+  void submit(const std::shared_ptr<MeshRenderResource>& mesh, const math::Mat4& world,
+              const math::Mat4* jointPalette, uint32_t jointCount,
+              const float* morphWeights, uint32_t morphCount);
   /// 提交蒙皮渲染项(jointPalette 为关节矩阵数组,本帧拷贝入 JointUBO;
   /// jointCount ≤128,蒙皮项每帧 ≤8)。
   void submit(const std::shared_ptr<MeshRenderResource>& mesh, const math::Mat4& world,
@@ -176,6 +180,7 @@ private:
   BufferHandle jointUbo_;             // 64KB 共享 JointUBO(8 项 × 8192B)
   std::vector<int32_t> jointSlot_;    // 与 queue_ 平行:JointUBO 槽位(-1=非蒙皮)
   std::vector<uint32_t> meshCount_;   // 与 queue_ 平行:每 item mesh 数(≥1)
+  std::vector<std::vector<float>> morphOverride_;  // 与 queue_ 平行:权重覆盖(空=静态)
   std::vector<uint32_t> slotBase_;    // 与 queue_ 平行:ItemUBO 起始槽(endScene 填)
   static constexpr uint32_t kJointItemStride = 8192;  // 128 骨 × 64B
   static constexpr uint32_t kMaxJointItems = 8;

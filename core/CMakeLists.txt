@@ -6,6 +6,7 @@ add_library(rd_core STATIC
   rhi/rhi_capability.cpp
   resource/image_codec.cpp
   resource/ktx2_codec.cpp
+  resource/draco_decode.cpp
   resource/ibl_cache.cpp
   resource/hdr_env.cpp
   resource/gltf_loader.cpp

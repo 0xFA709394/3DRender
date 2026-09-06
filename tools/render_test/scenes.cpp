@@ -3,6 +3,7 @@
 #include "common/ktx2_gen.h"
 #include "common/skinned_gen.h"
 #include "foundation/log.h"
+#include "renderer/water.h"
 #include "resource/primitives.h"
 #include <cmath>
 #include <filesystem>
@@ -17,7 +18,8 @@ const char* const kNames[] = {"material_balls", "cornell_box", "light_playground
                               "emissive_bloom", "normal_map_wall",
                               "shadow_gallery", "ktx2_gallery", "alpha_blend",
                               "fox_anim",       "material_ext_gallery",
-                              "transmission_gallery", "morph_demo"};
+                              "transmission_gallery", "morph_demo",
+                              "water_pool"};
 
 /// 单 mesh ModelAsset 包装(材质参数由调用方设)。
 ModelAsset wrapMesh(MeshData&& mesh) {
@@ -521,6 +523,73 @@ void buildTransmissionGallery(Device& dev, DemoScene& out) {
   out.framingRadius = 2.4f;
 }
 
+// 水波纹池:受水体(底/壁/两球一柱)+ 水面网格;波动方程+焦散(Renderer water)。
+// 布局常量与 rd_api.cpp 的 buildWaterPoolScene 保持一致(池 4×4,底 y=-1)。
+void buildWaterPool(Device& dev, Renderer& renderer, DemoScene& out) {
+  const math::Mat4 I(1.0f);
+  auto put = [&](MeshData&& m, const math::Vec3& pos, bool rotY = false) {
+    math::Mat4 w = glm::translate(I, pos);
+    if (rotY) w = w * glm::rotate(I, 1.5707963f, math::Vec3(0, 1, 0));
+    uploadInto(dev, wrapMesh(std::move(m)), out, w);
+  };
+  auto floor = primitives::makePlane(4.0f, 4.0f);
+  floor.material.roughnessFactor = 0.9f;
+  floor.material.baseColorFactor[0] = floor.material.baseColorFactor[1] =
+      floor.material.baseColorFactor[2] = 0.72f;
+  put(std::move(floor), math::Vec3(0, -1.0f, 0));
+  const math::Vec3 wallPos[4] = {{0, -0.375f, -2.0f}, {0, -0.375f, 2.0f},
+                                 {-2.0f, -0.375f, 0}, {2.0f, -0.375f, 0}};
+  for (int i = 0; i < 4; ++i) {
+    auto wm = primitives::makeBox(4.0f, 1.25f, 0.1f);
+    wm.material.roughnessFactor = 0.85f;
+    wm.material.baseColorFactor[0] = 0.8f;
+    wm.material.baseColorFactor[1] = 0.78f;
+    wm.material.baseColorFactor[2] = 0.74f;
+    put(std::move(wm), wallPos[i], i >= 2);
+  }
+  auto sph = primitives::makeSphere(0.4f, 32, 16);
+  sph.material.roughnessFactor = 0.4f;
+  sph.material.baseColorFactor[2] = 0.9f;
+  put(std::move(sph), math::Vec3(-0.9f, -0.6f, -0.6f));
+  auto sph2 = primitives::makeSphere(0.4f, 32, 16);
+  sph2.material.roughnessFactor = 0.4f;
+  sph2.material.baseColorFactor[0] = 0.9f;
+  put(std::move(sph2), math::Vec3(0.9f, -0.55f, 0.7f));
+  auto col = primitives::makeBox(0.5f, 1.6f, 0.5f);
+  col.material.roughnessFactor = 0.7f;
+  put(std::move(col), math::Vec3(0.1f, -0.2f, -1.2f));
+  auto surf = primitives::makeGrid(4.0f, 128);
+  surf.material.alphaBlend = true;
+  surf.material.roughnessFactor = 0.05f;
+  surf.material.baseColorFactor[0] = 0.15f;
+  surf.material.baseColorFactor[1] = 0.35f;
+  surf.material.baseColorFactor[2] = 0.4f;
+  ModelAsset sm;
+  sm.meshes.push_back(std::move(surf));
+  sm.boundingRadius = 3.0f;
+  out.waterSurface = MeshRenderResource::upload(dev, sm);
+  // 水系统(默认 desc;画质档联动由 quality 指定)
+  rd::WaterDesc wd;
+  renderer.enableWater(wd);
+  // 灯光/取景(与 engine 版一致)
+  LightData dl;
+  dl.type = LightType::Directional;
+  const float n = std::sqrt(0.3f * 0.3f + 1.0f + 0.45f * 0.45f);
+  dl.direction[0] = 0.3f / n;
+  dl.direction[1] = 1.0f / n;
+  dl.direction[2] = 0.45f / n;
+  dl.color[0] = 3.2f;
+  dl.color[1] = 3.0f;
+  dl.color[2] = 2.7f;
+  out.lights.push_back(dl);
+  out.camera.lookAt({2.6f, 2.2f, 2.8f}, {0, -0.3f, 0}, {0, 1, 0});
+  out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 50.0f);
+  out.framingCenter[1] = -0.5f;
+  out.framingRadius = 2.8f;
+  static const rd::QualityPreset kHigh = rd::qualityPreset(rd::QualityTier::High);
+  out.quality = &kHigh;
+}
+
 } // namespace
 
 const char* const* demoSceneNames(uint32_t& count) {
@@ -563,6 +632,8 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
     buildTransmissionGallery(dev, out);
   } else if (n == "morph_demo") {
     buildMorphDemo(dev, out);
+  } else if (n == "water_pool") {
+    buildWaterPool(dev, renderer, out);
   } else {
     RD_LOGE("demo.scene", "未知场景: %s", name);
     return false;
@@ -575,6 +646,13 @@ bool buildDemoScene(const char* name, Device& dev, Renderer& renderer, DemoScene
 
 void submitDemoScene(DemoScene& s, Renderer& renderer, float dt) {
   s.animTime += dt;
+  if (s.waterSurface) {  // water_pool:受水体 + 水面(tick 驱动仿真)
+    renderer.tick(dt);
+    for (size_t i = 0; i < s.resources.size(); ++i)
+      renderer.submitWaterReceiver(s.resources[i], s.worlds[i]);
+    renderer.submitWaterSurface(s.waterSurface, math::Mat4(1.0f));
+    return;
+  }
   if (s.animated) {
     s.animator.update(dt);
     if (getenv("RD_SCENE_DEBUG")) {
@@ -618,9 +696,11 @@ void destroyDemoScene(DemoScene& s, Device& dev) {
   if (s.skinnedRes && s.skinnedRes.use_count() > 0 &&
       std::find(s.resources.begin(), s.resources.end(), s.skinnedRes) == s.resources.end())
     s.skinnedRes->destroy(dev);
+  if (s.waterSurface) s.waterSurface->destroy(dev);
   s.resources.clear();
   s.worlds.clear();
   s.skinnedRes = {};
+  s.waterSurface = nullptr;
 }
 
 } // namespace rd::tool

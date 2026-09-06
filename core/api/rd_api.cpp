@@ -533,7 +533,7 @@ void rd_engine_render_frame(rd_engine* e, float dt) {
       const float u = float((r >> 16) & 0xFFFF) / 65535.0f;
       r = r * 1664525u + 1013904223u;
       const float v = float((r >> 16) & 0xFFFF) / 65535.0f;
-      e->renderer.disturbWater(0.12f + u * 0.76f, 0.12f + v * 0.76f, 0.03f, 2.0f);
+      e->renderer.disturbWater(0.12f + u * 0.76f, 0.12f + v * 0.76f, 0.035f, 3.0f);
     }
   }
   e->orbit.update(dt);  // 惯性积分(无指针按下时生效)
@@ -750,7 +750,7 @@ void rd_engine_water_disturb(rd_engine* e, float x, float y) {
   const float px = o[0] + d[0] * t, pz = o[2] + d[2] * t;
   const float u = px / 4.0f + 0.5f, v = pz / 4.0f + 0.5f;  // 池 4×4
   if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) return;
-  e->renderer.disturbWater(u, v, 0.045f, 3.0f);
+  e->renderer.disturbWater(u, v, 0.06f, 5.0f);
   e->renderDirty = true;
 }
 

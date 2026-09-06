@@ -43,6 +43,12 @@ rd_compile_shader(pbr_forward_morph.vert)
 rd_compile_shader(pbr_forward_morph_skinned.vert)
 rd_compile_shader(shadow_depth_morph.vert)
 rd_compile_shader(shadow_depth_morph_skinned.vert)
+rd_compile_shader(water_step.frag)
+rd_compile_shader(water_caustics.frag)
+rd_compile_shader(water_surface.vert)
+rd_compile_shader(water_surface.frag)
+rd_compile_shader(water_receiver.vert)
+rd_compile_shader(water_receiver.frag)
 
 # 生成路径头，供测试定位 shader 产物
 file(WRITE ${CMAKE_BINARY_DIR}/generated/rd_shader_dir.h

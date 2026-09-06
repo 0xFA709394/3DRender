@@ -7,4 +7,5 @@ set(RD_EMBED_SHADERS
   composite fxaa pbr_forward_skinned shadow_depth_skinned equirect_to_cube
   skybox pbr_forward_instanced shadow_depth_mask shadow_depth_instanced
   pbr_forward_morph pbr_forward_morph_skinned shadow_depth_morph
-  shadow_depth_morph_skinned)
+  shadow_depth_morph_skinned
+  water_step water_caustics water_surface water_receiver)

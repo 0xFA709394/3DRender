@@ -819,6 +819,7 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
   } kBlockTable[] = {
       {"UBO", 0}, {"FrameUBO", 0}, {"ItemUBO", 1}, {"BlitUBO", 0}, {"ShadowUBO", 0},
       {"LightUBO", 2}, {"JointUBO", 3},
+      {"WaterStepUBO", 0}, {"WaterCausticsUBO", 0},
   };
   for (const auto& b : kBlockTable) {
     GLuint blockIndex = glGetUniformBlockIndex(program, b.name);
@@ -852,6 +853,8 @@ PipelineHandle GLESDevice::createPipeline(const PipelineDesc& desc) {
       {"SPIRV_Cross_CombinedtexSpecularColorsmpMat", 14},
       {"SPIRV_Cross_CombinedtexSpecularsmpMat", 15},
       {"SPIRV_Cross_CombinedtexMorphsmpMat", 19},
+      // 水系(combined 族;texWave 顶点+片段双阶段共用)
+      {"texWave", 1},           {"texCaustics", 2},
   };
   glUseProgram(program);
   for (const auto& s : kSamplerTable) {

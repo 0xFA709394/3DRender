@@ -2,6 +2,11 @@
 // 机制:glb 解析 → 逐图像 stb 解码 →(可选 maxDim 降采样)→ libktx CompressAstc
 // → KTX2 blob 追加到 BIN 尾 + JSON 改 mimeType/bufferView(append-only,BIN 前部不动)。
 #include <ktx.h>
+#include <cgltf.h>
+#include "draco/attributes/geometry_attribute.h"
+#include "draco/compression/encode.h"
+#include "draco/core/encoder_buffer.h"
+#include "draco/mesh/mesh.h"
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
 #include <cstdio>
@@ -28,6 +33,8 @@ struct ChunkHeader {
 
 int gMaxDim = 1024;   // 0=不降采样
 int gQuality = 2;       // astcenc qualityLevel 0=fastest..4=exhaustive
+bool gDraco = false;    // --draco:未压缩几何 → Draco 重打包
+int gQp = 14, gQn = 10, gQt = 12;  // 位置/法线/UV 量化 bits
 
 /// RGBA8 像素 → ASTC 4x4 KTX2 blob;失败返回空。
 std::vector<uint8_t> encodeAstcKtx2(const uint8_t* rgba, uint32_t w, uint32_t h) {
@@ -99,15 +106,21 @@ std::vector<uint8_t> downscale(const std::vector<uint8_t>& src, uint32_t sw, uin
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    fprintf(stderr, "用法: %s <in.glb> <out.glb> [--max-dim N] [--quality 0-4]\n", argv[0]);
+    fprintf(stderr,
+            "用法: %s <in.glb> <out.glb> [--max-dim N] [--quality 0-4] "
+            "[--draco [--qp N] [--qn N] [--qt N]]\n", argv[0]);
     return 1;
   }
   const char* inPath = argv[1];
   const char* outPath = argv[2];
-  for (int i = 3; i < argc; i += 2) {
-    if (i + 1 >= argc) break;
-    if (!strcmp(argv[i], "--max-dim")) gMaxDim = atoi(argv[i + 1]);
-    if (!strcmp(argv[i], "--quality")) gQuality = std::min(4, std::max(0, atoi(argv[i + 1])));
+  for (int i = 3; i < argc; ++i) {
+    if (!strcmp(argv[i], "--draco")) gDraco = true;
+    else if (i + 1 < argc && !strcmp(argv[i], "--max-dim")) gMaxDim = atoi(argv[++i]);
+    else if (i + 1 < argc && !strcmp(argv[i], "--quality"))
+      gQuality = std::min(4, std::max(0, atoi(argv[++i])));
+    else if (i + 1 < argc && !strcmp(argv[i], "--qp")) gQp = atoi(argv[++i]);
+    else if (i + 1 < argc && !strcmp(argv[i], "--qn")) gQn = atoi(argv[++i]);
+    else if (i + 1 < argc && !strcmp(argv[i], "--qt")) gQt = atoi(argv[++i]);
   }
   std::vector<uint8_t> glb;
   {
@@ -163,8 +176,162 @@ int main(int argc, char** argv) {
   std::vector<int> imgBvSet(imgBv.begin(), imgBv.end());
   std::sort(imgBvSet.begin(), imgBvSet.end());
 
+  // ---- 可选 Draco 几何重打包(与纹理正交;先编码收集,重排循环再丢旧几何 bv) ----
+  std::vector<int> droppedBv;
+  std::vector<std::pair<std::vector<uint8_t>, json>> dracoAdds;  // (blob, extJson)
+  std::vector<std::pair<size_t, size_t>> dracoPrimAt;  // (mesh,prim) 对应 adds 下标
+  if (gDraco) {
+    cgltf_options opts{};
+    cgltf_data* cd = nullptr;
+    if (cgltf_parse_file(&opts, inPath, &cd) == cgltf_result_success &&
+        cgltf_load_buffers(&opts, cd, inPath) == cgltf_result_success && cd) {
+      size_t inGeo = 0, outGeo = 0, skipped = 0;
+      for (cgltf_size mi = 0; mi < cd->meshes_count; ++mi)
+        for (cgltf_size pi = 0; pi < cd->meshes[mi].primitives_count; ++pi) {
+          const cgltf_primitive& prim = cd->meshes[mi].primitives[pi];
+          if (prim.has_draco_mesh_compression) { skipped++; continue; }
+          json& jp = j["meshes"][size_t(mi)]["primitives"][size_t(pi)];
+          if (jp.contains("extensions") &&
+              jp["extensions"].contains("KHR_draco_mesh_compression")) {
+            skipped++;
+            continue;
+          }
+          const cgltf_accessor* pos = nullptr;
+          for (cgltf_size a = 0; a < prim.attributes_count; ++a)
+            if (prim.attributes[a].type == cgltf_attribute_type_position)
+              pos = prim.attributes[a].data;
+          if (!pos || !prim.indices || prim.targets_count > 0) { skipped++; continue; }
+          draco::Mesh mesh;
+          const uint32_t vc = uint32_t(pos->count), tc = uint32_t(prim.indices->count / 3);
+          mesh.set_num_points(vc);
+          mesh.SetNumFaces(tc);
+          for (uint32_t f = 0; f < tc; ++f) {
+            uint32_t iv[3];
+            for (int k = 0; k < 3; ++k)
+              iv[k] = uint32_t(cgltf_accessor_read_index(prim.indices, f * 3 + k));
+            mesh.SetFace(draco::FaceIndex(f),
+                         draco::Mesh::Face({draco::PointIndex(iv[0]),
+                                            draco::PointIndex(iv[1]),
+                                            draco::PointIndex(iv[2])}));
+          }
+          json extAttrs = json::object();
+          bool ok = true;
+          for (cgltf_size a = 0; a < prim.attributes_count && ok; ++a) {
+            const cgltf_attribute& pa = prim.attributes[a];
+            const cgltf_accessor* acc = pa.data;
+            if (!acc || !acc->buffer_view) continue;
+            if (pa.type != cgltf_attribute_type_position &&
+                pa.type != cgltf_attribute_type_normal &&
+                pa.type != cgltf_attribute_type_tangent &&
+                pa.type != cgltf_attribute_type_texcoord &&
+                pa.type != cgltf_attribute_type_joints &&
+                pa.type != cgltf_attribute_type_weights) {
+              ok = false;  // 其余语义不支持 → 该 primitive 放弃(JSON 未动)
+              break;
+            }
+            const uint32_t comps = acc->type == cgltf_type_vec2   ? 2
+                                   : acc->type == cgltf_type_vec3 ? 3
+                                   : acc->type == cgltf_type_vec4 ? 4
+                                                                  : 0;
+            if (comps == 0) { ok = false; break; }
+            std::vector<float> vals(size_t(vc) * comps);
+            for (uint32_t v = 0; v < vc; ++v)
+              cgltf_accessor_read_float(acc, v, &vals[size_t(v) * comps], comps);
+            const draco::GeometryAttribute::Type gt =
+                pa.type == cgltf_attribute_type_position
+                    ? draco::GeometryAttribute::POSITION
+                : pa.type == cgltf_attribute_type_normal
+                    ? draco::GeometryAttribute::NORMAL
+                : pa.type == cgltf_attribute_type_texcoord
+                    ? draco::GeometryAttribute::TEX_COORD
+                    : draco::GeometryAttribute::GENERIC;  // tangent/joints/weights(draco 无 TANGENT 语义)
+            draco::GeometryAttribute ga;
+            ga.Init(gt, nullptr, int(comps), draco::DT_FLOAT32, false, comps * 4, 0);
+            const int ai = mesh.AddAttribute(ga, true, vc);
+            const uint32_t uid = uint32_t((reinterpret_cast<const uint8_t*>(acc) -
+                                           reinterpret_cast<const uint8_t*>(cd->accessors)) /
+                                          sizeof(cgltf_accessor));
+            mesh.attribute(ai)->set_unique_id(uid);
+            for (uint32_t v = 0; v < vc; ++v)
+              mesh.attribute(ai)->SetAttributeValue(draco::AttributeValueIndex(v),
+                                                    &vals[size_t(v) * comps]);
+            extAttrs[pa.name] = uid;
+          }
+          if (!ok) { skipped++; continue; }  // 中途拒绝:JSON 未动,原样保留
+          // 先编码(读原始数据,JSON 未动),后按收益决定是否接管
+          draco::Encoder enc;
+          enc.SetAttributeQuantization(draco::GeometryAttribute::POSITION, gQp);
+          enc.SetAttributeQuantization(draco::GeometryAttribute::NORMAL, gQn);
+          enc.SetAttributeQuantization(draco::GeometryAttribute::TEX_COORD, gQt);
+          draco::EncoderBuffer eb;
+          if (!enc.EncodeMeshToBuffer(mesh, &eb).ok()) { skipped++; continue; }
+          // 原几何字节数 = 语义/索引 accessor 引用的唯一 bv 总长
+          size_t origGeo = 0;
+          std::vector<int> oldBvs;
+          {
+            std::vector<int> accs;
+            for (auto& kv : extAttrs.items()) accs.push_back(kv.value().get<int>());
+            accs.push_back(int((reinterpret_cast<uintptr_t>(prim.indices) -
+                               reinterpret_cast<uintptr_t>(cd->accessors)) /
+                              sizeof(cgltf_accessor)));
+            for (int ai : accs)
+              if (j["accessors"][size_t(ai)].contains("bufferView"))
+                oldBvs.push_back(j["accessors"][size_t(ai)]["bufferView"].get<int>());
+            std::sort(oldBvs.begin(), oldBvs.end());
+            oldBvs.erase(std::unique(oldBvs.begin(), oldBvs.end()), oldBvs.end());
+            for (int bvi : oldBvs)
+              origGeo += bvs[size_t(bvi)]["byteLength"].get<size_t>();
+          }
+          if (eb.size() >= origGeo) {
+            skipped++;
+            printf("  draco: primitive(m%zu p%zu) 无收益(%zuB ≥ 原 %zuB),保留原样\n",
+                   size_t(mi), size_t(pi), eb.size(), origGeo);
+            continue;
+          }
+          // 验证通过且有收益:剥离语义/索引 accessor 的 bufferView + 标记旧 bv 丢弃
+          const auto stripAcc = [&](uint32_t accIdx) {
+            if (j["accessors"][size_t(accIdx)].contains("bufferView")) {
+              droppedBv.push_back(j["accessors"][size_t(accIdx)]["bufferView"].get<int>());
+              j["accessors"][size_t(accIdx)].erase("bufferView");
+              j["accessors"][size_t(accIdx)].erase("byteOffset");
+            }
+          };
+          for (auto& kv : extAttrs.items()) stripAcc(uint32_t(kv.value().get<int>()));
+          stripAcc(uint32_t((reinterpret_cast<uintptr_t>(prim.indices) -
+                             reinterpret_cast<uintptr_t>(cd->accessors)) /
+                            sizeof(cgltf_accessor)));
+          dracoAdds.emplace_back(
+              std::vector<uint8_t>(reinterpret_cast<const uint8_t*>(eb.data()),
+                                   reinterpret_cast<const uint8_t*>(eb.data()) + eb.size()),
+              json{{"attributes", extAttrs}});
+          dracoPrimAt.emplace_back(size_t(mi), size_t(pi));
+          inGeo += size_t(pos->count) * 12 + prim.indices->count * 2;
+          outGeo += eb.size();
+        }
+      cgltf_free(cd);
+      if (!dracoAdds.empty()) {
+        printf("  draco: %zu primitive,几何 ≈%.1fKB → %.1fKB\n", dracoAdds.size(),
+               double(inGeo) / 1024.0, double(outGeo) / 1024.0);
+        json eu = j.value("extensionsUsed", json::array());
+        if (std::find(eu.begin(), eu.end(), "KHR_draco_mesh_compression") == eu.end())
+          eu.push_back("KHR_draco_mesh_compression");
+        j["extensionsUsed"] = eu;
+      } else {
+        printf("  draco: 无可压缩 primitive(跳过 %zu)\n", skipped);
+      }
+    } else {
+      fprintf(stderr, "  draco: cgltf 解析失败,跳过几何压缩\n");
+    }
+  }
+
   for (int bvi = 0; bvi < int(bvs.size()); ++bvi) {
     auto& bv = bvs[bvi];
+    if (std::find(droppedBv.begin(), droppedBv.end(), bvi) != droppedBv.end()) {
+      // 旧几何数据被 draco 取代:不拷贝,置零(条目保留保下标稳定)
+      bv["byteOffset"] = 0;
+      bv["byteLength"] = 0;
+      continue;
+    }
     const size_t off = bv.value("byteOffset", 0);
     const size_t len = bv["byteLength"].get<size_t>();
     const uint8_t* src = glb.data() + binOff + off;
@@ -219,8 +386,20 @@ int main(int argc, char** argv) {
       printf("  图像 bv%d: %zuB → %zuB (ASTC 4x4 %dx%d)\n", bvi, len, ktx2.size(), w, h);
     }
   }
-  if (outNewBytes == 0) {
-    fprintf(stderr, "无可转换图像(已全 KTX2 或无内嵌纹理)\n");
+  // draco blob 追加 + primitive 扩展落 JSON(bufferView 下标此时已稳定)
+  for (size_t k = 0; k < dracoAdds.size(); ++k) {
+    const size_t no = appendAligned(dracoAdds[k].first.data(), dracoAdds[k].first.size());
+    const int newView = int(bvs.size());
+    bvs.push_back(json{{"buffer", 0}, {"byteOffset", no},
+                       {"byteLength", dracoAdds[k].first.size()}});
+    auto& ext = dracoAdds[k].second;
+    ext["bufferView"] = newView;
+    j["meshes"][dracoPrimAt[k].first]["primitives"][dracoPrimAt[k].second]
+     ["extensions"]["KHR_draco_mesh_compression"] = ext;
+  }
+
+  if (outNewBytes == 0 && dracoAdds.empty()) {
+    fprintf(stderr, "无可转换图像与几何\n");
     return 1;
   }
   j["buffers"][0]["byteLength"] = newBin.size();

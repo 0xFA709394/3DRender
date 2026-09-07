@@ -38,6 +38,6 @@ void main() {
   vec2 jy = (py - p);
   float det = jx.x * jy.y - jx.y * jy.x;
   float detUv = det / max(t * t, 1e-8);  // uv 域行列式(平态=1)
-  float i = clamp(1.0 / max(abs(detUv), 0.05), 0.0, 6.0);
+  float i = clamp(1.0 / max(abs(detUv), 0.05), 0.0, 3.0);
   outColor = vec4(i, 0.0, 0.0, 1.0);
 }

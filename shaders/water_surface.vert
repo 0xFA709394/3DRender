@@ -35,7 +35,7 @@ layout(location = 2) out vec2 vUV;
 void main() {
   vec3 wp = (world * vec4(aPos, 1.0)).xyz;
   vec2 wuv = wp.xz / water[0].xy + 0.5;
-  float t = water[2].x;
+  float t = water[2].x * 3.0;  // 着色法线平滑:3 texel 跨度低通(位移仍用原高度)
   float h0 = texture(texWave, wuv).r;
   float hx = texture(texWave, wuv + vec2(t, 0.0)).r - texture(texWave, wuv - vec2(t, 0.0)).r;
   float hz = texture(texWave, wuv + vec2(0.0, t)).r - texture(texWave, wuv - vec2(0.0, t)).r;

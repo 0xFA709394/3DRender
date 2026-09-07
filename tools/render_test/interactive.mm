@@ -181,7 +181,7 @@ int runSceneInteractive(GLFWwindow* win, CAMetalLayer* layer, const char* sceneN
         const float t = -o[1] / dir[1];
         const float px = o[0] + dir[0] * t, pz = o[2] + dir[2] * t;
         const float u = px / 4.0f + 0.5f, v = pz / 4.0f + 0.5f;
-        if (u >= 0 && u <= 1 && v >= 0 && v <= 1) renderer.disturbWater(u, v, 0.06f, 5.0f);
+        if (u >= 0 && u <= 1 && v >= 0 && v <= 1) renderer.disturbWater(u, v, 0.02f, 8.0f);
       }
     }
     orbit.update(dt);

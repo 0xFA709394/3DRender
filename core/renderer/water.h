@@ -48,7 +48,7 @@ public:
   /// 注入涟漪(uv∈[0,1]²;strength 世界高度;radius texel)。帧内累积,下步消费;满 8 丢弃。
   void disturb(float u, float v, float strength, float radius);
   /// 帧时间累计(render_frame 传入;固定 1/60 子步,帧间确定性)。
-  void tick(float dt) { simTime_ += dt; }
+  void tick(float dt) { acc_ += dt; }
   /// 仿真步进 + 焦散 pass(endScene 场景 pass 前调用)。
   void step(CommandBuffer* cmd);
 
@@ -71,7 +71,9 @@ private:
   BufferHandle stepUbo_, causticsUbo_;
   float inject_[8][4] = {};
   uint32_t injectCount_ = 0;
-  float simTime_ = 0.0f, stepped_ = 0.0f;
+  /// 子步 carry 累减(值域 [0,2·dt))——单累加器无长程漂移;
+  /// 双浮点各自累加会周期性丢子步(约每 20 帧 1 次)= 画面定格频闪。
+  float acc_ = 0.0f;
   uint32_t cur_ = 0;
 };
 

@@ -143,7 +143,7 @@ void WaterSurface::destroy(Device& dev) {
   stepUbo_ = {};
   causticsUbo_ = {};
   injectCount_ = 0;
-  simTime_ = stepped_ = 0.0f;
+  acc_ = 0.0f;
   cur_ = 0;
   dev_ = nullptr;
 }
@@ -160,15 +160,14 @@ void WaterSurface::disturb(float u, float v, float strength, float radius) {
 
 void WaterSurface::step(CommandBuffer* cmd) {
   if (!valid()) return;
-  // 子步数:累计时间折算,每帧至多 2(120Hz 屏不加速;低帧率至多欠步)
+  // 子步数:carry 累减(单累加器,无漂移);每帧至多 2(120Hz 屏不加速;低帧率至多欠步)
   uint32_t steps = 0;
-  while (simTime_ - stepped_ >= kStepDt && steps < 2) {
-    stepped_ += kStepDt;
+  while (acc_ >= kStepDt && steps < 2) {
+    acc_ -= kStepDt;
     ++steps;
   }
-  if (simTime_ > stepped_ + 4.0f * kStepDt) {  // 长期挂起后重置(防追帧雪崩)
-    stepped_ = simTime_;
-    steps = 0;
+  if (acc_ > 4.0f * kStepDt) {  // 长期挂起后重置(防追帧雪崩)
+    acc_ = 0.0f;
   }
   const float texel = 1.0f / float(desc_.simSize);
   for (uint32_t s = 0; s < steps; ++s) {

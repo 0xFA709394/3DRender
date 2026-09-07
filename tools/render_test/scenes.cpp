@@ -578,15 +578,19 @@ void buildWaterPool(Device& dev, Renderer& renderer, DemoScene& out) {
   dl.direction[0] = 0.3f / n;
   dl.direction[1] = 1.0f / n;
   dl.direction[2] = 0.45f / n;
-  dl.color[0] = 3.2f;
-  dl.color[1] = 3.0f;
-  dl.color[2] = 2.7f;
+  dl.color[0] = 1.55f;
+  dl.color[1] = 1.5f;
+  dl.color[2] = 1.35f;
   out.lights.push_back(dl);
   out.camera.lookAt({2.6f, 2.2f, 2.8f}, {0, -0.3f, 0}, {0, 1, 0});
   out.camera.setPerspective(0.78539816f, 1.0f, 0.1f, 50.0f);
   out.framingCenter[1] = -0.5f;
   out.framingRadius = 2.8f;
-  static const rd::QualityPreset kHigh = rd::qualityPreset(rd::QualityTier::High);
+  static const rd::QualityPreset kHigh = [] {  // 水场景关 post(焦散+bloom=频闪)
+    auto q = rd::qualityPreset(rd::QualityTier::High);
+    q.postEnabled = 0;
+    return q;
+  }();
   out.quality = &kHigh;
 }
 

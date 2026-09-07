@@ -240,9 +240,9 @@ bool buildWaterPoolScene(rd_engine* e) {
   dl.direction[0] = 0.3f / n;
   dl.direction[1] = 1.0f / n;
   dl.direction[2] = 0.45f / n;
-  dl.color[0] = 3.2f;
-  dl.color[1] = 3.0f;
-  dl.color[2] = 2.7f;
+  dl.color[0] = 1.55f;
+  dl.color[1] = 1.5f;
+  dl.color[2] = 1.35f;
   e->manualLights.push_back(dl);
   e->gltfLights.clear();
   e->lightsDirty = true;
@@ -261,9 +261,12 @@ void applyOptions(rd_engine* e) {
   else if (o.quality.tier == "low") e->quality = RD_QUALITY_LOW;
   else e->quality = RD_QUALITY_AUTO;
   // 组合档:post=preset&&opt;fxaa=preset||opt;ibl/阴影尺寸按选项覆盖
+  // water 场景强制关 post:焦散亮核(>1)经 bloom 会脉动=频闪;LDR Reinhard 软限幅
   const rd::QualityTier tier = resolveTier(e);
   rd::QualityPreset preset = rd::qualityPreset(tier);
-  preset.postEnabled = (preset.postEnabled != 0 && o.quality.post) ? 1 : 0;
+  preset.postEnabled = (preset.postEnabled != 0 && o.quality.post && !e->waterScene.active)
+                           ? 1
+                           : 0;
   preset.fxaaEnabled = (preset.fxaaEnabled != 0 || o.quality.fxaa) ? 1 : 0;
   preset.iblPrefilterSize = uint32_t(o.ibl.prefilter_size);
   preset.iblPrefilterMips = uint32_t(o.ibl.prefilter_mips);
